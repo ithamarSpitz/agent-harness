@@ -8,6 +8,12 @@ from .models import TaskSpec
 from .agent_runner import AgentResult
 from .runner import CursorAgentRunner
 from .state import StateStore
+from .ui_review import (
+    capture_worktree_snapshot,
+    cleanup_ui_review_processes,
+    fail_review_for_worktree_edits,
+    worktree_changed_paths,
+)
 from .usage import UsageRecorder
 
 
@@ -171,6 +177,31 @@ class ProviderAgentRunner:
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, env: dict[str, str] | None = None,
                code_map_path: Path | None = None) -> AgentResult:
+        ui_enabled = self.config.ui_review.enabled
+        snapshot = capture_worktree_snapshot(workspace) if ui_enabled else None
+        try:
+            result = self._review_inner(
+                task, workspace, base_ref, verification_summary, timeout_minutes,
+                env=env, code_map_path=code_map_path,
+            )
+            if ui_enabled and snapshot is not None:
+                after = capture_worktree_snapshot(workspace)
+                changed = worktree_changed_paths(snapshot, after)
+                if changed:
+                    result = fail_review_for_worktree_edits(result, changed)
+            return result
+        finally:
+            if ui_enabled:
+                cleanup_ui_review_processes(
+                    config=self.config.ui_review,
+                    worktree=workspace,
+                    log_dir=self.codex.log_dir,
+                    task_id=task.id,
+                )
+
+    def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
+                      timeout_minutes: int, *, env: dict[str, str] | None = None,
+                      code_map_path: Path | None = None) -> AgentResult:
         if self._preferred_provider(task) == "codex":
             try:
                 available, _ = self.codex.availability()

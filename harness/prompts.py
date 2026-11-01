@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .config import UIReviewConfig
 from .models import TaskSpec
 
 
@@ -25,6 +26,22 @@ Do not use `{command} query` (very large output) and do not open the graph file.
 def _code_map_section(code_map_path: Path | None, command: str) -> str:
     block = _code_map_block(code_map_path, command)
     return f"\n\n{block}" if block else ""
+
+
+def _ui_review_section(ui_review: UIReviewConfig) -> str:
+    commands = "\n".join(ui_review.start_commands)
+    return f"""
+
+UI check (your decision):
+If the changes add or change behavior that can affect what a user sees or does in the UI, check it in a real browser:
+1. Start the app in the background from the repository root:
+{commands}
+2. Open {ui_review.url} with the Playwright browser tools and try the changed behavior.
+3. Do not change any files.
+If the changes cannot affect the UI, do not start anything.
+After the VERDICT line, add one line: `UI_CHECK: done - <what you tried and what you saw>` or `UI_CHECK: skipped - <why the changes cannot affect the UI>`.
+A UI problem you saw is a FAIL finding.
+"""
 
 
 def implement_prompt(
@@ -72,7 +89,9 @@ def review_prompt(
     context_paths: list[str] | None = None,
     code_map_path: Path | None = None,
     code_map_command: str = "graphify",
+    ui_review: UIReviewConfig | None = None,
 ) -> str:
+    ui_section = _ui_review_section(ui_review) if ui_review is not None and ui_review.enabled else ""
     return f"""Review task {task.id} as an independent reviewer. Do not modify files.
 
 Read:
@@ -100,7 +119,7 @@ VERDICT: PASS
 VERDICT: FAIL
 
 If FAIL, list concrete findings with file paths and why they matter. Do not propose unrelated refactors.
-"""
+{ui_section}"""
 
 
 def plan_change_prompt(

@@ -11,6 +11,7 @@ from pathlib import Path
 from .config import HarnessConfig
 from .git_worktree import WorktreeManager
 from .process_utils import locate_codex_executable, locate_executable, prepare_external_argv, resolve_codex_argv, split_command
+from .ui_review import cursor_mcp_config_mentions_playwright, port_in_use
 
 
 @dataclass(slots=True)
@@ -83,6 +84,32 @@ class Doctor:
                 checks.append(DoctorCheck(
                     "code-map/graphify", False, f"{exc}; pip install graphifyy"
                 ))
+
+        if self.config.ui_review.enabled:
+            npx_path = locate_executable("npx")
+            checks.append(DoctorCheck(
+                "ui-review/npx",
+                npx_path is not None,
+                npx_path or "missing; required for Codex Playwright MCP via npx",
+            ))
+            for port in self.config.ui_review.ports:
+                in_use = port_in_use(port)
+                checks.append(DoctorCheck(
+                    f"ui-review/port:{port}",
+                    not in_use,
+                    "available" if not in_use else f"port {port} is already in use",
+                    required=False,
+                ))
+            mcp_path = Path.home() / ".cursor" / "mcp.json"
+            has_playwright = cursor_mcp_config_mentions_playwright(mcp_path)
+            checks.append(DoctorCheck(
+                "ui-review/cursor-playwright-mcp",
+                has_playwright,
+                str(mcp_path) if has_playwright else (
+                    f"{mcp_path} has no MCP server whose name or args mention playwright"
+                ),
+                required=False,
+            ))
 
         cursor_parts = split_command(self.config.cursor.command) if self.config.cursor.enabled else []
         cursor_path = locate_executable(cursor_parts[0]) if cursor_parts else None

@@ -219,6 +219,21 @@ code_map: true
 
 The harness caches the graph under `.harness/code-map/` and rebuilds it only when the task worktree's base commit changes. Agents may use `graphify explain "<symbol or file>" --graph "<path>"` and `graphify path "<A>" "<B>" --graph "<path>"`. They must not use `graphify query` or open the graph file directly.
 
+## Reviewer UI check (Playwright)
+
+When `ui_review.enabled` is true, the independent reviewer decides whether the task diff can affect UI behavior. If yes, it may start the app from the task worktree using the configured `ui_review.start_commands`, open `ui_review.url` with Playwright MCP tools, and report `UI_CHECK: done - ...` or `UI_CHECK: skipped - ...` after the `VERDICT:` line. The harness does not run a browser itself and does not decide per task whether a UI check is needed.
+
+```yaml
+ui_review:
+  enabled: false
+  start_commands: []
+  url: null
+  ports: []
+  playwright_mcp_package: "@playwright/mcp@0.0.84"
+```
+
+When enabled, `start_commands` and `url` are required. Codex review registers the Playwright MCP server via `npx` for that call and uses the implementation sandbox so the reviewer can start the app. Cursor review relies on Playwright MCP configured in your own `~/.cursor/mcp.json`; when the installed Cursor CLI supports it, the harness adds `--approve-mcps` on review calls only. After every review (pass, fail, timeout, or error), the harness stops processes listening on `ui_review.ports` and any process whose command line contains the task worktree path.
+
 ## Safety defaults
 
 - The integration checkout **must be clean** before a real `run`/`resume`. There is intentionally no dirty-checkout override because atomic rollback uses a known clean checkpoint.
