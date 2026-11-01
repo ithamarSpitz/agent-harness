@@ -27,6 +27,7 @@ from .state import StateStore
 from .usage import UsageRecorder
 from .validation import ProjectValidator
 from .init_project import run_init
+from .limits import run_limits
 from .verifier import Verifier
 
 
@@ -860,6 +861,9 @@ def parser() -> argparse.ArgumentParser:
     init_p = sub.add_parser("init")
     init_p.add_argument("--force", action="store_true")
 
+    limits_p = sub.add_parser("limits")
+    limits_p.add_argument("--json", action="store_true")
+
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--full", action="store_true")
 
@@ -891,6 +895,8 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).resolve()
     if args.command == "init":
         return run_init(root, force=args.force)
+    if args.command == "limits":
+        return run_limits(as_json=args.json)
     roadmap_path = (root / args.roadmap).resolve()
     config_path = (root / args.config).resolve()
     try:
