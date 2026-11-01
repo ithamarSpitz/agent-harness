@@ -57,6 +57,14 @@ class ProjectValidator:
                 + "; ordinary task execution can still run, but plan-change propose will be unavailable until configured"
             )
 
+        if self.config.ui_review.enabled:
+            if not self.config.ui_review.start_commands:
+                report.errors.append(
+                    "ui_review.enabled is true but ui_review.start_commands is empty"
+                )
+            if not self.config.ui_review.url:
+                report.errors.append("ui_review.enabled is true but ui_review.url is required")
+
         if self.config.retry.sequence:
             for index, model_class in enumerate(self.config.retry.sequence, start=1):
                 if model_class not in model_classes:

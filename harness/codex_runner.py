@@ -154,6 +154,12 @@ class CodexAgentRunner:
             "--config", f'model_reasoning_effort="{effective_reasoning_effort}"',
             "--config", f'approval_policy="{self.config.codex.approval_policy}"',
         )
+        if self.config.ui_review.enabled and phase == "review":
+            package = self.config.ui_review.playwright_mcp_package.replace('"', '\\"')
+            command += [
+                "--config", 'mcp_servers.playwright.command="npx"',
+                "--config", f'mcp_servers.playwright.args=["-y","{package}"]',
+            ]
         if not read_only and sandbox_mode == "workspace-write":
             command += ["--config", f"sandbox_workspace_write.network_access={'true' if self.config.codex.network_access else 'false'}"]
 
@@ -284,14 +290,15 @@ class CodexAgentRunner:
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, model: str, env: dict[str, str] | None = None,
                code_map_path: Path | None = None) -> AgentResult:
+        ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id, phase="review",
             prompt=review_prompt(
                 task, base_ref, verification_summary, self._context_paths(task),
-                code_map_path, self.config.code_map.command,
+                code_map_path, self.config.code_map.command, ui_review=ui,
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-review-codex.log",
-            env=env, read_only=True, code_map=code_map_path is not None,
+            env=env, read_only=not self.config.ui_review.enabled, code_map=code_map_path is not None,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,

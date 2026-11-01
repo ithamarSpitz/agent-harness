@@ -220,6 +220,15 @@ class PlanRepairConfig:
 
 
 @dataclass(slots=True)
+class UIReviewConfig:
+    enabled: bool = False
+    start_commands: list[str] = field(default_factory=list)
+    url: str | None = None
+    ports: list[int] = field(default_factory=list)
+    playwright_mcp_package: str = "@playwright/mcp@0.0.84"
+
+
+@dataclass(slots=True)
 class DoctorConfig:
     # Project-specific commands/env are deliberately empty in the generic
     # starter. The NYC repo can later declare node/docker and required env vars.
@@ -246,6 +255,7 @@ class HarnessConfig:
     quota: QuotaConfig
     capacity: CapacityConfig
     plan_repair: PlanRepairConfig
+    ui_review: UIReviewConfig
     doctor: DoctorConfig
 
     @classmethod
@@ -271,5 +281,6 @@ class HarnessConfig:
             quota=QuotaConfig(**raw.get("quota", {})),
             capacity=CapacityConfig(**raw.get("capacity", {})),
             plan_repair=PlanRepairConfig(**raw.get("plan_repair", {})),
+            ui_review=UIReviewConfig(**raw.get("ui_review", {})),
             doctor=DoctorConfig(**raw.get("doctor", {})),
         )

@@ -13,6 +13,7 @@ from .logging_utils import write_log
 from .models import TaskSpec
 from .prompts import implement_prompt, review_prompt
 from .process_utils import cursor_prompt_via_stdin, prepare_external_argv, stop_process_tree
+from .ui_review import cursor_mcp_auto_approve_argv
 from .usage import UsageRecorder
 
 
@@ -171,6 +172,8 @@ class CursorAgentRunner:
         # harness-owned worktree; read-only review/planning calls never receive it.
         if phase == "implement" and verified_harness_worktree:
             command += ["--force"]
+        if phase == "review" and self.config.ui_review.enabled:
+            command += cursor_mcp_auto_approve_argv(self.config.cursor.command)
 
         started = time.monotonic()
         output_lines: list[str] = []
@@ -387,12 +390,13 @@ class CursorAgentRunner:
         env: dict[str, str] | None = None,
         code_map_path: Path | None = None,
     ) -> AgentResult:
+        ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id,
             phase="review",
             prompt=review_prompt(
                 task, base_ref, verification_summary, self._context_paths(task),
-                code_map_path, self.config.code_map.command,
+                code_map_path, self.config.code_map.command, ui_review=ui,
             ),
             workspace=workspace,
             model_class=task.review_model_class or "reviewer",
