@@ -132,8 +132,8 @@ Live `run` and `resume` commands hold a temporary Windows keep-awake requirement
 
 1. Keep the original assignment as `docs/assignment.md`.
 2. Split the final architecture into small domain context files, while retaining `ARCHITECTURE.md` as the source/index if desired.
-3. Copy `tasks/roadmap.example.yaml` to `tasks/roadmap.yaml`.
-4. Write real task briefs from `tasks/TASK_TEMPLATE.md`.
+3. From the Git repository root, run `python harness.py init` (or `harness init --root .`) to create `harness.yaml`, `tasks/roadmap.yaml`, `tasks/TASK_TEMPLATE.md`, and the other starter files.
+4. Write real task briefs from `tasks/TASK_TEMPLATE.md` and replace the example sprint in `tasks/roadmap.yaml`.
 5. Add stable project-wide commands to `harness.yaml`, for example `npm run typecheck`.
 6. Add stage barriers such as `npm test`, Prisma validation, Docker build or smoke tests only where they are useful.
 7. Commit all harness/spec/task files before the first automated run.
