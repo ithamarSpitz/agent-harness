@@ -14,7 +14,8 @@ allowed_paths:
 context: []
 environment: null
 verification:
-  - python -m pytest -q tests/harness
+  - >-
+    python -c "import subprocess,sys,time;d=[];[d.append((lambda t:(subprocess.run([sys.executable,'-m','pytest','-q','tests/harness'],check=True),time.time()-t)[1])(time.time())) for _ in range(3)];print('three full runs, seconds:',[round(x,1) for x in d]);sys.exit('a run took 60s or more' if max(d)>=60 else 0)"
   - python -m ruff check harness tests
   - python -m mypy harness
 ---
@@ -32,5 +33,5 @@ The full test run (`python -m pytest -q tests/harness`, about 129 tests) takes a
 # Acceptance criteria
 
 1. The same number of tests pass as before, none skipped that ran before.
-2. Three consecutive full runs pass (no flaky failures from parallelism); report the three durations in TEST_RESULTS.
+2. Three consecutive full runs pass (no flaky failures from parallelism). The first verification command runs the suite three times and prints the three durations; that output is the evidence.
 3. Each run finishes in under 60 seconds.
