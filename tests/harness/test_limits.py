@@ -13,9 +13,12 @@ import pytest
 
 from harness.cli import main
 from harness.limits import (
+    CLAUDE_OAUTH_BETA,
+    CLAUDE_USAGE_URL,
     CURSOR_TOKEN_KEY,
     CURSOR_USAGE_URL,
     LimitsPaths,
+    fetch_claude_live_usage,
     find_newest_rollout_file,
     read_last_codex_rate_limits,
     render_limits,
@@ -24,6 +27,7 @@ from harness.limits import (
 
 
 FAKE_CURSOR_TOKEN = "cursor-secret-test-token-do-not-print"
+FAKE_CLAUDE_TOKEN = "claude-secret-test-token-do-not-print"
 
 
 def write_rollout(path: Path, payload: dict, *, timestamp: int, append: bool = False) -> None:
@@ -59,6 +63,28 @@ def make_paths(tmp_path: Path) -> LimitsPaths:
         claude_usage_cache=claude_home / "usage-cache.json",
         cursor_state_db=tmp_path / "cursor" / "state.vscdb",
         claude_home=claude_home,
+    )
+
+
+def write_claude_credentials(
+    paths: LimitsPaths,
+    *,
+    expires_at: int,
+    token: str = FAKE_CLAUDE_TOKEN,
+    subscription_type: str = "max",
+) -> None:
+    assert paths.claude_home is not None
+    (paths.claude_home / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": token,
+                    "expiresAt": expires_at,
+                    "subscriptionType": subscription_type,
+                }
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -449,7 +475,7 @@ def test_claude_formats_windows_and_missing_file_message(tmp_path: Path):
     assert "Claude" in text
     assert "5-hour" in text
     assert "weekly" in text
-    assert "(last Claude Code reply)" in text
+    assert "(from last Claude Code reply, may be stale)" in text
 
     paths.claude_usage_cache.unlink()
     text_missing = render_limits(
@@ -486,6 +512,195 @@ def test_claude_skips_missing_window(tmp_path: Path):
     )
     assert "5-hour" in text
     assert "weekly" not in text.split("Claude")[-1]
+
+
+def test_claude_live_usage_formats_optional_windows_and_extra_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = make_paths(tmp_path)
+    now = fixed_now()
+    write_claude_credentials(
+        paths,
+        expires_at=int((now + timedelta(hours=1)).timestamp() * 1000),
+    )
+    captured: dict[str, object] = {}
+    payload = {
+        "five_hour": {
+            "utilization": 20.4,
+            "resets_at": (now + timedelta(hours=2, minutes=39)).isoformat(),
+        },
+        "seven_day": {
+            "utilization": 8,
+            "resets_at": (now + timedelta(days=1, hours=1)).isoformat(),
+        },
+        "seven_day_opus": None,
+        "seven_day_sonnet": {
+            "utilization": 3.6,
+            "resets_at": (now + timedelta(days=2)).isoformat(),
+        },
+        "extra_usage": {"is_enabled": True},
+    }
+
+    def claude_opener(request, timeout=20):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["timeout"] = timeout
+        return _response(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr("harness.limits._open_claude_usage", claude_opener)
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
+    assert captured["url"] == CLAUDE_USAGE_URL
+    assert captured["method"] == "GET"
+    assert captured["timeout"] == 20
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == f"Bearer {FAKE_CLAUDE_TOKEN}"
+    assert headers["anthropic-beta"] == CLAUDE_OAUTH_BETA
+    assert "Claude (max)" in text
+    assert "20% used" in text
+    assert "8% used" in text
+    assert "weekly Opus" not in text
+    assert "weekly Sonnet" in text
+    assert "4% used" in text
+    assert "Extra usage: enabled" in text
+    assert "last Claude Code reply" not in text
+    assert FAKE_CLAUDE_TOKEN not in text
+
+    parsed = json.loads(
+        render_limits(
+            paths,
+            now=now,
+            opener=_unavailable_cursor_opener(),
+            codex_command=session_log_codex_command(tmp_path),
+            as_json=True,
+        )
+    )
+    claude = parsed["claude"]
+    assert claude["source"] == "live"
+    assert claude["subscription_type"] == "max"
+    assert set(claude["windows"]) == {"five_hour", "seven_day", "seven_day_sonnet"}
+    assert claude["extra_usage_enabled"] is True
+    assert FAKE_CLAUDE_TOKEN not in json.dumps(parsed)
+
+
+def test_claude_live_failures_fall_back_to_status_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = make_paths(tmp_path)
+    now = fixed_now()
+    paths.claude_usage_cache.write_text(
+        json.dumps(
+            {
+                "saved_at": int(now.timestamp()) - 120,
+                "rate_limits": {
+                    "five_hour": {
+                        "used_percentage": 17,
+                        "resets_at": int(now.timestamp()) + 3600,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def assert_fallback() -> None:
+        payload = json.loads(
+            render_limits(
+                paths,
+                now=now,
+                opener=_unavailable_cursor_opener(),
+                codex_command=session_log_codex_command(tmp_path),
+                as_json=True,
+            )
+        )
+        assert payload["claude"]["source"] == "status-line"
+        text = render_limits(
+            paths,
+            now=now,
+            opener=_unavailable_cursor_opener(),
+            codex_command=session_log_codex_command(tmp_path),
+        )
+        assert "17% used" in text
+        assert "(from last Claude Code reply, may be stale)" in text
+        assert FAKE_CLAUDE_TOKEN not in text
+
+    assert_fallback()  # Missing credentials file.
+
+    write_claude_credentials(
+        paths,
+        expires_at=int((now - timedelta(seconds=1)).timestamp() * 1000),
+    )
+    assert_fallback()
+
+    write_claude_credentials(
+        paths,
+        expires_at=int((now + timedelta(hours=1)).timestamp() * 1000),
+    )
+
+    def unauthorized(request, timeout=20):
+        raise urllib.error.HTTPError(
+            CLAUDE_USAGE_URL,
+            401,
+            f"unauthorized {FAKE_CLAUDE_TOKEN}",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("harness.limits._open_claude_usage", unauthorized)
+    assert_fallback()
+
+    def timed_out(request, timeout=20):
+        raise TimeoutError(f"timed out with {FAKE_CLAUDE_TOKEN}")
+
+    monkeypatch.setattr("harness.limits._open_claude_usage", timed_out)
+    assert_fallback()
+    with pytest.raises(OSError) as raised:
+        fetch_claude_live_usage(FAKE_CLAUDE_TOKEN, opener=timed_out)
+    assert FAKE_CLAUDE_TOKEN not in str(raised.value)
+
+
+def test_claude_default_opener_rejects_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpener:
+        def open(self, request, timeout=20):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return _response(b"{}")
+
+    def build_opener(*handlers):
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setattr("harness.limits.urllib.request.build_opener", build_opener)
+    fetch_claude_live_usage(FAKE_CLAUDE_TOKEN)
+
+    handlers = captured["handlers"]
+    assert isinstance(handlers, tuple)
+    assert len(handlers) == 1
+    redirect_handler = handlers[0]
+    assert isinstance(redirect_handler, urllib.request.HTTPRedirectHandler)
+    request = captured["request"]
+    assert isinstance(request, urllib.request.Request)
+    redirected = redirect_handler.redirect_request(
+        request,
+        io.BytesIO(),
+        302,
+        "Found",
+        {"Location": "https://attacker.invalid/collect"},
+        "https://attacker.invalid/collect",
+    )
+    assert redirected is None
 
 
 def test_codex_malformed_rate_limits_does_not_abort_command(tmp_path: Path):
@@ -548,7 +763,7 @@ def test_codex_malformed_rate_limits_does_not_abort_command(tmp_path: Path):
     assert "Cursor (monthly)" in text
     assert "Claude" in text
     assert "5-hour" in text
-    assert "(last Claude Code reply)" in text
+    assert "(from last Claude Code reply, may be stale)" in text
 
 
 def test_one_failing_service_does_not_block_others(tmp_path: Path):

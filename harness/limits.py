@@ -24,6 +24,8 @@ CURSOR_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 )
 CURSOR_TOKEN_KEY = "cursorAuth/accessToken"
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_OAUTH_BETA = "oauth-2025-04-20"
 
 
 @dataclass(slots=True)
@@ -66,6 +68,24 @@ def default_cursor_state_db() -> Path:
 
 
 UrlOpener = Callable[..., Any]
+
+
+class _ClaudeNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _open_claude_usage(request: urllib.request.Request, *, timeout: float) -> Any:
+    opener = urllib.request.build_opener(_ClaudeNoRedirectHandler())
+    return opener.open(request, timeout=timeout)
 
 
 def format_local_day_time(when: datetime) -> str:
@@ -638,12 +658,121 @@ def load_cursor(
         return [f"Cursor: unavailable ({reason})"], {"error": reason}
 
 
-def load_claude(paths: LimitsPaths, *, now: datetime | None = None) -> tuple[list[str], dict[str, Any]]:
-    now = now or datetime.now().astimezone()
+def _claude_credentials_path(paths: LimitsPaths) -> Path:
+    claude_home = paths.claude_home or paths.claude_usage_cache.parent
+    return claude_home / ".credentials.json"
+
+
+def read_claude_credentials(
+    paths: LimitsPaths,
+    *,
+    now: datetime,
+) -> tuple[str, str]:
+    payload = json.loads(_claude_credentials_path(paths).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("invalid credentials")
+    oauth = payload.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        raise ValueError("invalid credentials")
+    token = oauth.get("accessToken")
+    if not isinstance(token, str) or not token:
+        raise ValueError("invalid credentials")
+    expires_at = _parse_timestamp(oauth.get("expiresAt"))
+    if expires_at is None or expires_at <= now.timestamp():
+        raise ValueError("expired credentials")
+    subscription_type = oauth.get("subscriptionType")
+    if not isinstance(subscription_type, str) or not subscription_type:
+        subscription_type = "unknown"
+    return token, subscription_type
+
+
+def fetch_claude_live_usage(
+    token: str,
+    *,
+    opener: UrlOpener | None = None,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    opener = opener or _open_claude_usage
+    request = urllib.request.Request(
+        CLAUDE_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": CLAUDE_OAUTH_BETA,
+        },
+        method="GET",
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            body = response.read()
+        payload = json.loads(body.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("unexpected response")
+        return payload
+    except Exception:
+        # The opener may include request headers in its exception. Keep the
+        # bearer token out of every raised message as well as rendered output.
+        raise OSError("Claude usage request failed") from None
+
+
+def _claude_live_window(window: Any) -> dict[str, Any]:
+    if not isinstance(window, dict):
+        raise ValueError("invalid window")
+    utilization = float(window["utilization"])
+    resets_at = _parse_timestamp(window["resets_at"])
+    if resets_at is None:
+        raise ValueError("invalid reset time")
+    return {"used_percentage": utilization, "resets_at": int(resets_at)}
+
+
+def _build_claude_from_live(
+    payload: dict[str, Any],
+    *,
+    subscription_type: str,
+    now: datetime,
+) -> tuple[list[str], dict[str, Any]]:
+    lines = [f"Claude ({subscription_type})"]
+    windows: dict[str, Any] = {}
+    mapping = (
+        ("five_hour", "5-hour"),
+        ("seven_day", "weekly"),
+        ("seven_day_opus", "weekly Opus"),
+        ("seven_day_sonnet", "weekly Sonnet"),
+    )
+    for key, label in mapping:
+        raw_window = payload.get(key)
+        if raw_window is None:
+            continue
+        window = _claude_live_window(raw_window)
+        lines.append(
+            _format_window_line(
+                label,
+                window["used_percentage"],
+                window["resets_at"],
+                now=now,
+            )
+        )
+        windows[key] = window
+    extra_usage = payload.get("extra_usage")
+    extra_usage_enabled = isinstance(extra_usage, dict) and extra_usage.get("is_enabled") is True
+    if extra_usage_enabled:
+        lines.append("  Extra usage: enabled")
+    return lines, {
+        "source": "live",
+        "subscription_type": subscription_type,
+        "windows": windows,
+        "extra_usage_enabled": extra_usage_enabled,
+    }
+
+
+def _load_claude_status_line(
+    paths: LimitsPaths,
+    *,
+    now: datetime,
+) -> tuple[list[str], dict[str, Any]]:
     cache_path = paths.claude_usage_cache
     if not cache_path.is_file():
         message = "no data yet (Claude Code saves it on its next reply)"
-        return [f"Claude: {message}"], {"error": message}
+        return [f"Claude: {message}"], {"source": "status-line", "error": message}
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -665,11 +794,36 @@ def load_claude(paths: LimitsPaths, *, now: datetime | None = None) -> tuple[lis
                 "resets_at": resets_at,
             }
         as_of = datetime.fromtimestamp(saved_at, tz=timezone.utc).astimezone()
-        lines.append(f"  as of {format_local_day_time(as_of)} (last Claude Code reply)")
-        return lines, {"saved_at": saved_at, "windows": windows}
+        lines.append(
+            f"  as of {format_local_day_time(as_of)} "
+            "(from last Claude Code reply, may be stale)"
+        )
+        return lines, {"source": "status-line", "saved_at": saved_at, "windows": windows}
     except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
         reason = str(exc) or exc.__class__.__name__
-        return [f"Claude: unavailable ({reason})"], {"error": reason}
+        return [f"Claude: unavailable ({reason})"], {
+            "source": "status-line",
+            "error": reason,
+        }
+
+
+def load_claude(
+    paths: LimitsPaths,
+    *,
+    now: datetime | None = None,
+    opener: UrlOpener | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    now = now or datetime.now().astimezone()
+    try:
+        token, subscription_type = read_claude_credentials(paths, now=now)
+        payload = fetch_claude_live_usage(token, opener=opener)
+        return _build_claude_from_live(
+            payload,
+            subscription_type=subscription_type,
+            now=now,
+        )
+    except Exception:
+        return _load_claude_status_line(paths, now=now)
 
 
 def render_limits(
