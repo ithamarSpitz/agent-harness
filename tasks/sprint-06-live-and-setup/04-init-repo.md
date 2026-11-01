@@ -1,13 +1,15 @@
 ---
 id: S6-T4
-stage: 1
+stage: 2
 model_class: worker
 timeout_minutes: 45
 review: true
 allow_protected: false
-depends_on: []
+depends_on:
+  - S6-T3
 allowed_paths:
   - harness/init_project.py
+  - harness/cli.py
   - tests/harness/test_init_project.py
 context: []
 environment: null
@@ -28,7 +30,8 @@ verification:
 3. **First commit.** When init created the repository (decision 1), commit the generated files as `Initial harness setup` and, when `origin` exists, push `main` with upstream (`git push -u origin main`). In an existing repository with history, do not commit; print that the files are ready to commit.
 4. **Architecture template.** Create `ARCHITECTURE.md` when missing, with these sections and a one-line hint under each: Goal and users; Scope and non-goals; Stack; Components (what each does and owns); Data model; Interfaces and contracts between components; Testing strategy (which commands prove what); Decisions (dated, with the reason). Never overwrite it, even with `--force`.
 5. **Wiring.** The generated `harness.yaml` adds `ARCHITECTURE.md` to `paths.protected` and the alias `architecture: ARCHITECTURE.md` under `context.aliases`. The generated example brief lists `architecture` in `context`, and the task template explains that briefs name the architecture sections they rely on.
-6. Output lines stay as today (`created` / `updated` / `skipped (exists)`) plus one line each for git, GitHub and the first commit.
+6. The options `--public` and `--no-github` are added to the `init` subcommand in `harness/cli.py`.
+7. Output lines stay as today (`created` / `updated` / `skipped (exists)`) plus one line each for git, GitHub and the first commit.
 
 # Acceptance criteria
 

@@ -73,8 +73,9 @@ sprints:
         depends_on: []
       S6-T4:
         file: tasks/sprint-06-live-and-setup/04-init-repo.md
-        stage: 1
-        depends_on: []
+        stage: 2
+        depends_on:
+        - S6-T3
 
   S7-add-task-and-docs:
     name: Add tasks to a running sprint, agent activity records, SPEC and README
@@ -88,13 +89,18 @@ sprints:
         stage: 2
         depends_on:
         - S7-T1
+      S7-T5:
+        file: tasks/sprint-07-add-task-and-docs/05-statuses.md
+        stage: 3
+        depends_on:
+        - S7-T2
       S7-T3:
         file: tasks/sprint-07-add-task-and-docs/03-spec.md
-        stage: 3
+        stage: 4
         depends_on:
-        - S7-T2
+        - S7-T5
       S7-T4:
         file: tasks/sprint-07-add-task-and-docs/04-readme.md
-        stage: 3
+        stage: 4
         depends_on:
-        - S7-T2
+        - S7-T5

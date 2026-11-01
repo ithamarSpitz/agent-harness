@@ -1,12 +1,12 @@
 ---
 id: S7-T3
-stage: 3
+stage: 4
 model_class: hard_worker
 timeout_minutes: 60
 review: true
 allow_protected: false
 depends_on:
-  - S7-T2
+  - S7-T5
 allowed_paths:
   - SPEC.md
 context: []
