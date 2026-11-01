@@ -135,10 +135,10 @@ class Scheduler:
                 task_ids=[task.id],
                 message=(
                     error + "\nIf a focused retry still cannot fit the current plan, analyze it with: "
-                    f"python harness.py plan-change propose {task.sprint} --task {task.id}"
+                    f"harness plan-change propose {task.sprint} --task {task.id}"
                 ),
                 suggested_command=(
-                    f"python harness.py rerun-blocker {task.sprint} --model-class escalation"
+                    f"harness rerun-blocker {task.sprint} --model-class escalation"
                 ),
             )
         )
@@ -154,10 +154,10 @@ class Scheduler:
             "instead of repeatedly expanding retry budget."
         )
         if len(task_ids) == 1:
-            suggestion = f"python harness.py rerun-blocker {sprint.id} --model-class escalation"
+            suggestion = f"harness rerun-blocker {sprint.id} --model-class escalation"
         else:
             suggestion = (
-                f"python harness.py rerun-blocker {sprint.id} --task <TASK_ID> "
+                f"harness rerun-blocker {sprint.id} --task <TASK_ID> "
                 "--model-class escalation"
             )
         self.failures.record(
@@ -179,7 +179,7 @@ class Scheduler:
                 stage=stage,
                 task_ids=[task.id for task in tasks],
                 message=error,
-                suggested_command=f"python harness.py rerun-blocker {sprint.id}",
+                suggested_command=f"harness rerun-blocker {sprint.id}",
             )
         )
 
@@ -196,7 +196,7 @@ class Scheduler:
                     "Cursor included usage is exhausted. Task state/worktrees were preserved and "
                     "quota pauses did not consume retry budget."
                 ),
-                suggested_command=f"python harness.py resume {sprint.id}",
+                suggested_command=f"harness resume {sprint.id}",
             )
         )
 
@@ -214,7 +214,7 @@ class Scheduler:
                     "Agent provider capacity/transient infrastructure is temporarily unavailable. Task state/worktrees were preserved and "
                     "capacity pauses did not consume retry budget."
                 ),
-                suggested_command=f"python harness.py resume {sprint.id}",
+                suggested_command=f"harness resume {sprint.id}",
             )
         )
 

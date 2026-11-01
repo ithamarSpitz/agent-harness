@@ -234,7 +234,7 @@ def _run_pending_revalidations(runtime: Runtime, current_sprint: str) -> bool:
                     task_ids=[task.id],
                     message=f"Previously integrated task {task.id} failed post-plan-change revalidation.\n{failure_summary}",
                     suggested_command=(
-                        f"Analyze a corrective plan change: python harness.py plan-change propose "
+                        f"Analyze a corrective plan change: harness plan-change propose "
                         f"{task.sprint} --task {task.id}"
                     ),
                 )
@@ -251,7 +251,7 @@ def _check_plan_gate(runtime: Runtime) -> None:
     if open_request:
         raise RuntimeError(
             f"Plan change {open_request} is awaiting human apply/reject. "
-            f"Inspect it with `python harness.py plan-change status {open_request}`."
+            f"Inspect it with `harness plan-change status {open_request}`."
         )
 
 def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
@@ -279,7 +279,7 @@ def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
                 sprint=sprint_id,
                 kind="RUN_PRECONDITION",
                 message=message,
-                suggested_command=f"Fix the checkout, then: python harness.py resume {sprint_id}",
+                suggested_command=f"Fix the checkout, then: harness resume {sprint_id}",
             )
         )
         print(message, file=sys.stderr)
@@ -372,7 +372,7 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
                 sprint=sprint_id,
                 kind="RUN_INFRASTRUCTURE",
                 message=message,
-                suggested_command=f"Fix the environment/precondition, then: python harness.py resume {sprint_id}",
+                suggested_command=f"Fix the environment/precondition, then: harness resume {sprint_id}",
             )
         )
         try:
@@ -503,7 +503,7 @@ def cmd_run_task(
     )  # intentional focused/debugging entrypoint
     if outcome.ok:
         runtime.failures.resolve_task(task.sprint, task_id)
-        print(f"{task_id} is VERIFIED in its worktree; run `python harness.py resume {task.sprint}` to continue from this stage.")
+        print(f"{task_id} is VERIFIED in its worktree; run `harness resume {task.sprint}` to continue from this stage.")
         return 0
     if outcome.quota_paused:
         runtime.failures.record(
@@ -513,7 +513,7 @@ def cmd_run_task(
                 stage=task.stage,
                 task_ids=[task.id],
                 message=outcome.error or "Cursor usage quota exhausted",
-                suggested_command=f"python harness.py resume {task.sprint}",
+                suggested_command=f"harness resume {task.sprint}",
             )
         )
         print(outcome.error or "Cursor usage quota exhausted; state preserved", file=sys.stderr)
@@ -571,7 +571,7 @@ def cmd_rerun_blocker(
         sprint = runtime.roadmap.sprint(sprint_id)
         ok = runtime.scheduler.rerun_stage_barrier(sprint, stage)
         if ok:
-            print(f"Stage {stage} barrier passed. Run `python harness.py resume {sprint_id}` to continue with the next stage.")
+            print(f"Stage {stage} barrier passed. Run `harness resume {sprint_id}` to continue with the next stage.")
             return 0
         refreshed = runtime.failures.get(sprint_id)
         if refreshed:

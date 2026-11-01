@@ -69,11 +69,11 @@ class FailureStore:
         record["message"] = "Remaining blocked tasks: " + ", ".join(task_ids)
         if len(task_ids) == 1:
             record["suggested_command"] = (
-                f"python harness.py rerun-blocker {sprint} --model-class escalation"
+                f"harness rerun-blocker {sprint} --model-class escalation"
             )
         else:
             record["suggested_command"] = (
-                f"python harness.py rerun-blocker {sprint} --task <TASK_ID> --model-class escalation"
+                f"harness rerun-blocker {sprint} --task <TASK_ID> --model-class escalation"
             )
         path = self.path(sprint)
         tmp = path.with_suffix(".tmp")

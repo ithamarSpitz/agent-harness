@@ -635,7 +635,7 @@ def test_posix_worktree_discovery_skips_protected_parent_pid(monkeypatch, tmp_pa
             blob = _ps_format_blob(recorded)
             if "args" in blob or "command" in blob:
                 Result.stdout = (
-                    f"  50 python harness.py --cd {needle}\n"
+                    f"  50 harness --cd {needle}\n"
                     f"4242 python -c sleep {needle}\n"
                 )
         return Result()
