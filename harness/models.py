@@ -37,6 +37,7 @@ class TaskSpec:
     verification: list[str] = field(default_factory=list)
     context_refs: list[str] = field(default_factory=list)
     environment: str | None = None
+    code_map: bool | None = None
 
 
 @dataclass(slots=True)

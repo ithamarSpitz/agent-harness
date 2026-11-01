@@ -120,7 +120,10 @@ class CodexAgentRunner:
             diagnostics.append(raw_stdout.strip())
         return (messages[-1] if messages else "", "\n".join(diagnostics), usage)
 
-    def _record_usage(self, task_id: str, phase: str, model: str, attempt: int | None, result: AgentResult) -> None:
+    def _record_usage(
+        self, task_id: str, phase: str, model: str, attempt: int | None,
+        result: AgentResult, code_map: bool = False,
+    ) -> None:
         if self.usage is None:
             return
         self.usage.record({
@@ -133,13 +136,14 @@ class CodexAgentRunner:
             "model_unavailable": result.model_unavailable, "input_tokens": result.input_tokens,
             "cached_input_tokens": result.cached_input_tokens, "output_tokens": result.output_tokens,
             "reasoning_output_tokens": result.reasoning_output_tokens,
+            "code_map": code_map,
             "output_bytes": len(result.output.encode("utf-8", errors="replace")),
         })
 
     def _invoke(self, *, task_id: str, phase: str, prompt: str, workspace: Path, model: str,
                 timeout_minutes: int, log_name: str, attempt: int | None = None,
                 env: dict[str, str] | None = None, read_only: bool = False,
-                reasoning_effort: str | None = None) -> AgentResult:
+                reasoning_effort: str | None = None, code_map: bool = False) -> AgentResult:
         sandbox_mode = self._effective_sandbox(read_only=read_only)
         effective_reasoning_effort = reasoning_effort or self.config.codex.reasoning_effort
         command = resolve_codex_argv(
@@ -178,7 +182,7 @@ class CodexAgentRunner:
                                  duration_seconds=time.monotonic() - started, model=model,
                                  transient_error=True, provider="codex")
             write_log(self.log_dir, log_name, str(exc))
-            self._record_usage(task_id, phase, model, attempt, result)
+            self._record_usage(task_id, phase, model, attempt, result, code_map)
             return result
 
         def read(stream, target):
@@ -258,7 +262,7 @@ class CodexAgentRunner:
             input_tokens=usage["input_tokens"] or None, cached_input_tokens=usage["cached_input_tokens"] or None,
             output_tokens=usage["output_tokens"] or None, reasoning_output_tokens=usage["reasoning_output_tokens"] or None,
         )
-        self._record_usage(task_id, phase, model, attempt, result)
+        self._record_usage(task_id, phase, model, attempt, result, code_map)
         return result
 
     def _context_paths(self, task: TaskSpec) -> list[str]:
@@ -266,21 +270,28 @@ class CodexAgentRunner:
 
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, model: str, reasoning_effort: str | None = None,
-                  env: dict[str, str] | None = None) -> AgentResult:
+                  env: dict[str, str] | None = None, code_map_path: Path | None = None) -> AgentResult:
         return self._invoke(
             task_id=task.id, phase="implement",
-            prompt=implement_prompt(task, previous_failure, self._context_paths(task)), workspace=workspace,
+            prompt=implement_prompt(
+                task, previous_failure, self._context_paths(task), code_map_path, self.config.code_map.command
+            ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-attempt-{attempt}-codex.log",
             attempt=attempt, env=env, read_only=False, reasoning_effort=reasoning_effort,
+            code_map=code_map_path is not None,
         )
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
-               timeout_minutes: int, *, model: str, env: dict[str, str] | None = None) -> AgentResult:
+               timeout_minutes: int, *, model: str, env: dict[str, str] | None = None,
+               code_map_path: Path | None = None) -> AgentResult:
         return self._invoke(
             task_id=task.id, phase="review",
-            prompt=review_prompt(task, base_ref, verification_summary, self._context_paths(task)), workspace=workspace,
+            prompt=review_prompt(
+                task, base_ref, verification_summary, self._context_paths(task),
+                code_map_path, self.config.code_map.command,
+            ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-review-codex.log",
-            env=env, read_only=True,
+            env=env, read_only=True, code_map=code_map_path is not None,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,

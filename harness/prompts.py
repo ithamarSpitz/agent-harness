@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .models import TaskSpec
 
 
@@ -11,10 +13,26 @@ def _context_block(context_paths: list[str]) -> str:
     )
 
 
+def _code_map_block(code_map_path: Path | None, command: str) -> str:
+    if code_map_path is None:
+        return ""
+    path = str(code_map_path.resolve())
+    return f"""Code map: {path}
+To locate code, use `{command} explain "<symbol or file>" --graph "{path}"` or `{command} path "<A>" "<B>" --graph "{path}"`. Their output is small.
+Do not use `{command} query` (very large output) and do not open the graph file. Use the map only when you need to find where something is defined or used."""
+
+
+def _code_map_section(code_map_path: Path | None, command: str) -> str:
+    block = _code_map_block(code_map_path, command)
+    return f"\n\n{block}" if block else ""
+
+
 def implement_prompt(
     task: TaskSpec,
     previous_failure: str | None = None,
     context_paths: list[str] | None = None,
+    code_map_path: Path | None = None,
+    code_map_command: str = "graphify",
 ) -> str:
     retry = ""
     if previous_failure:
@@ -33,7 +51,7 @@ Inspect the current working tree, fix only the failure, and do not broaden scope
 First read AGENTS.md, then read the task brief at {task.file.as_posix()}.
 {_context_block(context_paths or [])}
 
-Follow the task scope exactly. Read only the declared/referenced context first; expand context only if a real dependency requires it.
+Follow the task scope exactly. Read only the declared/referenced context first; expand context only if a real dependency requires it.{_code_map_section(code_map_path, code_map_command)}
 
 Do not redesign the architecture. Do not work on future tasks. Do not commit changes; the harness owns commits and integration.
 
@@ -52,13 +70,15 @@ def review_prompt(
     base_ref: str,
     verification_summary: str,
     context_paths: list[str] | None = None,
+    code_map_path: Path | None = None,
+    code_map_command: str = "graphify",
 ) -> str:
     return f"""Review task {task.id} as an independent reviewer. Do not modify files.
 
 Read:
 - AGENTS.md
 - {task.file.as_posix()}
-{chr(10).join(f'- {path}' for path in (context_paths or []))}
+{chr(10).join(f'- {path}' for path in (context_paths or []))}{_code_map_section(code_map_path, code_map_command)}
 
 Review the current working tree diff against base ref `{base_ref}`.
 

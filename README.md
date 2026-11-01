@@ -199,6 +199,26 @@ worktree:
 
 The starter leaves the list empty until the real application's package setup is finalized. Setup output is written to `.harness/logs/<TASK>-worktree-setup.log`; a failed or timed-out setup blocks the task before any model call is made.
 
+## Code map (Graphify)
+
+Tasks can optionally receive a small, code-only Graphify map for locating definitions and connections without broad repository searches. Install it with `pip install graphifyy`, then enable it globally and opt tasks in:
+
+```yaml
+# harness.yaml
+code_map:
+  enabled: true
+  command: graphify
+  default_for_tasks: false
+  build_timeout_minutes: 5
+```
+
+```yaml
+# task frontmatter
+code_map: true
+```
+
+The harness caches the graph under `.harness/code-map/` and rebuilds it only when the task worktree's base commit changes. Agents may use `graphify explain "<symbol or file>" --graph "<path>"` and `graphify path "<A>" "<B>" --graph "<path>"`. They must not use `graphify query` or open the graph file directly.
+
 ## Safety defaults
 
 - The integration checkout **must be clean** before a real `run`/`resume`. There is intentionally no dirty-checkout override because atomic rollback uses a known clean checkpoint.

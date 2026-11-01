@@ -138,6 +138,7 @@ class CursorAgentRunner:
         attempt: int | None = None,
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
+        code_map: bool = False,
     ) -> AgentResult:
         pipe_prompt = cursor_prompt_via_stdin(self.config.cursor.command)
         command = [
@@ -206,7 +207,7 @@ class CursorAgentRunner:
             output = str(exc)
             write_log(self.log_dir, log_name, output)
             result = AgentResult(False, output, f"Could not start Cursor CLI: {exc}", model=model)
-            self._record_usage(task_id, phase, effective_model_class, model, attempt, result)
+            self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
             return result
 
         def read_output() -> None:
@@ -298,7 +299,7 @@ class CursorAgentRunner:
             quota_exhausted=quota_exhausted,
             capacity_exhausted=capacity_exhausted,
         )
-        self._record_usage(task_id, phase, effective_model_class, model, attempt, result)
+        self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
         return result
 
     def _looks_like_quota_exhaustion(self, output: str) -> bool:
@@ -321,6 +322,7 @@ class CursorAgentRunner:
         model: str | None,
         attempt: int | None,
         result: AgentResult,
+        code_map: bool = False,
     ) -> None:
         if self.usage is None:
             return
@@ -338,6 +340,7 @@ class CursorAgentRunner:
                 "stalled": result.stalled,
                 "quota_exhausted": result.quota_exhausted,
                 "capacity_exhausted": result.capacity_exhausted,
+                "code_map": code_map,
                 "output_bytes": len(result.output.encode("utf-8", errors="replace")),
             }
         )
@@ -355,11 +358,14 @@ class CursorAgentRunner:
         *,
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
+        code_map_path: Path | None = None,
     ) -> AgentResult:
         return self._invoke(
             task_id=task.id,
             phase="implement",
-            prompt=implement_prompt(task, previous_failure, self._context_paths(task)),
+            prompt=implement_prompt(
+                task, previous_failure, self._context_paths(task), code_map_path, self.config.code_map.command
+            ),
             workspace=workspace,
             model_class=task.model_class,
             timeout_minutes=timeout_minutes,
@@ -367,6 +373,7 @@ class CursorAgentRunner:
             attempt=attempt,
             env=env,
             model_class_override=model_class_override,
+            code_map=code_map_path is not None,
         )
 
     def review(
@@ -378,17 +385,22 @@ class CursorAgentRunner:
         timeout_minutes: int,
         *,
         env: dict[str, str] | None = None,
+        code_map_path: Path | None = None,
     ) -> AgentResult:
         return self._invoke(
             task_id=task.id,
             phase="review",
-            prompt=review_prompt(task, base_ref, verification_summary, self._context_paths(task)),
+            prompt=review_prompt(
+                task, base_ref, verification_summary, self._context_paths(task),
+                code_map_path, self.config.code_map.command,
+            ),
             workspace=workspace,
             model_class=task.review_model_class or "reviewer",
             timeout_minutes=timeout_minutes,
             log_name=f"{task.id}-review.log",
             mode="ask",
             env=env,
+            code_map=code_map_path is not None,
         )
     def plan_change(
         self,

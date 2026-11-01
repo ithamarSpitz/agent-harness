@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .code_map import CodeMapBuilder
 from .config import HarnessConfig
 from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
@@ -53,6 +54,7 @@ class Scheduler:
         self.verifier = verifier
         self.environment = environment or EnvironmentManager(repo_root, config, verifier.log_dir)
         self.failures = failures or FailureStore(verifier.log_dir.parent / "failures")
+        self.code_maps = CodeMapBuilder(config.code_map, verifier.log_dir.parent, verifier.log_dir)
 
     @staticmethod
     def _scope_prefix(pattern: str) -> str:
@@ -298,6 +300,7 @@ class Scheduler:
         base_ref: str,
         timeout: int,
         task_env: dict[str, str],
+        code_map_path: Path | None,
     ) -> TaskOutcome | None:
         runtime.status = TaskStatus.VERIFYING
         runtime.waiting_phase = None
@@ -314,7 +317,8 @@ class Scheduler:
             runtime.status = TaskStatus.REVIEWING
             self.state.save()
             review = self.runner.review(
-                task, worktree, base_ref, verification.summary, timeout, env=task_env
+                task, worktree, base_ref, verification.summary, timeout,
+                env=task_env, code_map_path=code_map_path,
             )
             if review.quota_exhausted:
                 return self._pause_for_quota(task, worktree, phase="review", decrement_attempt=False)
@@ -391,12 +395,25 @@ class Scheduler:
 
         assert worktree is not None
         task_env = self.environment.task_env(task, worktree)
+        # A persisted worktree that has never reached an agent call is an
+        # interrupted pre-agent run and still needs its map. Attempts can be
+        # reset to zero while retaining implementation changes, so started_at
+        # is the durable boundary that protects the shared base cache.
+        code_map_path = self.code_maps.prepare(
+            task,
+            worktree,
+            base_ref,
+            env=task_env,
+            allow_build=created or runtime.started_at is None,
+        )
 
         # If quota/capacity was exhausted only at review time, keep the already-written
         # implementation and resume from verification/review without another
         # coding-model call.
         if runtime.status in {TaskStatus.WAITING_FOR_QUOTA, TaskStatus.WAITING_FOR_CAPACITY} and runtime.waiting_phase == "review":
-            resumed = self._verify_review_commit(task, runtime, worktree, base_ref, timeout, task_env)
+            resumed = self._verify_review_commit(
+                task, runtime, worktree, base_ref, timeout, task_env, code_map_path
+            )
             if resumed is not None:
                 return resumed
 
@@ -424,6 +441,7 @@ class Scheduler:
                 previous_failure,
                 env=task_env,
                 model_class_override=attempt_model_class,
+                code_map_path=code_map_path,
             )
             if result.quota_exhausted:
                 return self._pause_for_quota(task, worktree, phase="implement", decrement_attempt=True)
@@ -436,7 +454,9 @@ class Scheduler:
                 self.state.save()
                 continue
 
-            finished = self._verify_review_commit(task, runtime, worktree, base_ref, timeout, task_env)
+            finished = self._verify_review_commit(
+                task, runtime, worktree, base_ref, timeout, task_env, code_map_path
+            )
             if finished is not None:
                 return finished
             previous_failure = runtime.last_error or runtime.review_feedback or "Verification/review failed"
