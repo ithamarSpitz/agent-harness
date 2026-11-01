@@ -1,0 +1,110 @@
+version: 5
+
+execution:
+  max_parallel_agents: 2
+  default_max_attempts: 3
+  default_timeout_minutes: 35
+  base_ref: null
+  keep_successful_worktrees: false
+  stall_timeout_minutes: 12
+  watchdog_poll_seconds: 10
+  keep_awake_during_run: true
+
+worktree:
+  setup_commands: []
+  setup_timeout_minutes: 10
+
+cursor:
+  enabled: true
+  command: agent
+  output_format: text
+  trust_harness_worktrees: true
+  models:
+    worker: composer-2.5
+    hard_worker: cursor-grok-4.6-high
+    reviewer: cursor-grok-4.6-high
+    escalation: claude-opus-5-thinking-high
+
+providers:
+  priority:
+    - codex
+    - cursor
+
+codex:
+  enabled: true
+  command: codex
+  reasoning_effort: high
+  sandbox: workspace-write
+  windows_implementation_sandbox: danger-full-access
+  approval_policy: never
+  network_access: true
+  implementation_sequence:
+    - model: gpt-5.6-sol
+      reasoning_effort: medium
+    - model: gpt-5.6-sol
+      reasoning_effort: high
+    - model: gpt-6-astra
+      reasoning_effort: medium
+  review_model: gpt-5.6-sol
+  planner_model: gpt-5.6-sol
+
+retry:
+  # Cursor ladder stays on Cursor-native models (Composer, Grok); Opus is billed as Other Models.
+  sequence:
+    - worker
+    - hard_worker
+    - hard_worker
+
+verification:
+  global_task_commands:
+    - git diff --check
+  stage_commands:
+    - python -m pytest -q tests/harness
+    - python -m ruff check harness tests
+    - python -m mypy harness
+
+paths:
+  protected:
+    - harness.yaml
+    - tasks/**
+    - AGENTS.md
+    - HARNESS-OPERATOR.md
+  review_required:
+    - pyproject.toml
+    - schemas/**
+
+context:
+  aliases:
+    readme: README.md
+    operator: HARNESS-OPERATOR.md
+
+environment:
+  docker_enabled: false
+
+quota:
+  policy: wait
+  reset_at: null
+  probe_interval_minutes: 60
+  reset_grace_minutes: 5
+  keep_awake: true
+  teardown_environment_while_waiting: true
+
+capacity:
+  policy: wait
+  retry_interval_minutes: 5
+  keep_awake: true
+  teardown_environment_while_waiting: true
+
+plan_repair:
+  enabled: true
+  planner_model_class: hard_worker
+  timeout_minutes: 20
+
+doctor:
+  required_commands:
+    - python
+    - git
+    - codex
+  required_env: []
+  min_free_disk_gb: 2
+  check_cursor_models: true

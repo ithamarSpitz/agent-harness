@@ -1,0 +1,27 @@
+project: agent-harness
+sprints:
+  S1-tooling:
+    name: Code map (Graphify), reviewer UI check (Playwright), harness init
+    # One stage per task: all three change config.py, prompts.py and doctor.py.
+    tasks:
+      S1-T1:
+        file: tasks/sprint-01-tooling/01-code-map.md
+        stage: 1
+        depends_on: []
+      S1-T2:
+        file: tasks/sprint-01-tooling/02-ui-review.md
+        stage: 2
+        depends_on:
+        - S1-T1
+      S1-T3:
+        file: tasks/sprint-01-tooling/03-init.md
+        stage: 3
+        depends_on:
+        - S1-T2
+    stage_verification:
+      '1':
+      - python -m pytest -q tests/harness
+      '2':
+      - python -m pytest -q tests/harness
+      '3':
+      - python -m pytest -q tests/harness
