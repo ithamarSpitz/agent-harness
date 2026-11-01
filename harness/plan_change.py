@@ -219,7 +219,7 @@ class PlanChangeManager:
                     message=f"{kind} proposed in {self.markdown_path(request_id).relative_to(self.root)}",
                     suggested_command=(
                         f"Review {request_id}, edit/commit architecture/roadmap/task files, then: "
-                        f"python harness.py plan-change apply {request_id}"
+                        f"harness plan-change apply {request_id}"
                     ),
                 )
             )
@@ -242,7 +242,7 @@ class PlanChangeManager:
                     + str(data.get("failure_summary") or "blocked task")
                 ),
                 suggested_command=(
-                    f"python harness.py rerun-blocker {data['sprint']} --model-class escalation"
+                    f"harness rerun-blocker {data['sprint']} --model-class escalation"
                 ),
             )
         )
