@@ -27,7 +27,6 @@ sprints:
     assert task.stage == 2
     assert task.allowed_paths == ["src/a.py"]
     assert task.model_class == "worker"
-    assert task.code_map is True
 
 
 def test_rejects_dependency_cycle(tmp_path: Path):

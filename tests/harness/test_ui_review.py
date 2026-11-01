@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import yaml
+import pytest
 
 from harness.codex_runner import CodexAgentRunner
 from harness.config import HarnessConfig, UIReviewConfig
@@ -446,6 +447,40 @@ def test_cursor_review_omits_approve_mcps_when_cli_lacks_flag(tmp_path: Path):
     )
     args = _cursor_review_args(tmp_path, fake)
     assert "--approve-mcps" not in args
+
+
+def test_cleanup_skips_port_listeners_present_before_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = _init_git_worktree(tmp_path)
+    manager = WorktreeManager(repo, repo / ".harness")
+    _, worktree = manager.create("T1", "HEAD")
+    protected = {999999}
+    before = {101: "pre-existing listener"}
+    after = {101: "pre-existing listener", 202: "new listener"}
+
+    def fake_collect(ports, prot):
+        if ports == [3000]:
+            return dict(after)
+        return {}
+
+    monkeypatch.setattr("harness.ui_review._protected_process_ids", lambda: protected)
+    monkeypatch.setattr("harness.ui_review._collect_processes_for_ports", fake_collect)
+    stopped: list[int] = []
+    monkeypatch.setattr(
+        "harness.ui_review._stop_discovered_pid",
+        lambda pid, prot: stopped.append(pid),
+    )
+    monkeypatch.setattr("harness.ui_review._process_is_alive", lambda _pid: True)
+    monkeypatch.setattr("harness.ui_review._collect_processes_for_worktree", lambda *_args: {})
+
+    config = UIReviewConfig(enabled=True, start_commands=["x"], url="http://localhost:1", ports=[3000])
+    cleanup_ui_review_processes(
+        config=config,
+        worktree=worktree,
+        log_dir=repo / ".harness/logs",
+        task_id="T1",
+        ports_before=before,
+    )
+    assert stopped == [202]
 
 
 def test_cleanup_ui_review_processes_direct_call(tmp_path: Path):

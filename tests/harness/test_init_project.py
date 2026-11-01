@@ -75,10 +75,9 @@ def test_init_appends_agents_and_gitignore_without_duplicates(tmp_path: Path):
 
     gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
     assert gitignore.count(".harness/") == 1
-    assert "graphify-out/" in gitignore
+    assert "graphify-out/" not in gitignore
 
     assert "AGENTS.md: updated" in out
-    assert ".gitignore: updated" in out
 
     out2 = run_init_capture(tmp_path)
     assert "AGENTS.md: skipped (exists)" in out2

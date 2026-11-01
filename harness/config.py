@@ -33,9 +33,7 @@ class WorktreeConfig:
 
 @dataclass(slots=True)
 class CodeMapConfig:
-    enabled: bool = False
     command: str = "graphify"
-    default_for_tasks: bool = False
     build_timeout_minutes: int = 5
 
 
@@ -259,6 +257,18 @@ class HarnessConfig:
     doctor: DoctorConfig
 
     @classmethod
+    def _load_code_map(cls, raw: Any) -> CodeMapConfig:
+        section = dict(raw or {})
+        section.pop("enabled", None)
+        section.pop("default_for_tasks", None)
+        allowed = {
+            key: section[key]
+            for key in ("command", "build_timeout_minutes")
+            if key in section
+        }
+        return CodeMapConfig(**allowed)
+
+    @classmethod
     def load(cls, path: Path) -> "HarnessConfig":
         raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         execution_raw = dict(raw.get("execution", {}))
@@ -269,7 +279,7 @@ class HarnessConfig:
         return cls(
             execution=ExecutionConfig(**execution_raw),
             worktree=WorktreeConfig(**raw.get("worktree", {})),
-            code_map=CodeMapConfig(**raw.get("code_map", {})),
+            code_map=cls._load_code_map(raw.get("code_map", {})),
             cursor=CursorConfig(**raw.get("cursor", {})),
             codex=CodexConfig(**raw.get("codex", {})),
             providers=ProvidersConfig(**raw.get("providers", {})),

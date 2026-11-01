@@ -447,12 +447,11 @@ def cmd_review(runtime: Runtime, task_id: str, timeout: int) -> int:
         return 2
     worktree = Path(task_runtime.worktree)
     task_env = runtime.environment.task_env(task, worktree)
-    code_map_path = runtime.scheduler.code_maps.prepare(
-        task, worktree, task_runtime.base_ref, env=task_env, allow_build=False
-    )
+    runtime.scheduler.code_maps.ensure_project_map(task_runtime.base_ref, env=task_env)
+    code_map_offered = runtime.scheduler.code_maps.offer_to_worktree(task, worktree)
     result = runtime.runner.review(
         task, worktree, task_runtime.base_ref, "Manual review requested", timeout,
-        env=task_env, code_map_path=code_map_path,
+        env=task_env, code_map_offered=code_map_offered,
     )
     print(result.output)
     return 0 if result.ok and "VERDICT: PASS" in result.output else 3

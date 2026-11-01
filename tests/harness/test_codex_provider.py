@@ -288,14 +288,14 @@ class _FakeCodex:
     def availability(self, **kwargs):
         return self.available, "ok" if self.available else "not logged in"
 
-    def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, *, model, reasoning_effort=None, env=None):
+    def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, *, model, reasoning_effort=None, env=None, **kwargs):
         self.models.append(model)
         self.efforts.append(reasoning_effort)
         if self.results:
             return self.results.pop(0)
         return AgentResult(True, "ok", model=model, provider="codex")
 
-    def review(self, task, workspace, base_ref, verification_summary, timeout_minutes, *, model, env=None):
+    def review(self, task, workspace, base_ref, verification_summary, timeout_minutes, *, model, env=None, **kwargs):
         self.review_models.append(model)
         if self.results:
             return self.results.pop(0)

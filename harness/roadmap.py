@@ -62,7 +62,6 @@ class Roadmap:
                     verification=list(merged.get("verification", [])),
                     context_refs=list(merged.get("context", [])),
                     environment=(str(merged["environment"]) if merged.get("environment") is not None else None),
-                    code_map=(bool(merged["code_map"]) if merged.get("code_map") is not None else None),
                 )
             stage_verification = {
                 int(k): list(v or [])

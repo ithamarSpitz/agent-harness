@@ -54,7 +54,9 @@ class Scheduler:
         self.verifier = verifier
         self.environment = environment or EnvironmentManager(repo_root, config, verifier.log_dir)
         self.failures = failures or FailureStore(verifier.log_dir.parent / "failures")
-        self.code_maps = CodeMapBuilder(config.code_map, verifier.log_dir.parent, verifier.log_dir)
+        self.code_maps = CodeMapBuilder(
+            config.code_map, verifier.log_dir.parent, verifier.log_dir, repo_root
+        )
 
     @staticmethod
     def _scope_prefix(pattern: str) -> str:
@@ -300,7 +302,7 @@ class Scheduler:
         base_ref: str,
         timeout: int,
         task_env: dict[str, str],
-        code_map_path: Path | None,
+        code_map_offered: bool,
     ) -> TaskOutcome | None:
         runtime.status = TaskStatus.VERIFYING
         runtime.waiting_phase = None
@@ -318,7 +320,7 @@ class Scheduler:
             self.state.save()
             review = self.runner.review(
                 task, worktree, base_ref, verification.summary, timeout,
-                env=task_env, code_map_path=code_map_path,
+                env=task_env, code_map_offered=code_map_offered,
             )
             if review.quota_exhausted:
                 return self._pause_for_quota(task, worktree, phase="review", decrement_attempt=False)
@@ -395,24 +397,15 @@ class Scheduler:
 
         assert worktree is not None
         task_env = self.environment.task_env(task, worktree)
-        # A persisted worktree that has never reached an agent call is an
-        # interrupted pre-agent run and still needs its map. Attempts can be
-        # reset to zero while retaining implementation changes, so started_at
-        # is the durable boundary that protects the shared base cache.
-        code_map_path = self.code_maps.prepare(
-            task,
-            worktree,
-            base_ref,
-            env=task_env,
-            allow_build=created or runtime.started_at is None,
-        )
+        self.code_maps.ensure_project_map(base_ref, env=task_env)
+        code_map_offered = self.code_maps.offer_to_worktree(task, worktree)
 
         # If quota/capacity was exhausted only at review time, keep the already-written
         # implementation and resume from verification/review without another
         # coding-model call.
         if runtime.status in {TaskStatus.WAITING_FOR_QUOTA, TaskStatus.WAITING_FOR_CAPACITY} and runtime.waiting_phase == "review":
             resumed = self._verify_review_commit(
-                task, runtime, worktree, base_ref, timeout, task_env, code_map_path
+                task, runtime, worktree, base_ref, timeout, task_env, code_map_offered
             )
             if resumed is not None:
                 return resumed
@@ -441,7 +434,7 @@ class Scheduler:
                 previous_failure,
                 env=task_env,
                 model_class_override=attempt_model_class,
-                code_map_path=code_map_path,
+                code_map_offered=code_map_offered,
             )
             if result.quota_exhausted:
                 return self._pause_for_quota(task, worktree, phase="implement", decrement_attempt=True)
@@ -455,7 +448,7 @@ class Scheduler:
                 continue
 
             finished = self._verify_review_commit(
-                task, runtime, worktree, base_ref, timeout, task_env, code_map_path
+                task, runtime, worktree, base_ref, timeout, task_env, code_map_offered
             )
             if finished is not None:
                 return finished
@@ -567,6 +560,7 @@ class Scheduler:
             current_commit = self.worktrees.head_commit()
             self.state.set_meta(f"{sprint.id}.integration_branch", integration_branch)
             self.state.set_meta(f"{sprint.id}.stage.{stage}.base_commit", current_commit)
+            self.code_maps.ensure_project_map(current_commit)
 
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, self.config.execution.max_parallel_agents)

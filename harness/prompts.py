@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from .config import UIReviewConfig
 from .models import TaskSpec
+from .process_utils import split_command
 
 
 def _context_block(context_paths: list[str]) -> str:
@@ -14,17 +13,19 @@ def _context_block(context_paths: list[str]) -> str:
     )
 
 
-def _code_map_block(code_map_path: Path | None, command: str) -> str:
-    if code_map_path is None:
+def _code_map_block(offered: bool, command: str) -> str:
+    if not offered:
         return ""
-    path = str(code_map_path.resolve())
-    return f"""Code map: {path}
-To locate code, use `{command} explain "<symbol or file>" --graph "{path}"` or `{command} path "<A>" "<B>" --graph "{path}"`. Their output is small.
-Do not use `{command} query` (very large output) and do not open the graph file. Use the map only when you need to find where something is defined or used."""
+    parts = split_command(command)
+    cmd = parts[0] if parts else "graphify"
+    return (
+        f"A code map of this repository is available in graphify-out/. You decide whether it helps. "
+        f"If you use it, first read graphify-out/AGENTS-graphify.md. Add `--budget 500` to `{cmd} query`."
+    )
 
 
-def _code_map_section(code_map_path: Path | None, command: str) -> str:
-    block = _code_map_block(code_map_path, command)
+def _code_map_section(offered: bool, command: str) -> str:
+    block = _code_map_block(offered, command)
     return f"\n\n{block}" if block else ""
 
 
@@ -48,7 +49,7 @@ def implement_prompt(
     task: TaskSpec,
     previous_failure: str | None = None,
     context_paths: list[str] | None = None,
-    code_map_path: Path | None = None,
+    code_map_offered: bool = False,
     code_map_command: str = "graphify",
 ) -> str:
     retry = ""
@@ -68,7 +69,7 @@ Inspect the current working tree, fix only the failure, and do not broaden scope
 First read AGENTS.md, then read the task brief at {task.file.as_posix()}.
 {_context_block(context_paths or [])}
 
-Follow the task scope exactly. Read only the declared/referenced context first; expand context only if a real dependency requires it.{_code_map_section(code_map_path, code_map_command)}
+Follow the task scope exactly. Read only the declared/referenced context first; expand context only if a real dependency requires it.{_code_map_section(code_map_offered, code_map_command)}
 
 Do not redesign the architecture. Do not work on future tasks. Do not commit changes; the harness owns commits and integration.
 
@@ -87,7 +88,7 @@ def review_prompt(
     base_ref: str,
     verification_summary: str,
     context_paths: list[str] | None = None,
-    code_map_path: Path | None = None,
+    code_map_offered: bool = False,
     code_map_command: str = "graphify",
     ui_review: UIReviewConfig | None = None,
 ) -> str:
@@ -97,7 +98,7 @@ def review_prompt(
 Read:
 - AGENTS.md
 - {task.file.as_posix()}
-{chr(10).join(f'- {path}' for path in (context_paths or []))}{_code_map_section(code_map_path, code_map_command)}
+{chr(10).join(f'- {path}' for path in (context_paths or []))}{_code_map_section(code_map_offered, code_map_command)}
 
 Review the current working tree diff against base ref `{base_ref}`.
 

@@ -493,18 +493,29 @@ def _stop_discovered_pid(pid: int, protected: set[int]) -> None:
                 pass
 
 
+def snapshot_port_listeners(ports: list[int]) -> dict[int, str]:
+    return _collect_processes_for_ports(ports, _protected_process_ids())
+
+
 def cleanup_ui_review_processes(
     *,
     config: UIReviewConfig,
     worktree: Path,
     log_dir: Path,
     task_id: str,
+    ports_before: dict[int, str] | None = None,
 ) -> None:
     if not config.enabled:
         return
     protected = _protected_process_ids()
     targets: dict[int, str] = {}
-    targets.update(_collect_processes_for_ports(config.ports, protected))
+    current_ports = _collect_processes_for_ports(config.ports, protected)
+    if ports_before is None:
+        targets.update(current_ports)
+    else:
+        for pid, command in current_ports.items():
+            if pid not in ports_before:
+                targets[pid] = command
     targets.update(_collect_processes_for_worktree(worktree, protected))
     if not targets:
         return

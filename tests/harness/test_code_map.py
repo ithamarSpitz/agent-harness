@@ -1,25 +1,31 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from harness.code_map import CodeMapBuilder
-from harness.cli import cmd_retry, cmd_review, cmd_unblock
-from harness.agent_runner import AgentResult
+from harness.code_map import (
+    CodeMapBuilder,
+    FALLBACK_RULES,
+    graphify_rules_text,
+    reset_graphify_availability_cache,
+)
 from harness.config import CodeMapConfig, HarnessConfig
 from harness.doctor import Doctor
 from harness.git_worktree import WorktreeManager
-from harness.models import TaskSpec, TaskStatus
+from harness.models import TaskSpec
 from harness.prompts import implement_prompt, review_prompt
+from harness.roadmap import Roadmap
+from harness.agent_runner import AgentResult
 from harness.runner import CursorAgentRunner
 from harness.scheduler import Scheduler
 from harness.state import StateStore
 from harness.verifier import Verifier
+from harness.process_utils import split_command
 from tests.portable import make_python_script, yaml_quote
 
 
@@ -43,136 +49,203 @@ def init_repo(root: Path) -> str:
     return run(["git", "rev-parse", "HEAD"], root)
 
 
-def fake_graphify(root: Path, *, fail: bool = False) -> tuple[Path, Path]:
+def fake_graphify(root: Path, *, fail: bool = False) -> tuple[Path, Path, Path]:
     counter = root / ".harness" / "graphify-calls.txt"
+    incremental = root / ".harness" / "graphify-incremental.txt"
     body = """import pathlib
 import sys
 
 counter = pathlib.Path(sys.argv[1])
-counter.parent.mkdir(parents=True, exist_ok=True)
-count = int(counter.read_text(encoding='utf-8')) if counter.exists() else 0
-counter.write_text(str(count + 1), encoding='utf-8')
+incremental = pathlib.Path(sys.argv[2])
 if '--help' in sys.argv:
     print('fake graphify help')
     raise SystemExit(0)
+if 'update' not in sys.argv:
+    raise SystemExit(0)
+counter.parent.mkdir(parents=True, exist_ok=True)
+count = int(counter.read_text(encoding='utf-8')) if counter.exists() else 0
+counter.write_text(str(count + 1), encoding='utf-8')
 """
     if fail:
         body += "raise SystemExit(7)\n"
     else:
-        body += """out = pathlib.Path.cwd() / 'graphify-out'
+        body += """
+out = pathlib.Path.cwd() / 'graphify-out'
+had = out.is_dir()
+incremental.parent.mkdir(parents=True, exist_ok=True)
+with incremental.open('a', encoding='utf-8') as handle:
+    handle.write('1' if had else '0')
 out.mkdir(exist_ok=True)
 (out / 'graph.json').write_text((pathlib.Path.cwd() / 'source.py').read_text(encoding='utf-8'), encoding='utf-8')
+(out / 'manifest.json').write_text('{}', encoding='utf-8')
+(out / 'cache').mkdir(exist_ok=True)
 """
-    return make_python_script(root / "fake-graphify.py", body), counter
-
-
-def command_for(script: Path, counter: Path) -> str:
-    return f'"{script}" "{counter}"'
-
-
-def task(task_id: str = "A", setting: bool | None = True) -> TaskSpec:
-    return TaskSpec(
-        id=task_id, file=Path(f"tasks/{task_id}.md"), sprint="s1", stage=1,
-        code_map=setting,
+    return (
+        make_python_script(root / "fake-graphify.py", body),
+        counter,
+        incremental,
     )
 
 
-def test_code_map_cache_is_keyed_by_base_commit_and_leaves_worktree_clean(tmp_path: Path):
-    init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path)
+def command_for(script: Path, counter: Path, incremental: Path) -> str:
+    return f'"{script}" "{counter}" "{incremental}"'
+
+
+def task(task_id: str = "A") -> TaskSpec:
+    return TaskSpec(id=task_id, file=Path(f"tasks/{task_id}.md"), sprint="s1", stage=1)
+
+
+def builder_for(root: Path, command: str) -> CodeMapBuilder:
+    return CodeMapBuilder(
+        CodeMapConfig(command=command),
+        root / ".harness",
+        root / ".harness/logs",
+        root,
+    )
+
+
+def expected_prompt_block(command: str) -> str:
+    parts = split_command(command)
+    cmd = parts[0] if parts else "graphify"
+    return (
+        "A code map of this repository is available in graphify-out/. You decide whether it helps. "
+        "If you use it, first read graphify-out/AGENTS-graphify.md. Add `--budget 500` to "
+        f"`{cmd} query`."
+    )
+
+
+def test_task_gets_prompt_and_worktree_copy_without_switches(tmp_path: Path):
+    base_sha = init_repo(tmp_path)
+    script, counter, incremental = fake_graphify(tmp_path)
     run(["git", "add", "fake-graphify.py"], tmp_path)
     run(["git", "commit", "-m", "add fake graphify"], tmp_path)
-    first_sha = run(["git", "rev-parse", "HEAD"], tmp_path)
-    config = CodeMapConfig(enabled=True, command=command_for(script, counter))
-    builder = CodeMapBuilder(config, tmp_path / ".harness", tmp_path / ".harness/logs")
+    base_sha = run(["git", "rev-parse", "HEAD"], tmp_path)
+    reset_graphify_availability_cache()
+    cmd = command_for(script, counter, incremental)
+    builder = builder_for(tmp_path, cmd)
+    branch, worktree = WorktreeManager(tmp_path, tmp_path / ".harness").create("A", base_sha)
 
-    first = builder.prepare(task("A"), tmp_path, first_sha)
-    reused = builder.prepare(task("B"), tmp_path, first_sha)
+    assert builder.ensure_project_map(base_sha)
+    assert builder.offer_to_worktree(task(), worktree)
 
-    assert first == reused
-    assert first == (tmp_path / ".harness/code-map" / first_sha / "graph.json").resolve()
-    assert first.is_file()
-    assert first.read_text(encoding="utf-8") == "VALUE = 1\n"
+    block = expected_prompt_block(cmd)
+    assert block in implement_prompt(task(), code_map_offered=True, code_map_command=cmd)
+    assert block in review_prompt(task(), base_sha, "ok", code_map_offered=True, code_map_command=cmd)
+    assert (worktree / "graphify-out/graph.json").is_file()
+    assert (worktree / "graphify-out/AGENTS-graphify.md").is_file()
+    assert (worktree / "graphify-out/manifest.json").is_file()
+    assert (worktree / "graphify-out/cache").is_dir()
     assert counter.read_text(encoding="utf-8") == "1"
-    assert not (tmp_path / "graphify-out").exists()
-    assert run(["git", "status", "--porcelain"], tmp_path) == ""
+
+
+def test_stage_update_once_and_incremental_on_new_base(tmp_path: Path):
+    base_sha = init_repo(tmp_path)
+    script, counter, incremental = fake_graphify(tmp_path)
+    cmd = command_for(script, counter, incremental)
+    builder = builder_for(tmp_path, cmd)
+
+    assert builder.ensure_project_map(base_sha)
+    assert builder.ensure_project_map(base_sha)
+    assert counter.read_text(encoding="utf-8") == "1"
+    assert incremental.read_text(encoding="utf-8") == "0"
 
     write(tmp_path / "source.py", "VALUE = 2\n")
-    run(["git", "commit", "-am", "new base"], tmp_path)
+    run(["git", "commit", "-am", "second base"], tmp_path)
     second_sha = run(["git", "rev-parse", "HEAD"], tmp_path)
-    second = builder.prepare(task("C"), tmp_path, second_sha)
 
-    assert second != first
-    assert second == (tmp_path / ".harness/code-map" / second_sha / "graph.json").resolve()
-    assert second.read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert builder.ensure_project_map(second_sha)
     assert counter.read_text(encoding="utf-8") == "2"
-    assert not (tmp_path / "graphify-out").exists()
+    assert incremental.read_text(encoding="utf-8") == "01"
 
 
-@pytest.mark.parametrize("cached", [False, True])
-def test_cache_only_prepare_preserves_project_output(tmp_path: Path, cached: bool):
+def test_two_tasks_same_stage_share_one_project_update(tmp_path: Path):
     base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path)
-    builder = CodeMapBuilder(
-        CodeMapConfig(enabled=True, command=command_for(script, counter)),
-        tmp_path / ".harness", tmp_path / ".harness/logs",
-    )
-    expected = builder.prepare(task(), tmp_path, base_sha) if cached else None
-    project_output = tmp_path / "graphify-out/project.txt"
-    write(project_output, "project-owned output")
+    script, counter, incremental = fake_graphify(tmp_path)
+    cmd = command_for(script, counter, incremental)
+    builder = builder_for(tmp_path, cmd)
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
 
-    assert builder.prepare(task(), tmp_path, base_sha, allow_build=False) == expected
-    if cached:
-        assert builder.prepare(task(), tmp_path, base_sha) == expected
-    assert project_output.read_text(encoding="utf-8") == "project-owned output"
-    assert (counter.read_text(encoding="utf-8") if counter.exists() else "0") == (
-        "1" if cached else "0"
-    )
+    assert builder.ensure_project_map(base_sha)
+    _, wt_a = worktrees.create("A", base_sha)
+    _, wt_b = worktrees.create("B", base_sha)
+    assert builder.offer_to_worktree(task("A"), wt_a)
+    assert builder.offer_to_worktree(task("B"), wt_b)
+    assert counter.read_text(encoding="utf-8") == "1"
 
 
-def test_code_map_failures_are_nonfatal_and_disabled_tasks_do_not_run(tmp_path: Path):
+def test_graphify_out_is_excluded_from_git_status_and_commit(tmp_path: Path):
     base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path, fail=True)
-    enabled = CodeMapBuilder(
-        CodeMapConfig(enabled=True, command=command_for(script, counter)),
-        tmp_path / ".harness", tmp_path / ".harness/logs",
-    )
+    script, counter, incremental = fake_graphify(tmp_path)
+    cmd = command_for(script, counter, incremental)
+    builder = builder_for(tmp_path, cmd)
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    assert builder.ensure_project_map(base_sha)
+    _, worktree = worktrees.create("A", base_sha)
+    assert builder.offer_to_worktree(task(), worktree)
+    write(worktree / "tracked.txt", "ok\n")
+    run(["git", "add", "tracked.txt"], worktree)
 
-    assert enabled.prepare(task(), tmp_path, base_sha) is None
-    assert "WARNING: code map build failed" in (
-        tmp_path / ".harness/logs/A-code-map.log"
-    ).read_text(encoding="utf-8")
-    assert not (tmp_path / "graphify-out").exists()
-    assert enabled.prepare(task("B", False), tmp_path, base_sha) is None
-    assert counter.read_text(encoding="utf-8") == "1"
-
-    disabled = CodeMapBuilder(
-        CodeMapConfig(enabled=False, command=command_for(script, counter)),
-        tmp_path / ".harness", tmp_path / ".harness/logs",
-    )
-    assert disabled.prepare(task("C"), tmp_path, base_sha) is None
-    assert counter.read_text(encoding="utf-8") == "1"
-
-    defaulted = CodeMapBuilder(
-        CodeMapConfig(
-            enabled=True, command=command_for(script, counter), default_for_tasks=False
-        ),
-        tmp_path / ".harness", tmp_path / ".harness/logs",
-    )
-    assert defaulted.prepare(task("C2", None), tmp_path, base_sha) is None
-    assert counter.read_text(encoding="utf-8") == "1"
-
-    missing = CodeMapBuilder(
-        CodeMapConfig(enabled=True, command="definitely-missing-graphify-command"),
-        tmp_path / ".harness", tmp_path / ".harness/logs",
-    )
-    assert missing.prepare(task("D"), tmp_path, base_sha) is None
-    assert "pip install graphifyy" in (
-        tmp_path / ".harness/logs/D-code-map.log"
-    ).read_text(encoding="utf-8")
+    assert "graphify-out" not in run(["git", "status", "--porcelain"], worktree)
+    worktrees.commit_all(worktree, "A")
+    assert "graphify-out" not in run(["git", "ls-tree", "-r", "--name-only", "HEAD"], worktree)
 
 
-def test_code_map_timeout_stops_process_tree_before_cleanup(tmp_path: Path):
+def test_missing_or_failing_graphify_is_nonfatal(tmp_path: Path):
+    base_sha = init_repo(tmp_path)
+    reset_graphify_availability_cache()
+    missing = builder_for(tmp_path, "definitely-missing-graphify-command")
+    _, worktree = WorktreeManager(tmp_path, tmp_path / ".harness").create("A", base_sha)
+    assert not missing.ensure_project_map(base_sha)
+    assert not missing.offer_to_worktree(task(), worktree)
+    assert "graphify-out" not in implement_prompt(task(), code_map_offered=False)
+
+    script, counter, incremental = fake_graphify(tmp_path, fail=True)
+    reset_graphify_availability_cache()
+    failing = builder_for(tmp_path, command_for(script, counter, incremental))
+    assert not failing.ensure_project_map(base_sha)
+    assert "WARNING:" in (tmp_path / ".harness/logs/code-map.log").read_text(encoding="utf-8")
+
+
+def test_doctor_warns_when_graphify_missing(tmp_path: Path):
+    init_repo(tmp_path)
+    reset_graphify_availability_cache()
+    write(tmp_path / "harness.yaml", "code_map:\n  command: definitely-missing-graphify-command\n")
+    config = HarnessConfig.load(tmp_path / "harness.yaml")
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    check = {item.name: item for item in Doctor(tmp_path, config, worktrees).run()}["code-map/graphify"]
+    assert not check.ok
+    assert not check.required
+    assert "pip install graphifyy" in check.detail
+
+
+def test_legacy_config_and_frontmatter_keys_load(tmp_path: Path):
+    write(tmp_path / "harness.yaml", """
+code_map:
+  enabled: true
+  default_for_tasks: false
+  command: graphify
+""")
+    config = HarnessConfig.load(tmp_path / "harness.yaml")
+    assert config.code_map.command == "graphify"
+
+    write(tmp_path / "tasks/a.md", "---\ncode_map: true\nallowed_paths: [x]\n---\n# A\n")
+    write(tmp_path / "tasks/roadmap.yaml", """
+project: x
+sprints:
+  s1:
+    tasks:
+      A: {file: tasks/a.md, stage: 1, depends_on: []}
+""")
+    loaded = Roadmap(tmp_path, tmp_path / "tasks/roadmap.yaml").task("A")
+    assert loaded.allowed_paths == ["x"]
+
+
+def test_rules_fallback_when_graphify_package_missing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+    assert graphify_rules_text() == FALLBACK_RULES
+
+
+def test_code_map_timeout_stops_process_tree(tmp_path: Path):
     base_sha = init_repo(tmp_path)
     child_pid = tmp_path / ".harness/graphify-child.pid"
     child_code = (
@@ -190,40 +263,17 @@ def test_code_map_timeout_stops_process_tree_before_cleanup(tmp_path: Path):
         f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "time.sleep(120)\n",
     )
+    reset_graphify_availability_cache()
     builder = CodeMapBuilder(
-        CodeMapConfig(
-            enabled=True,
-            command=str(script),
-            build_timeout_minutes=0.01,  # type: ignore[arg-type]
-        ),
+        CodeMapConfig(command=str(script), build_timeout_minutes=0.01),  # type: ignore[arg-type]
         tmp_path / ".harness",
         tmp_path / ".harness/logs",
+        tmp_path,
     )
-
-    assert builder.prepare(task(), tmp_path, base_sha) is None
-    assert "timed out" in (tmp_path / ".harness/logs/A-code-map.log").read_text(
-        encoding="utf-8"
-    )
+    assert not builder.ensure_project_map(base_sha)
     spawned_pid = int(child_pid.read_text(encoding="utf-8"))
     time.sleep(2)
     assert not _pid_alive(spawned_pid)
-    assert not (tmp_path / "graphify-out").exists()
-
-
-def test_prompts_add_exact_code_map_guidance_only_when_available(tmp_path: Path):
-    graph = (tmp_path / ".harness/code-map/abc/graph.json").resolve()
-    expected = f"""Code map: {graph}
-To locate code, use `custom-graphify explain "<symbol or file>" --graph "{graph}"` or `custom-graphify path "<A>" "<B>" --graph "{graph}"`. Their output is small.
-Do not use `custom-graphify query` (very large output) and do not open the graph file. Use the map only when you need to find where something is defined or used."""
-
-    implement = implement_prompt(task(), code_map_path=graph, code_map_command="custom-graphify")
-    review = review_prompt(
-        task(), "abc", "ok", code_map_path=graph, code_map_command="custom-graphify"
-    )
-    assert expected in implement
-    assert expected in review
-    assert "Code map:" not in implement_prompt(task())
-    assert "Code map:" not in review_prompt(task(), "abc", "ok")
 
 
 class PromptRecordingRunner(CursorAgentRunner):
@@ -240,269 +290,36 @@ class PromptRecordingRunner(CursorAgentRunner):
         return AgentResult(True, "VERDICT: PASS\n")
 
 
-def scheduler_for(root: Path, config: HarnessConfig) -> tuple[Scheduler, StateStore, PromptRecordingRunner]:
-    state = StateStore(root / ".harness/state.json")
-    worktrees = WorktreeManager(root, root / ".harness")
-    verifier = Verifier(config, root / ".harness/logs", worktrees)
-    runner = PromptRecordingRunner(config, root / ".harness/logs")
-    return Scheduler(root, config, state, worktrees, runner, verifier), state, runner
-
-
-def mapped_task() -> TaskSpec:
-    return TaskSpec(
-        id="A", file=Path("task.md"), sprint="s1", stage=1,
-        review=True, allowed_paths=["out.txt"], code_map=True,
-    )
-
-
-def expected_map_block(path: Path, command: str) -> str:
-    return f'''Code map: {path}
-To locate code, use `{command} explain "<symbol or file>" --graph "{path}"` or `{command} path "<A>" "<B>" --graph "{path}"`. Their output is small.
-Do not use `{command} query` (very large output) and do not open the graph file. Use the map only when you need to find where something is defined or used.'''
-
-
-def test_scheduler_supplies_same_cached_map_to_implement_and_review(tmp_path: Path):
+def test_scheduler_offers_map_in_implement_and_review(tmp_path: Path):
     base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path)
+    script, counter, incremental = fake_graphify(tmp_path)
+    cmd = command_for(script, counter, incremental)
     write(tmp_path / "harness.yaml", f"""
 execution: {{default_max_attempts: 1, default_timeout_minutes: 1}}
+cursor: {{enabled: true}}
 code_map:
-  enabled: true
-  command: {yaml_quote(command_for(script, counter))}
+  command: {yaml_quote(cmd)}
 verification: {{global_task_commands: [], stage_commands: []}}
 """)
+    reset_graphify_availability_cache()
     config = HarnessConfig.load(tmp_path / "harness.yaml")
-    scheduler, state, runner = scheduler_for(tmp_path, config)
-
-    outcome = scheduler._run_task(mapped_task(), base_sha)
-
-    expected = (tmp_path / ".harness/code-map" / base_sha / "graph.json").resolve()
+    state = StateStore(tmp_path / ".harness/state.json")
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    verifier = Verifier(config, tmp_path / ".harness/logs", worktrees)
+    runner = PromptRecordingRunner(config, tmp_path / ".harness/logs")
+    scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier)
+    task_spec = TaskSpec(
+        id="A", file=Path("task.md"), sprint="s1", stage=1,
+        review=True, allowed_paths=["out.txt"],
+    )
+    scheduler.code_maps.ensure_project_map(base_sha)
+    outcome = scheduler._run_task(task_spec, base_sha)
     assert outcome.ok
-    block = expected_map_block(expected, config.code_map.command)
+    block = expected_prompt_block(cmd)
     assert block in runner.prompts["implement"]
     assert block in runner.prompts["review"]
-    assert counter.read_text(encoding="utf-8") == "1"
     worktree = Path(state.get("A").worktree or "")
-    assert not (worktree / "graphify-out").exists()
-
-
-def test_scheduler_resume_before_first_attempt_builds_map(tmp_path: Path):
-    base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path)
-    write(tmp_path / "harness.yaml", f"""
-execution: {{default_max_attempts: 1, default_timeout_minutes: 1}}
-code_map:
-  enabled: true
-  command: {yaml_quote(command_for(script, counter))}
-verification: {{global_task_commands: [], stage_commands: []}}
-""")
-    config = HarnessConfig.load(tmp_path / "harness.yaml")
-    scheduler, state, runner = scheduler_for(tmp_path, config)
-    branch, worktree = scheduler.worktrees.create("A", base_sha)
-    runtime = state.get("A")
-    runtime.branch = branch
-    runtime.worktree = str(worktree)
-    runtime.base_ref = base_sha
-    state.save()
-
-    outcome = scheduler._run_task(mapped_task(), base_sha)
-
-    expected = (tmp_path / ".harness/code-map" / base_sha / "graph.json").resolve()
-    assert outcome.ok
-    assert expected_map_block(expected, config.code_map.command) in runner.prompts["implement"]
-    assert counter.read_text(encoding="utf-8") == "1"
-
-
-@pytest.mark.parametrize("recovery", ["quota", "capacity", "retry", "unblock"])
-def test_scheduler_never_builds_map_after_implementation_started(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovery: str
-):
-    base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path, fail=True)
-    write(tmp_path / "harness.yaml", f"""
-execution: {{default_max_attempts: 1, default_timeout_minutes: 1}}
-code_map:
-  enabled: true
-  command: {yaml_quote(command_for(script, counter))}
-verification: {{global_task_commands: [], stage_commands: []}}
-""")
-    config = HarnessConfig.load(tmp_path / "harness.yaml")
-    scheduler, state, runner = scheduler_for(tmp_path, config)
-
-    def change_then_stop(**kwargs):
-        write(kwargs["workspace"] / "source.py", "VALUE = 999\n")
-        if recovery == "quota":
-            return AgentResult(False, "quota exhausted", quota_exhausted=True)
-        if recovery == "capacity":
-            return AgentResult(False, "capacity exhausted", capacity_exhausted=True)
-        return AgentResult(False, "implementation failed")
-
-    monkeypatch.setattr(runner, "_invoke", change_then_stop)
-    assert not scheduler._run_task(mapped_task(), base_sha).ok
-    runtime = state.get("A")
-    assert runtime.started_at is not None
-    if recovery == "retry":
-        assert cmd_retry(state, "A") == 0
-    elif recovery == "unblock":
-        assert runtime.status == TaskStatus.BLOCKED
-        assert cmd_unblock(state, "A") == 0
-    assert state.get("A").attempt == 0
-
-    # Make the previously failing builder available. A resume must not build
-    # from the retained worktree now that it contains implementation changes.
-    fake_graphify(tmp_path)
-    scheduler, _, runner = scheduler_for(tmp_path, config)
-
-    def pause_again(**kwargs):
-        return AgentResult(False, "capacity exhausted", capacity_exhausted=True)
-
-    monkeypatch.setattr(runner, "_invoke", pause_again)
-    assert not scheduler._run_task(mapped_task(), base_sha).ok
-    graph = tmp_path / ".harness/code-map" / base_sha / "graph.json"
-    assert counter.read_text(encoding="utf-8") == "1"
-    assert not graph.exists()
-
-
-@pytest.mark.parametrize("failure_kind", ["failing", "missing", "malformed", "git_timeout"])
-def test_scheduler_continues_without_map_prompt_when_build_is_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
-):
-    base_sha = init_repo(tmp_path)
-    if failure_kind == "failing":
-        script, _ = fake_graphify(tmp_path, fail=True)
-        command = command_for(script, tmp_path / ".harness/graphify-calls.txt")
-    elif failure_kind == "missing":
-        command = "definitely-missing-graphify-command"
-    elif failure_kind == "git_timeout":
-        script, counter = fake_graphify(tmp_path)
-        command = command_for(script, counter)
-        original_run = subprocess.run
-
-        def timeout_base_lookup(args, **kwargs):
-            if args == ["git", "rev-parse", f"{base_sha}^{{commit}}"]:
-                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-            return original_run(args, **kwargs)
-
-        monkeypatch.setattr("harness.code_map.subprocess.run", timeout_base_lookup)
-    else:
-        command = '"unterminated'
-    write(tmp_path / "harness.yaml", f"""
-execution: {{default_max_attempts: 1, default_timeout_minutes: 1}}
-code_map:
-  enabled: true
-  command: {yaml_quote(command)}
-verification: {{global_task_commands: [], stage_commands: []}}
-""")
-    config = HarnessConfig.load(tmp_path / "harness.yaml")
-    scheduler, _, runner = scheduler_for(tmp_path, config)
-
-    outcome = scheduler._run_task(mapped_task(), base_sha)
-
-    assert outcome.ok
-    assert "Code map:" not in runner.prompts["implement"]
-    assert "Code map:" not in runner.prompts["review"]
-    warning = (tmp_path / ".harness/logs/A-code-map.log").read_text(encoding="utf-8")
-    assert warning.startswith("WARNING: code map ")
-    if failure_kind == "git_timeout":
-        assert len(warning.splitlines()) == 1
-        assert "timed out" in warning
-        assert not counter.exists()
-
-
-@pytest.mark.parametrize("entrypoint", ["resume", "manual_review"])
-@pytest.mark.parametrize("cache_state", ["failed_build", "deleted", "present"])
-def test_review_after_pause_never_builds_from_implementation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str, cache_state: str
-):
-    base_sha = init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path, fail=cache_state == "failed_build")
-    write(tmp_path / "harness.yaml", f"""
-execution: {{default_max_attempts: 1, default_timeout_minutes: 1}}
-code_map:
-  enabled: true
-  command: {yaml_quote(command_for(script, counter))}
-verification: {{global_task_commands: [], stage_commands: []}}
-""")
-    config = HarnessConfig.load(tmp_path / "harness.yaml")
-    scheduler, state, runner = scheduler_for(tmp_path, config)
-    original_invoke = runner._invoke
-
-    def pause_review(**kwargs):
-        if kwargs["phase"] == "review":
-            return AgentResult(False, "capacity exhausted", capacity_exhausted=True)
-        return original_invoke(**kwargs)
-
-    monkeypatch.setattr(runner, "_invoke", pause_review)
-    scheduler._run_task(mapped_task(), base_sha)
-    assert state.get("A").status == TaskStatus.WAITING_FOR_CAPACITY
-    worktree = Path(state.get("A").worktree or "")
-    assert (worktree / "out.txt").is_file()
-    graph = tmp_path / ".harness/code-map" / base_sha / "graph.json"
-    if cache_state == "deleted":
-        graph.unlink()
-    # The command now succeeds and would capture implementation changes if called.
-    fake_graphify(tmp_path)
-    write(worktree / "source.py", "VALUE = 999\n")
-    write(worktree / "graphify-out/project.txt", "keep me")
-    resumed_task = mapped_task()
-    resumed_task.allowed_paths += ["source.py", "graphify-out/**"]
-    monkeypatch.setattr(runner, "_invoke", original_invoke)
-    runner.prompts.clear()
-
-    if entrypoint == "resume":
-        # Reload persisted state as a new harness process would.
-        scheduler, _, runner = scheduler_for(tmp_path, config)
-        assert scheduler._run_task(resumed_task, base_sha).ok
-    else:
-        runtime = SimpleNamespace(
-            roadmap=SimpleNamespace(task=lambda task_id: resumed_task),
-            state=state, environment=scheduler.environment,
-            scheduler=scheduler, runner=runner,
-        )
-        assert cmd_review(runtime, "A", 1) == 0
-
-    assert "implement" not in runner.prompts
-    assert counter.read_text(encoding="utf-8") == "1"
-    assert (worktree / "graphify-out/project.txt").read_text(encoding="utf-8") == "keep me"
-    if cache_state == "present":
-        assert graph.read_text(encoding="utf-8") == "VALUE = 1\n"
-        assert "Code map:" in runner.prompts["review"]
-    else:
-        assert not graph.exists()
-        assert "Code map:" not in runner.prompts["review"]
-
-
-def doctor_config(root: Path, *, enabled: bool, command: str = "graphify") -> HarnessConfig:
-    write(root / "harness.yaml", f"""
-cursor: {{enabled: false}}
-codex: {{enabled: false}}
-code_map:
-  enabled: {str(enabled).lower()}
-  command: {yaml_quote(command)}
-""")
-    return HarnessConfig.load(root / "harness.yaml")
-
-
-def test_doctor_checks_graphify_only_when_enabled(tmp_path: Path):
-    init_repo(tmp_path)
-    script, counter = fake_graphify(tmp_path)
-    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
-
-    working = doctor_config(tmp_path, enabled=True, command=command_for(script, counter))
-    checks = Doctor(tmp_path, working, worktrees).run()
-    assert {check.name: check for check in checks}["code-map/graphify"].ok
-
-    missing = doctor_config(tmp_path, enabled=True, command="definitely-missing-graphify-command")
-    missing_check = {check.name: check for check in Doctor(tmp_path, missing, worktrees).run()}[
-        "code-map/graphify"
-    ]
-    assert not missing_check.ok
-    assert "pip install graphifyy" in missing_check.detail
-
-    disabled = doctor_config(tmp_path, enabled=False)
-    assert "code-map/graphify" not in {
-        check.name for check in Doctor(tmp_path, disabled, worktrees).run()
-    }
+    assert (worktree / "graphify-out/graph.json").is_file()
 
 
 def _pid_alive(pid: int) -> bool:
