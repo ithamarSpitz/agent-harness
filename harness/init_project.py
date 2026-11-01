@@ -36,8 +36,6 @@ allowed_paths:
 context: []
 # Set to docker only when environment.docker_enabled is true in harness.yaml.
 environment: null
-# Optional Graphify map for this task (requires code_map.enabled in harness.yaml).
-# code_map: false
 verification:
   - python -c "pass"
 ---
@@ -109,11 +107,9 @@ worktree:
   setup_commands: []
   setup_timeout_minutes: 10
 
-# Optional Graphify code map (pip install graphifyy); off by default.
+# Graphify code map settings (optional `pip install graphifyy`).
 code_map:
-  enabled: false
   command: graphify
-  default_for_tasks: false
   build_timeout_minutes: 5
 
 # Cursor CLI routing; disable when using Codex only.
@@ -226,7 +222,7 @@ doctor:
   minimum_versions: {}
 """
 
-GITIGNORE_LINES = (".harness/", "graphify-out/")
+GITIGNORE_LINES = (".harness/",)
 
 NEXT_STEPS = (
     "Next steps: edit harness.yaml verification commands, write briefs, "

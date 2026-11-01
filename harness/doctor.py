@@ -10,7 +10,14 @@ from pathlib import Path
 
 from .config import HarnessConfig
 from .git_worktree import WorktreeManager
-from .process_utils import locate_codex_executable, locate_executable, prepare_external_argv, resolve_codex_argv, split_command
+from .process_utils import (
+    locate_codex_executable,
+    locate_executable,
+    prepare_external_argv,
+    resolve_codex_argv,
+    split_command,
+)
+from .code_map import graphify_command_available
 from .ui_review import cursor_mcp_config_mentions_playwright, port_in_use
 
 
@@ -64,7 +71,7 @@ class Doctor:
         git_ok, git_detail = self._command_version("git")
         checks.append(DoctorCheck("git", git_ok, git_detail))
 
-        if self.config.code_map.enabled:
+        if graphify_command_available(self.config.code_map):
             parts = split_command(self.config.code_map.command)
             try:
                 proc = subprocess.run(
@@ -78,12 +85,20 @@ class Doctor:
                 checks.append(DoctorCheck(
                     "code-map/graphify",
                     proc.returncode == 0,
-                    detail[:300] if proc.returncode == 0 else f"{detail[:240] or 'command failed'}; pip install graphifyy",
+                    detail[:300] or "ok",
+                    required=False,
                 ))
             except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                 checks.append(DoctorCheck(
-                    "code-map/graphify", False, f"{exc}; pip install graphifyy"
+                    "code-map/graphify", False, f"{exc}; pip install graphifyy", required=False
                 ))
+        else:
+            checks.append(DoctorCheck(
+                "code-map/graphify",
+                False,
+                "Graphify command not available; pip install graphifyy",
+                required=False,
+            ))
 
         if self.config.ui_review.enabled:
             npx_path = locate_executable("npx")

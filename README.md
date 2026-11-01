@@ -201,23 +201,18 @@ The starter leaves the list empty until the real application's package setup is 
 
 ## Code map (Graphify)
 
-Tasks can optionally receive a small, code-only Graphify map for locating definitions and connections without broad repository searches. Install it with `pip install graphifyy`, then enable it globally and opt tasks in:
+Every agent is offered a code-only Graphify map in its task worktree when Graphify is installed (`pip install graphifyy`). The agent decides whether to use it; there is no per-task or global enable switch. The harness keeps one project map current once per stage (under `.harness/code-map/`) and copies it into each task worktree as `graphify-out/`, including Graphify's own `AGENTS-graphify.md` usage guide. Agents may run `graphify update .` in the worktree to refresh their private copy only.
+
+Configure only the command name and build timeout:
 
 ```yaml
 # harness.yaml
 code_map:
-  enabled: true
   command: graphify
-  default_for_tasks: false
   build_timeout_minutes: 5
 ```
 
-```yaml
-# task frontmatter
-code_map: true
-```
-
-The harness caches the graph under `.harness/code-map/` and rebuilds it only when the task worktree's base commit changes. Agents may use `graphify explain "<symbol or file>" --graph "<path>"` and `graphify path "<A>" "<B>" --graph "<path>"`. They must not use `graphify query` or open the graph file directly.
+If Graphify is missing or the map build fails, tasks continue without a map and without prompt lines; `harness doctor` reports a non-fatal warning with the hint `pip install graphifyy`.
 
 ## Reviewer UI check (Playwright)
 

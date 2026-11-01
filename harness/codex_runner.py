@@ -276,29 +276,29 @@ class CodexAgentRunner:
 
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, model: str, reasoning_effort: str | None = None,
-                  env: dict[str, str] | None = None, code_map_path: Path | None = None) -> AgentResult:
+                  env: dict[str, str] | None = None, code_map_offered: bool = False) -> AgentResult:
         return self._invoke(
             task_id=task.id, phase="implement",
             prompt=implement_prompt(
-                task, previous_failure, self._context_paths(task), code_map_path, self.config.code_map.command
+                task, previous_failure, self._context_paths(task), code_map_offered, self.config.code_map.command
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-attempt-{attempt}-codex.log",
             attempt=attempt, env=env, read_only=False, reasoning_effort=reasoning_effort,
-            code_map=code_map_path is not None,
+            code_map=code_map_offered,
         )
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, model: str, env: dict[str, str] | None = None,
-               code_map_path: Path | None = None) -> AgentResult:
+               code_map_offered: bool = False) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id, phase="review",
             prompt=review_prompt(
                 task, base_ref, verification_summary, self._context_paths(task),
-                code_map_path, self.config.code_map.command, ui_review=ui,
+                code_map_offered, self.config.code_map.command, ui_review=ui,
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-review-codex.log",
-            env=env, read_only=not self.config.ui_review.enabled, code_map=code_map_path is not None,
+            env=env, read_only=not self.config.ui_review.enabled, code_map=code_map_offered,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,

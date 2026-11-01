@@ -361,13 +361,13 @@ class CursorAgentRunner:
         *,
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
-        code_map_path: Path | None = None,
+        code_map_offered: bool = False,
     ) -> AgentResult:
         return self._invoke(
             task_id=task.id,
             phase="implement",
             prompt=implement_prompt(
-                task, previous_failure, self._context_paths(task), code_map_path, self.config.code_map.command
+                task, previous_failure, self._context_paths(task), code_map_offered, self.config.code_map.command
             ),
             workspace=workspace,
             model_class=task.model_class,
@@ -376,7 +376,7 @@ class CursorAgentRunner:
             attempt=attempt,
             env=env,
             model_class_override=model_class_override,
-            code_map=code_map_path is not None,
+            code_map=code_map_offered,
         )
 
     def review(
@@ -388,7 +388,7 @@ class CursorAgentRunner:
         timeout_minutes: int,
         *,
         env: dict[str, str] | None = None,
-        code_map_path: Path | None = None,
+        code_map_offered: bool = False,
     ) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
@@ -396,7 +396,7 @@ class CursorAgentRunner:
             phase="review",
             prompt=review_prompt(
                 task, base_ref, verification_summary, self._context_paths(task),
-                code_map_path, self.config.code_map.command, ui_review=ui,
+                code_map_offered, self.config.code_map.command, ui_review=ui,
             ),
             workspace=workspace,
             model_class=task.review_model_class or "reviewer",
@@ -404,7 +404,7 @@ class CursorAgentRunner:
             log_name=f"{task.id}-review.log",
             mode="ask",
             env=env,
-            code_map=code_map_path is not None,
+            code_map=code_map_offered,
         )
     def plan_change(
         self,

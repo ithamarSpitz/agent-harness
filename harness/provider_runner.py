@@ -12,6 +12,7 @@ from .ui_review import (
     capture_worktree_snapshot,
     cleanup_ui_review_processes,
     fail_review_for_worktree_edits,
+    snapshot_port_listeners,
     worktree_changed_paths,
 )
 from .usage import UsageRecorder
@@ -106,7 +107,7 @@ class ProviderAgentRunner:
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, env: dict[str, str] | None = None,
                   model_class_override: str | None = None,
-                  code_map_path: Path | None = None) -> AgentResult:
+                  code_map_offered: bool = False) -> AgentResult:
         if self.active_provider(task, model_class_override=model_class_override) == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -114,17 +115,11 @@ class ProviderAgentRunner:
                     index = self._provider_attempt(task, "codex")
                     if index < len(self.config.codex.implementation_sequence):
                         model, reasoning_effort = self.config.codex.implementation_profile(index)
-                        if code_map_path is None:
-                            result = self.codex.implement(
-                                task, workspace, timeout_minutes, attempt, previous_failure,
-                                model=model, reasoning_effort=reasoning_effort, env=env,
-                            )
-                        else:
-                            result = self.codex.implement(
-                                task, workspace, timeout_minutes, attempt, previous_failure,
-                                model=model, reasoning_effort=reasoning_effort, env=env,
-                                code_map_path=code_map_path,
-                            )
+                        result = self.codex.implement(
+                            task, workspace, timeout_minutes, attempt, previous_failure,
+                            model=model, reasoning_effort=reasoning_effort, env=env,
+                            code_map_offered=code_map_offered,
+                        )
                         if self._provider_unavailable(result):
                             if not self.config.cursor.enabled:
                                 return result
@@ -160,29 +155,24 @@ class ProviderAgentRunner:
             )
 
         model_class = self._cursor_model_class(task, model_class_override=model_class_override)
-        if code_map_path is None:
-            result = self.cursor.implement(
-                task, workspace, timeout_minutes, attempt, previous_failure,
-                env=env, model_class_override=model_class,
-            )
-        else:
-            result = self.cursor.implement(
-                task, workspace, timeout_minutes, attempt, previous_failure,
-                env=env, model_class_override=model_class, code_map_path=code_map_path,
-            )
+        result = self.cursor.implement(
+            task, workspace, timeout_minutes, attempt, previous_failure,
+            env=env, model_class_override=model_class, code_map_offered=code_map_offered,
+        )
         if not result.quota_exhausted and not result.capacity_exhausted:
             self._consume_provider_attempt(task, "cursor")
         return result
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, env: dict[str, str] | None = None,
-               code_map_path: Path | None = None) -> AgentResult:
+               code_map_offered: bool = False) -> AgentResult:
         ui_enabled = self.config.ui_review.enabled
         snapshot = capture_worktree_snapshot(workspace) if ui_enabled else None
+        ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
         try:
             result = self._review_inner(
                 task, workspace, base_ref, verification_summary, timeout_minutes,
-                env=env, code_map_path=code_map_path,
+                env=env, code_map_offered=code_map_offered,
             )
             if ui_enabled and snapshot is not None:
                 after = capture_worktree_snapshot(workspace)
@@ -197,26 +187,21 @@ class ProviderAgentRunner:
                     worktree=workspace,
                     log_dir=self.codex.log_dir,
                     task_id=task.id,
+                    ports_before=ports_before,
                 )
 
     def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                       timeout_minutes: int, *, env: dict[str, str] | None = None,
-                      code_map_path: Path | None = None) -> AgentResult:
+                      code_map_offered: bool = False) -> AgentResult:
         if self._preferred_provider(task) == "codex":
             try:
                 available, _ = self.codex.availability()
                 if available:
-                    if code_map_path is None:
-                        result = self.codex.review(
-                            task, workspace, base_ref, verification_summary, timeout_minutes,
-                            model=self.config.codex.review_model, env=env,
-                        )
-                    else:
-                        result = self.codex.review(
-                            task, workspace, base_ref, verification_summary, timeout_minutes,
-                            model=self.config.codex.review_model, env=env,
-                            code_map_path=code_map_path,
-                        )
+                    result = self.codex.review(
+                        task, workspace, base_ref, verification_summary, timeout_minutes,
+                        model=self.config.codex.review_model, env=env,
+                        code_map_offered=code_map_offered,
+                    )
                     if self._provider_unavailable(result):
                         if not self.config.cursor.enabled:
                             return result
@@ -246,13 +231,9 @@ class ProviderAgentRunner:
                 provider="codex",
                 auth_failure=True,
             )
-        if code_map_path is None:
-            return self.cursor.review(
-                task, workspace, base_ref, verification_summary, timeout_minutes, env=env
-            )
         return self.cursor.review(
             task, workspace, base_ref, verification_summary, timeout_minutes,
-            env=env, code_map_path=code_map_path,
+            env=env, code_map_offered=code_map_offered,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
