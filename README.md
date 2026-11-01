@@ -152,9 +152,39 @@ harness retry TASK_ID
 harness verify TASK_ID
 harness review TASK_ID
 harness doctor --full
+harness release SPRINT
 ```
 
 `tasks/roadmap.yaml` currently contains the harmless demo DAG plus executable `S0-foundation` through `S5-acceptance-submission`.
+
+## Release after a sprint
+
+When a sprint finishes successfully, the harness can run project-specific shell commands from the repository root as the final integration step. Configure them under `release` in `harness.yaml`:
+
+```yaml
+release:
+  commands: []
+  timeout_minutes: 15
+```
+
+An empty `commands` list disables the step. A missing `release` section behaves the same way. Failed stages, blocked tasks, quota stops, and `harness run --dry-run` never run release commands. A failed release does not roll back merged work; `harness status <sprint>` shows the failure and you can retry with `harness release <sprint>`.
+
+Example for a project that deploys on push:
+
+```yaml
+release:
+  commands:
+    - git push origin HEAD
+```
+
+Example for this harness repository after a successful harness sprint:
+
+```yaml
+release:
+  commands:
+    - git push origin HEAD
+    - python -m pip install --user --no-deps --force-reinstall .
+```
 
 ## Execution semantics
 

@@ -227,6 +227,12 @@ class UIReviewConfig:
 
 
 @dataclass(slots=True)
+class ReleaseConfig:
+    commands: list[str] = field(default_factory=list)
+    timeout_minutes: int = 15
+
+
+@dataclass(slots=True)
 class DoctorConfig:
     # Project-specific commands/env are deliberately empty in the generic
     # starter. The NYC repo can later declare node/docker and required env vars.
@@ -254,6 +260,7 @@ class HarnessConfig:
     capacity: CapacityConfig
     plan_repair: PlanRepairConfig
     ui_review: UIReviewConfig
+    release: ReleaseConfig
     doctor: DoctorConfig
 
     @classmethod
@@ -292,5 +299,6 @@ class HarnessConfig:
             capacity=CapacityConfig(**raw.get("capacity", {})),
             plan_repair=PlanRepairConfig(**raw.get("plan_repair", {})),
             ui_review=UIReviewConfig(**raw.get("ui_review", {})),
+            release=ReleaseConfig(**raw.get("release", {})),
             doctor=DoctorConfig(**raw.get("doctor", {})),
         )
