@@ -1,8 +1,35 @@
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolate_graphify_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep default-config tests from invoking a developer's real Graphify."""
+    bin_dir = tmp_path_factory.mktemp("test-bin")
+    if os.name == "nt":
+        shim = bin_dir / "graphify.cmd"
+        shim.write_text("@exit /b 1\n", encoding="utf-8")
+    else:
+        shim = bin_dir / "graphify"
+        shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        shim.chmod(0o755)
+
+    original_path = os.environ.get("PATH")
+    os.environ["PATH"] = os.pathsep.join((str(bin_dir), original_path or ""))
+    try:
+        yield
+    finally:
+        if original_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original_path
