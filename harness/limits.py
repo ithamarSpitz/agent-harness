@@ -5,14 +5,20 @@ import math
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from . import __version__
+from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 
 CURSOR_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
@@ -112,6 +118,21 @@ def _line_timestamp(obj: dict[str, Any], fallback: float | None) -> float | None
     return fallback
 
 
+def format_short_month_day(when: datetime) -> str:
+    local = when.astimezone()
+    return local.strftime("%b %d")
+
+
+def _format_duration_until(*, seconds: int) -> str:
+    if seconds >= 86400:
+        days = seconds // 86400
+        hours = (seconds % 86400) // 3600
+        return f"in {days}d {hours}h"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    return f"in {hours}h {minutes}m"
+
+
 def _format_window_line(
     label: str,
     used_percent: float,
@@ -123,10 +144,9 @@ def _format_window_line(
     reset_label = format_local_day_time(reset_dt)
     if resets_at <= int(now.timestamp()):
         return f"  {label:<8} 0% (reset at {reset_label})"
-    hours = int((reset_dt - now).total_seconds()) // 3600
-    minutes = (int((reset_dt - now).total_seconds()) % 3600) // 60
+    remaining = int((reset_dt - now).total_seconds())
     pct = int(round(used_percent))
-    return f"  {label:<8} {pct}% used, resets {reset_label} (in {hours}h {minutes}m)"
+    return f"  {label:<8} {pct}% used, resets {reset_label} ({_format_duration_until(seconds=remaining)})"
 
 
 def find_newest_rollout_file(codex_home: Path) -> Path | None:
@@ -169,60 +189,317 @@ def read_last_codex_rate_limits(path: Path) -> tuple[dict[str, Any], float | Non
     return last_payload, last_as_of
 
 
-def load_codex(paths: LimitsPaths, *, now: datetime | None = None) -> tuple[list[str], dict[str, Any]]:
-    now = now or datetime.now().astimezone()
-    try:
-        rollout = find_newest_rollout_file(paths.codex_home)
-        if rollout is None:
-            raise ValueError("no session logs")
-        payload, as_of_ts = read_last_codex_rate_limits(rollout)
-        rate_limits = payload["rate_limits"]
-        if not isinstance(rate_limits, dict):
-            raise TypeError("invalid rate_limits")
-        primary = rate_limits.get("primary") or {}
-        secondary = rate_limits.get("secondary") or {}
-        plan_type = payload.get("plan_type") or rate_limits.get("plan_type") or "unknown"
-        credits = payload.get("credits") or rate_limits.get("credits") or {}
+class _StdoutLineQueue:
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._lines: list[str] = []
+        self._lock = threading.Lock()
+        self._proc = proc
+        thread = threading.Thread(target=self._reader, daemon=True)
+        thread.start()
 
-        lines = [f"Codex ({plan_type})"]
-        if primary:
-            lines.append(
-                _format_window_line(
-                    "5-hour",
-                    float(primary.get("used_percent", 0)),
-                    int(primary.get("resets_at", 0)),
-                    now=now,
-                )
+    def _reader(self) -> None:
+        assert self._proc.stdout is not None
+        for raw in self._proc.stdout:
+            with self._lock:
+                self._lines.append(raw)
+
+    def wait_for_result(self, request_id: int, *, deadline: float) -> dict[str, Any]:
+        index = 0
+        while time.monotonic() < deadline:
+            with self._lock:
+                pending = self._lines[index:]
+                index = len(self._lines)
+            for line in pending:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    obj = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict) or obj.get("id") != request_id:
+                    continue
+                if "error" in obj:
+                    raise ValueError(str(obj["error"]))
+                result = obj.get("result")
+                if isinstance(result, dict):
+                    return result
+                raise ValueError("invalid response")
+            if self._proc.poll() is not None:
+                with self._lock:
+                    drained = index >= len(self._lines)
+                if drained:
+                    raise ValueError("codex app-server exited")
+            time.sleep(0.05)
+        raise TimeoutError("codex app-server timed out")
+
+
+def _send_json_rpc(proc: subprocess.Popen[str], message: dict[str, Any]) -> None:
+    if proc.stdin is None:
+        raise OSError("codex app-server stdin unavailable")
+    proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+
+def fetch_codex_live_rate_limits(
+    *,
+    codex_command: str = "codex",
+    timeout: float = 20.0,
+    harness_version: str | None = None,
+) -> dict[str, Any]:
+    """Query Codex account rate limits through ``codex app-server`` JSON-RPC."""
+    argv = prepare_external_argv(resolve_codex_argv(codex_command, "app-server"))
+    version = harness_version if harness_version is not None else __version__
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        start_new_session=(os.name != "nt"),
+        creationflags=creationflags,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        stdout = _StdoutLineQueue(proc)
+        _send_json_rpc(
+            proc,
+            {
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "harness-limits",
+                        "title": "harness limits",
+                        "version": version,
+                    }
+                },
+            },
+        )
+        stdout.wait_for_result(1, deadline=deadline)
+        _send_json_rpc(proc, {"method": "initialized"})
+        _send_json_rpc(proc, {"id": 2, "method": "account/rateLimits/read"})
+        return stdout.wait_for_result(2, deadline=deadline)
+    finally:
+        stop_process_tree(proc)
+
+
+def _live_window_dict(window: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(window, dict):
+        return {}
+    used = window.get("usedPercent", window.get("used_percent", 0))
+    resets = window.get("resetsAt", window.get("resets_at", 0))
+    return {
+        "used_percent": float(used if used is not None else 0),
+        "resets_at": int(resets if resets is not None else 0),
+        "window_duration_mins": window.get("windowDurationMins", window.get("window_minutes")),
+    }
+
+
+def _format_reset_credits_line(reset_payload: dict[str, Any]) -> str | None:
+    available = reset_payload.get("availableCount", 0)
+    if not isinstance(available, int):
+        try:
+            available = int(available)
+        except (TypeError, ValueError):
+            return None
+    if available <= 0:
+        return None
+    credits = reset_payload.get("credits")
+    if not isinstance(credits, list):
+        return None
+    parts: list[str] = []
+    for entry in credits:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") != "available":
+            continue
+        title = entry.get("title")
+        expires_at = entry.get("expiresAt")
+        if not title or expires_at is None:
+            continue
+        expires_ts = _parse_timestamp(expires_at)
+        if expires_ts is None:
+            continue
+        expires_label = format_short_month_day(
+            datetime.fromtimestamp(expires_ts, tz=timezone.utc)
+        )
+        parts.append(f"{title}: expires {expires_label}")
+    if not parts:
+        return None
+    joined = "; ".join(parts)
+    return f"  reset credits: {available} available ({joined})"
+
+
+def _codex_limit_reached(*, live: dict[str, Any], rate_limits: dict[str, Any]) -> bool:
+    if live.get("ordinaryUsageAllowed") is False:
+        return True
+    reached = rate_limits.get("rateLimitReachedType")
+    return bool(reached)
+
+
+def _build_codex_from_live(live: dict[str, Any], *, now: datetime) -> tuple[list[str], dict[str, Any]]:
+    rate_limits = live.get("rateLimits") or {}
+    if not isinstance(rate_limits, dict):
+        raise TypeError("invalid rateLimits")
+    primary = _live_window_dict(rate_limits.get("primary"))
+    secondary = _live_window_dict(rate_limits.get("secondary"))
+    plan_type = rate_limits.get("planType") or "unknown"
+    credits = rate_limits.get("credits") or {}
+    limit_reached = _codex_limit_reached(live=live, rate_limits=rate_limits)
+
+    header = f"Codex ({plan_type})"
+    if limit_reached:
+        header = f"{header}  LIMIT REACHED"
+    lines = [header]
+    if primary:
+        lines.append(
+            _format_window_line(
+                "5-hour",
+                primary["used_percent"],
+                int(primary["resets_at"]),
+                now=now,
             )
-        if secondary:
-            lines.append(
-                _format_window_line(
-                    "weekly",
-                    float(secondary.get("used_percent", 0)),
-                    int(secondary.get("resets_at", 0)),
-                    now=now,
-                )
+        )
+    if secondary:
+        lines.append(
+            _format_window_line(
+                "weekly",
+                secondary["used_percent"],
+                int(secondary["resets_at"]),
+                now=now,
             )
-        as_of = datetime.fromtimestamp(as_of_ts or rollout.stat().st_mtime, tz=timezone.utc).astimezone()
-        if isinstance(credits, dict) and credits.get("has_credits"):
-            balance = credits.get("balance")
-            if balance is not None and not credits.get("unlimited"):
-                lines.append(f"  credits  {balance}")
+        )
+    if isinstance(credits, dict) and credits.get("hasCredits"):
+        balance = credits.get("balance")
+        if balance is not None and not credits.get("unlimited"):
+            lines.append(f"  credits  {balance}")
+    reset_payload = live.get("rateLimitResetCredits")
+    if isinstance(reset_payload, dict):
+        reset_line = _format_reset_credits_line(reset_payload)
+        if reset_line:
+            lines.append(reset_line)
+
+    reset_credits_json: list[dict[str, Any]] = []
+    if isinstance(reset_payload, dict):
+        raw_credits = reset_payload.get("credits")
+        if isinstance(raw_credits, list):
+            for entry in raw_credits:
+                if not isinstance(entry, dict) or entry.get("status") != "available":
+                    continue
+                title = entry.get("title")
+                expires_at = entry.get("expiresAt")
+                if not title or expires_at is None:
+                    continue
+                expires_ts = _parse_timestamp(expires_at)
+                if expires_ts is None:
+                    continue
+                reset_credits_json.append({"title": str(title), "expires_at": int(expires_ts)})
+
+    json_body: dict[str, Any] = {
+        "source": "live",
+        "plan_type": plan_type,
+        "limit_reached": limit_reached,
+        "primary": primary,
+        "secondary": secondary,
+        "reset_credits": reset_credits_json,
+    }
+    if isinstance(credits, dict) and credits.get("hasCredits"):
+        json_body["credits"] = {
+            "has_credits": credits.get("hasCredits"),
+            "unlimited": credits.get("unlimited"),
+            "balance": credits.get("balance"),
+        }
+    return lines, json_body
+
+
+def _build_codex_from_session_log(
+    paths: LimitsPaths,
+    *,
+    now: datetime,
+    stale_note: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    rollout = find_newest_rollout_file(paths.codex_home)
+    if rollout is None:
+        raise ValueError("no session logs")
+    payload, as_of_ts = read_last_codex_rate_limits(rollout)
+    rate_limits = payload["rate_limits"]
+    if not isinstance(rate_limits, dict):
+        raise TypeError("invalid rate_limits")
+    primary = rate_limits.get("primary") or {}
+    secondary = rate_limits.get("secondary") or {}
+    plan_type = payload.get("plan_type") or rate_limits.get("plan_type") or "unknown"
+    credits = payload.get("credits") or rate_limits.get("credits") or {}
+
+    lines = [f"Codex ({plan_type})"]
+    if primary:
+        lines.append(
+            _format_window_line(
+                "5-hour",
+                float(primary.get("used_percent", 0)),
+                int(primary.get("resets_at", 0)),
+                now=now,
+            )
+        )
+    if secondary:
+        lines.append(
+            _format_window_line(
+                "weekly",
+                float(secondary.get("used_percent", 0)),
+                int(secondary.get("resets_at", 0)),
+                now=now,
+            )
+        )
+    as_of = datetime.fromtimestamp(as_of_ts or rollout.stat().st_mtime, tz=timezone.utc).astimezone()
+    if isinstance(credits, dict) and credits.get("has_credits"):
+        balance = credits.get("balance")
+        if balance is not None and not credits.get("unlimited"):
+            lines.append(f"  credits  {balance}")
+    if stale_note:
+        lines.append(f"  as of {format_local_day_time(as_of)} (from last Codex call, may be stale)")
+    else:
         lines.append(f"  as of {format_local_day_time(as_of)} (last Codex call)")
 
-        json_body: dict[str, Any] = {
-            "plan_type": plan_type,
-            "as_of": int(as_of_ts or rollout.stat().st_mtime),
-            "primary": primary,
-            "secondary": secondary,
+    json_body: dict[str, Any] = {
+        "source": "session-log",
+        "plan_type": plan_type,
+        "limit_reached": False,
+        "as_of": int(as_of_ts or rollout.stat().st_mtime),
+        "primary": primary,
+        "secondary": secondary,
+        "reset_credits": [],
+    }
+    if isinstance(credits, dict) and credits.get("has_credits"):
+        json_body["credits"] = {
+            key: credits[key]
+            for key in ("has_credits", "unlimited", "balance")
+            if key in credits
         }
-        if isinstance(credits, dict) and credits.get("has_credits"):
-            json_body["credits"] = {
-                key: credits[key]
-                for key in ("has_credits", "unlimited", "balance")
-                if key in credits
-            }
-        return lines, json_body
+    return lines, json_body
+
+
+def load_codex(
+    paths: LimitsPaths,
+    *,
+    now: datetime | None = None,
+    codex_command: str = "codex",
+    codex_live_timeout: float = 20.0,
+) -> tuple[list[str], dict[str, Any]]:
+    now = now or datetime.now().astimezone()
+    try:
+        live = fetch_codex_live_rate_limits(
+            codex_command=codex_command,
+            timeout=codex_live_timeout,
+        )
+        return _build_codex_from_live(live, now=now)
+    except Exception:
+        pass
+    try:
+        return _build_codex_from_session_log(paths, now=now, stale_note=True)
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
         return [f"Codex: unavailable ({reason})"], {"error": reason}
@@ -401,9 +678,16 @@ def render_limits(
     as_json: bool = False,
     now: datetime | None = None,
     opener: UrlOpener | None = None,
+    codex_command: str = "codex",
+    codex_live_timeout: float = 20.0,
 ) -> str:
     now = now or datetime.now().astimezone()
-    codex_lines, codex_json = load_codex(paths, now=now)
+    codex_lines, codex_json = load_codex(
+        paths,
+        now=now,
+        codex_command=codex_command,
+        codex_live_timeout=codex_live_timeout,
+    )
     cursor_lines, cursor_json = load_cursor(paths, now=now, opener=opener)
     claude_lines, claude_json = load_claude(paths, now=now)
     if as_json:
@@ -421,7 +705,17 @@ def run_limits(
     as_json: bool = False,
     paths: LimitsPaths | None = None,
     opener: UrlOpener | None = None,
+    codex_command: str = "codex",
+    codex_live_timeout: float = 20.0,
 ) -> int:
     paths = paths or LimitsPaths.from_env()
-    print(render_limits(paths, as_json=as_json, opener=opener))
+    print(
+        render_limits(
+            paths,
+            as_json=as_json,
+            opener=opener,
+            codex_command=codex_command,
+            codex_live_timeout=codex_live_timeout,
+        )
+    )
     return 0

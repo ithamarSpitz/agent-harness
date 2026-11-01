@@ -7,6 +7,7 @@ import urllib.error
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from subprocess import Popen, TimeoutExpired
 
 import pytest
 
@@ -63,6 +64,105 @@ def make_paths(tmp_path: Path) -> LimitsPaths:
 
 def fixed_now() -> datetime:
     return datetime(2026, 11, 1, 12, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+def write_fake_codex_app_server(
+    tmp_path: Path,
+    *,
+    mode: str = "ok",
+    live_result: dict | None = None,
+) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    result_path = tmp_path / "live-result.json"
+    if live_result is not None:
+        result_path.write_text(json.dumps(live_result), encoding="utf-8")
+    script = tmp_path / "fake-codex.py"
+    script.write_text(
+        f"""import json
+import sys
+import time
+from pathlib import Path
+
+MODE = {mode!r}
+RESULT_PATH = Path({str(result_path)!r})
+
+def main() -> None:
+    if "app-server" not in sys.argv:
+        sys.exit(2)
+    if MODE == "crash":
+        sys.exit(1)
+    if MODE == "hang":
+        while True:
+            time.sleep(3600)
+    live = json.loads(RESULT_PATH.read_text(encoding="utf-8"))
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        req_id = msg.get("id")
+        method = msg.get("method")
+        if method == "initialize":
+            print(json.dumps({{"id": 1, "result": {{"capabilities": {{}}}}}}), flush=True)
+        elif method == "account/rateLimits/read" and req_id == 2:
+            if MODE == "error":
+                print(json.dumps({{"id": 2, "error": {{"message": "boom"}}}}), flush=True)
+            else:
+                print(json.dumps({{"id": 2, "result": live}}), flush=True)
+
+if __name__ == "__main__":
+    main()
+""",
+        encoding="utf-8",
+    )
+    return script
+
+
+def default_live_result(now: datetime) -> dict:
+    primary_reset = int(now.timestamp()) + 5640
+    secondary_reset = int(now.timestamp()) + 590_400
+    return {
+        "ordinaryUsageAllowed": False,
+        "rateLimits": {
+            "primary": {
+                "usedPercent": 100,
+                "windowDurationMins": 300,
+                "resetsAt": primary_reset,
+            },
+            "secondary": {
+                "usedPercent": 16,
+                "windowDurationMins": 10080,
+                "resetsAt": secondary_reset,
+            },
+            "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+            "planType": "plus",
+            "rateLimitReachedType": "rate_limit_reached",
+        },
+        "rateLimitResetCredits": {
+            "availableCount": 2,
+            "credits": [
+                {
+                    "status": "available",
+                    "title": "Full reset (Weekly + 5 hr)",
+                    "expiresAt": int(now.timestamp()) + 518_400,
+                },
+                {
+                    "status": "used",
+                    "title": "ignored",
+                    "expiresAt": int(now.timestamp()) + 1000,
+                },
+                {
+                    "status": "available",
+                    "title": "Full reset (Weekly + 5 hr)",
+                    "expiresAt": int(now.timestamp()) + 2_505_600,
+                },
+            ],
+        },
+    }
+
+
+def session_log_codex_command(tmp_path: Path) -> str:
+    return str(write_fake_codex_app_server(tmp_path, mode="crash"))
 
 
 class _Response:
@@ -186,7 +286,12 @@ def test_codex_uses_newest_rollout_and_last_rate_limits_line(tmp_path: Path):
     assert payload["plan_type"] == "plus"
     assert payload["rate_limits"]["primary"]["used_percent"] == 40
 
-    text = render_limits(paths, now=fixed_now(), opener=_fake_cursor_opener(paths))
+    text = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=_fake_cursor_opener(paths),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Codex (plus)" in text
     assert "Codex (stale)" not in text
     assert "5-hour" in text
@@ -194,7 +299,7 @@ def test_codex_uses_newest_rollout_and_last_rate_limits_line(tmp_path: Path):
     assert "40% used" in text
     assert "99% used" not in text
     assert "credits  12.5" in text
-    assert "(last Codex call)" in text
+    assert "(from last Codex call, may be stale)" in text
 
 
 def test_codex_past_reset_shows_zero_percent(tmp_path: Path):
@@ -212,13 +317,23 @@ def test_codex_past_reset_shows_zero_percent(tmp_path: Path):
         },
         timestamp=past,
     )
-    text = render_limits(paths, now=fixed_now(), opener=_unavailable_cursor_opener())
+    text = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "0% (reset at" in text
 
 
 def test_codex_missing_sessions_is_unavailable(tmp_path: Path):
     paths = make_paths(tmp_path)
-    text = render_limits(paths, now=fixed_now(), opener=_unavailable_cursor_opener())
+    text = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Codex: unavailable (no session logs)" in text
 
 
@@ -240,7 +355,12 @@ def test_cursor_sends_expected_request_and_formats_usage(tmp_path: Path):
         }
         return _response(json.dumps(body).encode("utf-8"))
 
-    text = render_limits(paths, now=fixed_now(), opener=opener)
+    text = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=opener,
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert captured["url"] == CURSOR_USAGE_URL
     assert captured["method"] == "POST"
     assert captured["data"] == b"{}"
@@ -259,11 +379,21 @@ def test_cursor_sends_expected_request_and_formats_usage(tmp_path: Path):
 def test_cursor_http_401_and_missing_db_are_unavailable(tmp_path: Path):
     paths = make_paths(tmp_path)
     paths.cursor_state_db.parent.mkdir(parents=True, exist_ok=True)
-    text_missing = render_limits(paths, now=fixed_now(), opener=_fake_cursor_opener(paths))
+    text_missing = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=_fake_cursor_opener(paths),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Cursor: unavailable (state database missing)" in text_missing
 
     write_cursor_db(paths.cursor_state_db)
-    text = render_limits(paths, now=fixed_now(), opener=_http_401_opener())
+    text = render_limits(
+        paths,
+        now=fixed_now(),
+        opener=_http_401_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Cursor: unavailable (HTTP 401)" in text
 
 
@@ -276,7 +406,12 @@ def test_cursor_token_never_leaks_to_json_or_errors(tmp_path: Path):
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        run_limits(as_json=True, paths=paths, opener=bad_opener)
+        run_limits(
+            as_json=True,
+            paths=paths,
+            opener=bad_opener,
+            codex_command=session_log_codex_command(tmp_path),
+        )
     out = buf.getvalue()
     assert FAKE_CURSOR_TOKEN not in out
     parsed = json.loads(out)
@@ -304,7 +439,12 @@ def test_claude_formats_windows_and_missing_file_message(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    text = render_limits(paths, now=now, opener=_unavailable_cursor_opener())
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Codex: unavailable" in text
     assert "Claude" in text
     assert "5-hour" in text
@@ -312,7 +452,12 @@ def test_claude_formats_windows_and_missing_file_message(tmp_path: Path):
     assert "(last Claude Code reply)" in text
 
     paths.claude_usage_cache.unlink()
-    text_missing = render_limits(paths, now=now, opener=_unavailable_cursor_opener())
+    text_missing = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Claude: no data yet (Claude Code saves it on its next reply)" in text_missing
 
 
@@ -333,7 +478,12 @@ def test_claude_skips_missing_window(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    text = render_limits(paths, now=now, opener=_unavailable_cursor_opener())
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "5-hour" in text
     assert "weekly" not in text.split("Claude")[-1]
 
@@ -388,7 +538,12 @@ def test_codex_malformed_rate_limits_does_not_abort_command(tmp_path: Path):
         encoding="utf-8",
     )
     write_cursor_db(paths.cursor_state_db)
-    text = render_limits(paths, now=now, opener=_fake_cursor_opener(paths))
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_fake_cursor_opener(paths),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Codex: unavailable" in text
     assert "Cursor (monthly)" in text
     assert "Claude" in text
@@ -414,10 +569,189 @@ def test_one_failing_service_does_not_block_others(tmp_path: Path):
         encoding="utf-8",
     )
     write_cursor_db(paths.cursor_state_db)
-    text = render_limits(paths, now=now, opener=_fake_cursor_opener(paths))
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_fake_cursor_opener(paths),
+        codex_command=session_log_codex_command(tmp_path),
+    )
     assert "Codex: unavailable" in text
     assert "Cursor (monthly)" in text
     assert "Claude" in text
+
+
+def test_codex_live_shows_limit_reached_and_reset_credits(tmp_path: Path):
+    now = fixed_now()
+    paths = make_paths(tmp_path)
+    fake = write_fake_codex_app_server(
+        tmp_path,
+        mode="ok",
+        live_result=default_live_result(now),
+    )
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=str(fake),
+    )
+    assert "Codex (plus)  LIMIT REACHED" in text
+    assert "100% used" in text
+    assert "16% used" in text
+    assert "reset credits: 2 available" in text
+    assert "Full reset (Weekly + 5 hr): expires" in text
+    assert "may be stale" not in text
+
+
+def test_codex_long_window_duration_uses_days_and_hours(tmp_path: Path):
+    now = fixed_now()
+    paths = make_paths(tmp_path)
+    rollout = paths.codex_home / "sessions" / "x" / "rollout-1.jsonl"
+    write_rollout(
+        rollout,
+        {
+            "type": "token_count",
+            "plan_type": "plus",
+            "rate_limits": {
+                "secondary": {
+                    "used_percent": 16,
+                    "resets_at": int(now.timestamp()) + 7 * 86400,
+                },
+            },
+        },
+        timestamp=int(now.timestamp()),
+    )
+    text = render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=session_log_codex_command(tmp_path),
+    )
+    assert "7d 0h" in text
+
+
+def test_codex_live_fallback_uses_session_log_with_stale_note(tmp_path: Path):
+    now = fixed_now()
+    paths = make_paths(tmp_path)
+    rollout = paths.codex_home / "sessions" / "x" / "rollout-1.jsonl"
+    write_rollout(
+        rollout,
+        {
+            "type": "token_count",
+            "plan_type": "plus",
+            "rate_limits": {
+                "primary": {
+                    "used_percent": 34,
+                    "resets_at": int(now.timestamp()) + 3600,
+                },
+            },
+        },
+        timestamp=int(now.timestamp()),
+    )
+    for mode in ("hang", "crash", "error"):
+        fake = write_fake_codex_app_server(tmp_path / mode, mode=mode, live_result=default_live_result(now))
+        text = render_limits(
+            paths,
+            now=now,
+            opener=_unavailable_cursor_opener(),
+            codex_command=str(fake),
+            codex_live_timeout=0.5 if mode == "hang" else 5.0,
+        )
+        assert "34% used" in text
+        assert "(from last Codex call, may be stale)" in text
+
+
+def test_codex_live_hang_stops_fake_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = fixed_now()
+    paths = make_paths(tmp_path)
+    rollout = paths.codex_home / "sessions" / "x" / "rollout-1.jsonl"
+    write_rollout(
+        rollout,
+        {
+            "type": "token_count",
+            "plan_type": "plus",
+            "rate_limits": {
+                "primary": {"used_percent": 1, "resets_at": int(now.timestamp()) + 60},
+            },
+        },
+        timestamp=int(now.timestamp()),
+    )
+    stopped: list[Popen[str]] = []
+
+    def track_stop(proc: Popen[str]) -> None:
+        stopped.append(proc)
+        from harness.process_utils import stop_process_tree as real_stop
+
+        real_stop(proc)
+
+    monkeypatch.setattr("harness.limits.stop_process_tree", track_stop)
+    fake = write_fake_codex_app_server(tmp_path / "hang", mode="hang")
+    render_limits(
+        paths,
+        now=now,
+        opener=_unavailable_cursor_opener(),
+        codex_command=str(fake),
+        codex_live_timeout=0.5,
+    )
+    assert stopped
+    proc = stopped[0]
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=2)
+        except TimeoutExpired:
+            pass
+    assert proc.poll() is not None
+
+
+def test_codex_json_includes_live_fields(tmp_path: Path):
+    now = fixed_now()
+    paths = make_paths(tmp_path)
+    fake = write_fake_codex_app_server(
+        tmp_path,
+        mode="ok",
+        live_result=default_live_result(now),
+    )
+    payload = json.loads(
+        render_limits(
+            paths,
+            now=now,
+            opener=_unavailable_cursor_opener(),
+            codex_command=str(fake),
+            as_json=True,
+        )
+    )
+    codex = payload["codex"]
+    assert codex["source"] == "live"
+    assert codex["limit_reached"] is True
+    assert codex["primary"]["used_percent"] == 100
+    assert codex["secondary"]["used_percent"] == 16
+    assert len(codex["reset_credits"]) == 2
+    assert codex["reset_credits"][0]["title"]
+
+    rollout = paths.codex_home / "sessions" / "x" / "rollout-1.jsonl"
+    write_rollout(
+        rollout,
+        {
+            "type": "token_count",
+            "plan_type": "plus",
+            "rate_limits": {"primary": {"used_percent": 5, "resets_at": int(now.timestamp()) + 60}},
+        },
+        timestamp=int(now.timestamp()),
+    )
+    fallback = json.loads(
+        render_limits(
+            paths,
+            now=now,
+            opener=_unavailable_cursor_opener(),
+            codex_command=session_log_codex_command(tmp_path),
+            as_json=True,
+        )
+    )
+    assert fallback["codex"]["source"] == "session-log"
+    assert fallback["codex"]["limit_reached"] is False
+    assert fallback["codex"]["reset_credits"] == []
 
 
 def test_limits_cli_runs_without_harness_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -428,6 +762,13 @@ def test_limits_cli_runs_without_harness_yaml(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(
         "harness.limits.default_cursor_state_db",
         lambda: db,
+    )
+    def _skip_live(**_kwargs: object) -> dict:
+        raise OSError("skip live")
+
+    monkeypatch.setattr(
+        "harness.limits.fetch_codex_live_rate_limits",
+        _skip_live,
     )
     http_calls: list[object] = []
 
