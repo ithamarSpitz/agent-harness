@@ -28,6 +28,7 @@ from .usage import UsageRecorder
 from .validation import ProjectValidator
 from .init_project import run_init
 from .limits import run_limits
+from .release import ReleaseRunner, format_release_status, sprint_is_complete
 from .verifier import Verifier
 
 
@@ -109,6 +110,9 @@ def cmd_status(roadmap: Roadmap, state: StateStore, sprint_id: str | None) -> in
     for sid in sprint_ids:
         sprint = roadmap.sprint(sid)
         print(f"{sid}: {sprint.name}")
+        release_line = format_release_status(state, sid)
+        if release_line:
+            print(f"  {release_line}")
         for stage in sorted({t.stage for t in sprint.tasks.values()}):
             print(f"  Stage {stage}")
             for task in sorted((t for t in sprint.tasks.values() if t.stage == stage), key=lambda x: x.id):
@@ -117,6 +121,31 @@ def cmd_status(roadmap: Roadmap, state: StateStore, sprint_id: str | None) -> in
                 if rt.last_error:
                     suffix += f" error={rt.last_error.splitlines()[0][:100]}"
                 print(f"    {rt.status.value:10} {task.id}{suffix}")
+    return 0
+
+
+def cmd_release(runtime: Runtime, sprint_id: str) -> int:
+    sprint = runtime.roadmap.sprint(sprint_id)
+    if not sprint_is_complete(runtime.state, sprint):
+        print(
+            f"Sprint {sprint_id} is not complete; release runs only after every task is DONE.",
+            file=sys.stderr,
+        )
+        return 2
+    if not runtime.config.release.commands:
+        print(f"Sprint {sprint_id} has no release.commands configured; nothing to run.")
+        return 0
+    result = ReleaseRunner(runtime.config, runtime.root, runtime.verifier).run_and_persist(
+        runtime.state, sprint_id
+    )
+    if not result.ok:
+        print(
+            f"Release failed: {result.failed_command} (exit {result.exit_code}). "
+            f"Merged sprint work is unchanged; retry with: harness release {sprint_id}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Release completed for sprint {sprint_id}.")
     return 0
 
 
@@ -302,7 +331,9 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
         return 3
 
     if all(runtime.state.get(task.id).status == TaskStatus.DONE for task in sprint.tasks.values()):
-        runtime.failures.clear(sprint_id)
+        # Last-stage `rerun-blocker` marks tasks DONE without going through `run_sprint`.
+        # Finalize (and run release once) so `resume` still performs the sprint's last step.
+        runtime.scheduler.finalize_completed_sprint(sprint)
         print(f"Sprint {sprint_id} is already complete; nothing to resume/run.")
         return 0
 
@@ -815,6 +846,9 @@ def parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("resume")
     rs.add_argument("sprint")
 
+    rel = sub.add_parser("release")
+    rel.add_argument("sprint")
+
     rt = sub.add_parser("run-task")
     rt.add_argument("task")
     rt.add_argument("--model-class")
@@ -903,6 +937,8 @@ def main(argv: list[str] | None = None) -> int:
         runtime = build_runtime(root, roadmap_path, config_path)
         if args.command == "status":
             return cmd_status(runtime.roadmap, runtime.state, args.sprint)
+        if args.command == "release":
+            return cmd_release(runtime, args.sprint)
         if args.command == "graph":
             return cmd_graph(runtime.roadmap, args.sprint)
         if args.command in {"run", "resume"}:

@@ -121,6 +121,53 @@ class Verifier:
         write_log(self.log_dir, f"{task.id}-revalidation.log", summary)
         return VerificationResult(not failures, summary, failures)
 
+    def run_shell_commands(
+        self,
+        commands: list[str],
+        workspace: Path,
+        *,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+        log_name: str,
+    ) -> tuple[bool, str, str | None, int | str | None]:
+        outputs: list[str] = []
+        command_env = self._verification_env(env)
+        for command in commands:
+            try:
+                proc = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=True,
+                    capture_output=True,
+                    env=command_env,
+                    timeout=timeout_seconds,
+                )
+                outputs.append(
+                    f"$ {command}\nexit={proc.returncode}\n{proc.stdout}{proc.stderr}".rstrip()
+                )
+                if proc.returncode != 0:
+                    summary = "\n\n".join(outputs)
+                    write_log(self.log_dir, log_name, summary)
+                    return False, summary, command, proc.returncode
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout if isinstance(exc.stdout, str) else (
+                    exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
+                )
+                stderr = exc.stderr if isinstance(exc.stderr, str) else (
+                    exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+                )
+                rendered = stdout + (f"\n{stderr}" if stderr else "")
+                outputs.append(f"$ {command}\nTIMEOUT\n{rendered}".rstrip())
+                summary = "\n\n".join(outputs)
+                write_log(self.log_dir, log_name, summary)
+                return False, summary, command, "timeout"
+        summary = "\n\n".join(outputs)
+        write_log(self.log_dir, log_name, summary)
+        return True, summary, None, None
+
     def verify_stage(
         self, workspace: Path, commands: list[str], stage_name: str, *, env: dict[str, str] | None = None
     ) -> VerificationResult:

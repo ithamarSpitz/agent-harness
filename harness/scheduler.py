@@ -14,6 +14,7 @@ from .logging_utils import utc_now, write_log
 from .models import SprintSpec, TaskSpec, TaskStatus
 from .provider_runner import ProviderAgentRunner
 from .state import StateStore
+from .release import ReleaseRunner, sprint_is_complete
 from .verifier import Verifier
 
 
@@ -530,7 +531,19 @@ class Scheduler:
         if not self.worktrees.is_clean():
             raise RuntimeError("Integration checkout is dirty; cannot rerun stage barrier safely")
         checkpoint = self.worktrees.head_commit()
-        return self._integrate_stage(sprint, stage, pending, checkpoint)
+        ok = self._integrate_stage(sprint, stage, pending, checkpoint)
+        if ok:
+            self.finalize_completed_sprint(sprint)
+        return ok
+
+    def finalize_completed_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> None:
+        if not sprint_is_complete(self.state, sprint):
+            return
+        self.state.set_meta(f"{sprint.id}.run_status", "COMPLETED")
+        self.failures.clear(sprint.id)
+        ReleaseRunner(self.config, self.repo_root, self.verifier).maybe_run_after_sprint_complete(
+            self.state, sprint.id, dry_run=dry_run
+        )
 
     def run_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> bool:
         stages = sorted({task.stage for task in sprint.tasks.values()})
@@ -592,6 +605,5 @@ class Scheduler:
             if not self._integrate_stage(sprint, stage, unfinished, current_commit):
                 return False
 
-        self.state.set_meta(f"{sprint.id}.run_status", "COMPLETED")
-        self.failures.clear(sprint.id)
+        self.finalize_completed_sprint(sprint, dry_run=dry_run)
         return True
