@@ -107,6 +107,7 @@ sprints:
     assert manifest["status"] == "COMPLETED"
     usage_lines = (tmp_path / ".harness/usage.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(usage_lines) == 2
+    assert all("code_map" in json.loads(line) for line in usage_lines)
 
 
 def test_cli_focused_expensive_retry_then_resume(tmp_path: Path):

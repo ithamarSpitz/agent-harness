@@ -32,6 +32,14 @@ class WorktreeConfig:
 
 
 @dataclass(slots=True)
+class CodeMapConfig:
+    enabled: bool = False
+    command: str = "graphify"
+    default_for_tasks: bool = False
+    build_timeout_minutes: int = 5
+
+
+@dataclass(slots=True)
 class CursorConfig:
     enabled: bool = True
     command: str = "agent"
@@ -226,6 +234,7 @@ class DoctorConfig:
 class HarnessConfig:
     execution: ExecutionConfig
     worktree: WorktreeConfig
+    code_map: CodeMapConfig
     cursor: CursorConfig
     codex: CodexConfig
     providers: ProvidersConfig
@@ -250,6 +259,7 @@ class HarnessConfig:
         return cls(
             execution=ExecutionConfig(**execution_raw),
             worktree=WorktreeConfig(**raw.get("worktree", {})),
+            code_map=CodeMapConfig(**raw.get("code_map", {})),
             cursor=CursorConfig(**raw.get("cursor", {})),
             codex=CodexConfig(**raw.get("codex", {})),
             providers=ProvidersConfig(**raw.get("providers", {})),

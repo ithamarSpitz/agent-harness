@@ -444,8 +444,14 @@ def cmd_review(runtime: Runtime, task_id: str, timeout: int) -> int:
     if not task_runtime.worktree or not task_runtime.base_ref:
         print(f"{task_id} has no active worktree/base_ref", file=sys.stderr)
         return 2
+    worktree = Path(task_runtime.worktree)
+    task_env = runtime.environment.task_env(task, worktree)
+    code_map_path = runtime.scheduler.code_maps.prepare(
+        task, worktree, task_runtime.base_ref, env=task_env, allow_build=False
+    )
     result = runtime.runner.review(
-        task, Path(task_runtime.worktree), task_runtime.base_ref, "Manual review requested", timeout
+        task, worktree, task_runtime.base_ref, "Manual review requested", timeout,
+        env=task_env, code_map_path=code_map_path,
     )
     print(result.output)
     return 0 if result.ok and "VERDICT: PASS" in result.output else 3

@@ -73,6 +73,9 @@
     "review_model_class": {
       "type": "string",
       "minLength": 1
+    },
+    "code_map": {
+      "type": "boolean"
     }
   },
   "additionalProperties": true

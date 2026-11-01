@@ -11,7 +11,7 @@ def write(path: Path, text: str) -> None:
 
 
 def test_loads_task_frontmatter_and_roadmap_override(tmp_path: Path):
-    write(tmp_path / "tasks/a.md", """---\nmodel_class: worker\nallowed_paths: [src/a.py]\n---\n# A\n""")
+    write(tmp_path / "tasks/a.md", """---\nmodel_class: worker\nallowed_paths: [src/a.py]\ncode_map: true\n---\n# A\n""")
     write(tmp_path / "tasks/roadmap.yaml", """
 project: x
 sprints:
@@ -27,6 +27,7 @@ sprints:
     assert task.stage == 2
     assert task.allowed_paths == ["src/a.py"]
     assert task.model_class == "worker"
+    assert task.code_map is True
 
 
 def test_rejects_dependency_cycle(tmp_path: Path):

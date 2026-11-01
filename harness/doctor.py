@@ -63,6 +63,27 @@ class Doctor:
         git_ok, git_detail = self._command_version("git")
         checks.append(DoctorCheck("git", git_ok, git_detail))
 
+        if self.config.code_map.enabled:
+            parts = split_command(self.config.code_map.command)
+            try:
+                proc = subprocess.run(
+                    prepare_external_argv([*parts, "--help"]),
+                    cwd=self.root,
+                    text=True, encoding="utf-8", errors="replace",
+                    capture_output=True,
+                    timeout=20,
+                )
+                detail = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+                checks.append(DoctorCheck(
+                    "code-map/graphify",
+                    proc.returncode == 0,
+                    detail[:300] if proc.returncode == 0 else f"{detail[:240] or 'command failed'}; pip install graphifyy",
+                ))
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                checks.append(DoctorCheck(
+                    "code-map/graphify", False, f"{exc}; pip install graphifyy"
+                ))
+
         cursor_parts = split_command(self.config.cursor.command) if self.config.cursor.enabled else []
         cursor_path = locate_executable(cursor_parts[0]) if cursor_parts else None
         if self.config.cursor.enabled:

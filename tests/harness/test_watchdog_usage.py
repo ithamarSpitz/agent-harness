@@ -51,6 +51,7 @@ doctor: {{}}
     assert len(events) == 1
     assert events[0]["stalled"] is True
     assert events[0]["model"] == "cheap"
+    assert events[0]["code_map"] is False
     assert usage.summary()["cheap"]["stalls"] == 1
 
 
