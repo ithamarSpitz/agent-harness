@@ -108,3 +108,9 @@ doctor:
   required_env: []
   min_free_disk_gb: 2
   check_cursor_models: true
+
+# After a sprint passes: publish and install the new version, so every project uses it at once.
+release:
+  commands:
+    - git push origin HEAD
+    - python -m pip install --user --no-deps --force-reinstall .

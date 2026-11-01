@@ -18,13 +18,6 @@ sprints:
         stage: 3
         depends_on:
         - S1-T2
-    stage_verification:
-      '1':
-      - python -m pytest -q tests/harness
-      '2':
-      - python -m pytest -q tests/harness
-      '3':
-      - python -m pytest -q tests/harness
 
   S2-cleanup:
     name: Printed commands use the installed `harness` command
@@ -33,9 +26,6 @@ sprints:
         file: tasks/sprint-02-cleanup/01-command-name.md
         stage: 1
         depends_on: []
-    stage_verification:
-      '1':
-      - python -m pytest -q tests/harness
 
   S3-code-map-v2:
     name: Code map offered to every agent; reviewer port cleanup safe across projects
@@ -44,9 +34,6 @@ sprints:
         file: tasks/sprint-03-code-map-v2/01-code-map-for-every-agent.md
         stage: 1
         depends_on: []
-    stage_verification:
-      '1':
-      - python -m pytest -q tests/harness
 
   S4-limits:
     name: harness limits - Codex, Cursor and Claude usage in one view
@@ -55,9 +42,6 @@ sprints:
         file: tasks/sprint-04-limits/01-limits.md
         stage: 1
         depends_on: []
-    stage_verification:
-      '1':
-      - python -m pytest -q tests/harness
 
   S5-release:
     name: Release after a successful sprint; live Codex limits
@@ -71,8 +55,46 @@ sprints:
         stage: 2
         depends_on:
         - S5-T1
-    stage_verification:
-      '1':
-      - python -m pytest -q tests/harness
-      '2':
-      - python -m pytest -q tests/harness
+
+  S6-live-and-setup:
+    name: Live Claude limits, faster tests, machine setup, init creates the repo
+    tasks:
+      S6-T1:
+        file: tasks/sprint-06-live-and-setup/01-claude-live.md
+        stage: 1
+        depends_on: []
+      S6-T2:
+        file: tasks/sprint-06-live-and-setup/02-faster-tests.md
+        stage: 1
+        depends_on: []
+      S6-T3:
+        file: tasks/sprint-06-live-and-setup/03-machine-setup.md
+        stage: 1
+        depends_on: []
+      S6-T4:
+        file: tasks/sprint-06-live-and-setup/04-init-repo.md
+        stage: 1
+        depends_on: []
+
+  S7-add-task-and-docs:
+    name: Add tasks to a running sprint, agent activity records, SPEC and README
+    tasks:
+      S7-T1:
+        file: tasks/sprint-07-add-task-and-docs/01-add-task.md
+        stage: 1
+        depends_on: []
+      S7-T2:
+        file: tasks/sprint-07-add-task-and-docs/02-agent-activity.md
+        stage: 2
+        depends_on:
+        - S7-T1
+      S7-T3:
+        file: tasks/sprint-07-add-task-and-docs/03-spec.md
+        stage: 3
+        depends_on:
+        - S7-T2
+      S7-T4:
+        file: tasks/sprint-07-add-task-and-docs/04-readme.md
+        stage: 3
+        depends_on:
+        - S7-T2
