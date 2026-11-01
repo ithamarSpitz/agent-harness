@@ -26,6 +26,7 @@ from .scheduler import Scheduler
 from .state import StateStore
 from .usage import UsageRecorder
 from .validation import ProjectValidator
+from .init_project import run_init
 from .verifier import Verifier
 
 
@@ -857,6 +858,9 @@ def parser() -> argparse.ArgumentParser:
     val = sub.add_parser("validate")
     val.add_argument("sprint", nargs="?")
 
+    init_p = sub.add_parser("init")
+    init_p.add_argument("--force", action="store_true")
+
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--full", action="store_true")
 
@@ -886,6 +890,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = Path(args.root).resolve()
+    if args.command == "init":
+        return run_init(root, force=args.force)
     roadmap_path = (root / args.roadmap).resolve()
     config_path = (root / args.config).resolve()
     try:
