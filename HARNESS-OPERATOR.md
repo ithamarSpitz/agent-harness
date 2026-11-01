@@ -100,3 +100,9 @@ These fixes are in the standalone harness (`dev/agent-harness`, installed once a
 - Drive it from a frozen, non-editable copy: `python -m venv <scratchpad>/hvenv`, `<scratchpad>/hvenv/Scripts/pip install C:/Users/itas1/dev/agent-harness`, then run `<scratchpad>/hvenv/Scripts/harness.exe` in the repo. Stage merges then cannot change the code that is running. Tests in task worktrees import the worktree's own `harness/` (conftest puts the repo root first).
 - A status Monitor must match `STATUS  TASK-ID` (status first), e.g. `grep -oE "[A-Z_]+ +S1-T[0-9]+"`. The reversed pattern stayed silent for 30 minutes.
 - Briefs that close every decision (exact config keys, prompt text, failure behavior) kept review rounds to real bugs only: S1 (Oct/Nov 2026) needed 3+3+1 attempts, with no swinging demands.
+
+## 11. Install and release (from v0.14)
+
+- The harness is installed non-editable (`python -m pip install --user .`), so one project's problem, or the harness building itself, never changes the code other projects run. After a harness sprint passes and its checks are green: bump `harness/__init__.py`, commit, push, `python -m pip install --user --force-reinstall --no-deps .`, then copy `%APPDATA%/Python/Python312/Scripts/harness.exe` to `~/.local/bin/`.
+- With the non-editable install the harness can drive its own sprints directly; no frozen venv needed.
+- Code map (v0.14): no switches. Every agent is offered the map and decides itself; the harness updates the project map once per stage and copies it, plus Graphify's own rules file, into each task worktree. `graphify-out/` is excluded through `.git/info/exclude`.

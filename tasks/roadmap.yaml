@@ -47,3 +47,14 @@ sprints:
     stage_verification:
       '1':
       - python -m pytest -q tests/harness
+
+  S4-limits:
+    name: harness limits - Codex, Cursor and Claude usage in one view
+    tasks:
+      S4-T1:
+        file: tasks/sprint-04-limits/01-limits.md
+        stage: 1
+        depends_on: []
+    stage_verification:
+      '1':
+      - python -m pytest -q tests/harness
