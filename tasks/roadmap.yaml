@@ -36,3 +36,14 @@ sprints:
     stage_verification:
       '1':
       - python -m pytest -q tests/harness
+
+  S3-code-map-v2:
+    name: Code map offered to every agent; reviewer port cleanup safe across projects
+    tasks:
+      S3-T1:
+        file: tasks/sprint-03-code-map-v2/01-code-map-for-every-agent.md
+        stage: 1
+        depends_on: []
+    stage_verification:
+      '1':
+      - python -m pytest -q tests/harness
