@@ -417,7 +417,7 @@ harness limits --json
 
 `harness limits` works from any directory and does not require `harness.yaml`. It prints three independent blocks (Codex, Cursor, Claude). A failure in one block does not suppress the others, and the command always exits 0.
 
-- **Codex** reads the newest `rollout-*.jsonl` session log under `CODEX_HOME` or `~/.codex`. The 5-hour and weekly percentages come from the last `token_count` rate-limit event in that file. Values are only as fresh as your last Codex call; the footer line says when that snapshot was recorded.
+- **Codex** queries the live `codex app-server` JSON-RPC API first (`account/rateLimits/read`). When that call fails, it falls back to the newest `rollout-*.jsonl` session log under `CODEX_HOME` or `~/.codex`; that snapshot may lag behind the live account state. Use `--json` for `source: live` or `session-log`, limit-reached state, and reset-credit metadata.
 - **Cursor** copies Cursor's local `state.vscdb`, reads the signed-in access token, and calls the same undocumented `GetCurrentPeriodUsage` endpoint the Cursor app uses (`api2.cursor.sh`). The text view mirrors the Spending page pools (Cursor models vs other models) and on-demand status. The token is never printed or included in `--json` output.
 - **Claude** reads `~/.claude/usage-cache.json`, which Claude Code updates when the optional status line helper (`~/.claude/statusline-usage.py`) runs after a reply. If the file is missing, the command explains that data will appear after the next reply.
 
