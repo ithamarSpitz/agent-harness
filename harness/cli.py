@@ -28,6 +28,7 @@ from .usage import UsageRecorder
 from .validation import ProjectValidator
 from .init_project import run_init
 from .limits import run_limits
+from .machine_setup import run_setup_machine
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
 from .verifier import Verifier
 
@@ -898,6 +899,8 @@ def parser() -> argparse.ArgumentParser:
     limits_p = sub.add_parser("limits")
     limits_p.add_argument("--json", action="store_true")
 
+    sub.add_parser("setup-machine")
+
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--full", action="store_true")
 
@@ -931,6 +934,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_init(root, force=args.force)
     if args.command == "limits":
         return run_limits(as_json=args.json)
+    if args.command == "setup-machine":
+        return run_setup_machine()
     roadmap_path = (root / args.roadmap).resolve()
     config_path = (root / args.config).resolve()
     try:
