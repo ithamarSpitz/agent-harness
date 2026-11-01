@@ -22,7 +22,7 @@ For whoever drives `harness` (usually Claude). Read before starting, resuming or
 ## 3. While it runs
 
 - Start with the Bash tool's `run_in_background`; you are notified when the process exits. Do not poll.
-- One Monitor as a fallback, re-armed every 30 minutes. It reads `harness.py status` and reports a new `WAITING_FOR_QUOTA` / `WAITING_FOR_CAPACITY` or 60 minutes without a `state.json` change. Do not grep `state.json` for `WAITING`: leftover fields gave false alarms.
+- One Monitor as a fallback, re-armed every 30 minutes. It reads `harness status` and reports a new `WAITING_FOR_QUOTA` / `WAITING_FOR_CAPACITY` or 60 minutes without a `state.json` change. Do not grep `state.json` for `WAITING`: leftover fields gave false alarms.
 - Codex prints quota errors with a typographic apostrophe ("You’ve hit your usage limit"). Patterns now normalize it; if a quota looks like a capacity wait again, check the raw `.harness/logs/<TASK>-attempt-N-codex.log`.
 - Provider fallback is per task: each new task tries Codex first, a task that hits a quota stays on Cursor for its own retries and review.
 
@@ -62,7 +62,7 @@ For whoever drives `harness` (usually Claude). Read before starting, resuming or
 
 - **Stop review loops by deciding.** When a reviewer's findings swing between opposite demands across rounds (delete vs restore vs do not touch), the brief left a decision open. Decide it, write it into the brief's acceptance criteria, sync the worktree (rule 1), fix the code yourself, then `run-task --fresh-budget`. When findings are real product bugs, more rounds are worth it.
 - **Run the failing verification command yourself first.** A live gate failure can be the stack, an external API, or the code. One manual run in the worktree (with `BOOKNOOK_ENV_FILE` set) costs seconds; an agent round costs about 10 minutes and often only reports the same blocker.
-- **`harness.py verify <TASK>` on Windows:** set `PYTHONIOENCODING=utf-8` when redirecting output, or Hebrew text crashes the print with a `charmap` error.
+- **`harness verify <TASK>` on Windows:** set `PYTHONIOENCODING=utf-8` when redirecting output, or Hebrew text crashes the print with a `charmap` error.
 
 ## 6. Writing briefs and contracts
 

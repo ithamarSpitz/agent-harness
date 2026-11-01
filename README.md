@@ -15,7 +15,7 @@
 
 - Cursor `resource_exhausted` / provider-overload responses are classified as temporary provider capacity, not included-usage quota exhaustion. Capacity waits preserve task/worktree state, do not consume implementation retry budget, and default to a short five-minute retry cadence.
 - Capacity exhaustion during review resumes from verification/review and does not rerun a successful implementation.
-- `harness.py quota status` now also reports provider-capacity waiting tasks, and `harness.py usage` separates quota pauses from capacity pauses.
+- `harness quota status` now also reports provider-capacity waiting tasks, and `harness usage` separates quota pauses from capacity pauses.
 - Verification subprocesses receive a validation-only fallback `DATABASE_URL` when none is supplied by the real task/runtime environment. Real environment values always win, so Docker/runtime database configuration is not overwritten.
 
 ## v0.11.4 Windows Cursor prompt transport fix
@@ -100,7 +100,7 @@ pip install -r requirements-harness.txt
 Check the environment:
 
 ```bash
-python harness.py doctor --full
+harness doctor --full
 ```
 
 Provider enablement is explicit in `harness.yaml`. This repository currently sets `cursor.enabled: false`, so implementations, reviews, and plan repair stay on Codex and `doctor` does not require or probe Cursor. Re-enabling Cursor requires an intentional config change to `cursor.enabled: true`; the existing Cursor model/fallback configuration is retained in Git for that purpose.
@@ -112,8 +112,8 @@ Cursor documents `agent -p` as its non-interactive automation mode. Model names 
 ## Try the graph without spending Cursor usage
 
 ```bash
-python harness.py graph demo
-python harness.py run demo --dry-run
+harness graph demo
+harness run demo --dry-run
 ```
 
 Expected shape:
@@ -132,7 +132,7 @@ Live `run` and `resume` commands hold a temporary Windows keep-awake requirement
 
 1. Keep the original assignment as `docs/assignment.md`.
 2. Split the final architecture into small domain context files, while retaining `ARCHITECTURE.md` as the source/index if desired.
-3. From the Git repository root, run `python harness.py init` (or `harness init --root .`) to create `harness.yaml`, `tasks/roadmap.yaml`, `tasks/TASK_TEMPLATE.md`, and the other starter files.
+3. From the Git repository root, run `harness init` (or `harness init --root .`) to create `harness.yaml`, `tasks/roadmap.yaml`, `tasks/TASK_TEMPLATE.md`, and the other starter files.
 4. Write real task briefs from `tasks/TASK_TEMPLATE.md` and replace the example sprint in `tasks/roadmap.yaml`.
 5. Add stable project-wide commands to `harness.yaml`, for example `npm run typecheck`.
 6. Add stage barriers such as `npm test`, Prisma validation, Docker build or smoke tests only where they are useful.
@@ -141,17 +141,17 @@ Live `run` and `resume` commands hold a temporary Windows keep-awake requirement
 ## Core commands
 
 ```bash
-python harness.py status [SPRINT]
-python harness.py graph SPRINT
-python harness.py run SPRINT
-python harness.py resume SPRINT
-python harness.py run-task TASK_ID [--model-class escalation] [--fresh-budget]
-python harness.py failure SPRINT
-python harness.py rerun-blocker SPRINT [--task TASK_ID] [--model-class escalation]
-python harness.py retry TASK_ID
-python harness.py verify TASK_ID
-python harness.py review TASK_ID
-python harness.py doctor --full
+harness status [SPRINT]
+harness graph SPRINT
+harness run SPRINT
+harness resume SPRINT
+harness run-task TASK_ID [--model-class escalation] [--fresh-budget]
+harness failure SPRINT
+harness rerun-blocker SPRINT [--task TASK_ID] [--model-class escalation]
+harness retry TASK_ID
+harness verify TASK_ID
+harness review TASK_ID
+harness doctor --full
 ```
 
 `tasks/roadmap.yaml` currently contains the harmless demo DAG plus executable `S0-foundation` through `S5-acceptance-submission`.
@@ -268,7 +268,7 @@ The starter now includes the remaining architecture-independent guardrails that 
 Run:
 
 ```bash
-python harness.py validate
+harness validate
 ```
 
 The linter fails before any model call for problems such as:
@@ -289,13 +289,13 @@ Machine-readable reference schemas live in `schemas/roadmap.schema.json` and `sc
 Basic:
 
 ```bash
-python harness.py doctor
+harness doctor
 ```
 
 Before unattended execution:
 
 ```bash
-python harness.py doctor --full
+harness doctor --full
 ```
 
 Full mode additionally checks a clean integration checkout, free disk space, configured project commands/environment variables, and `agent models`. A successful `agent models` call doubles as an authentication/availability check, and each configured non-null model name must appear in the listing.
@@ -336,17 +336,17 @@ It records the starting commit/branch, harness/Python/Cursor versions, model rou
 Inspect the active or most recent run:
 
 ```bash
-python harness.py manifest SPRINT
+harness manifest SPRINT
 ```
 
 ### Recovery and cleanup
 
 ```bash
-python harness.py inspect TASK_ID
-python harness.py unblock TASK_ID
-python harness.py reset-task TASK_ID
-python harness.py cleanup --stale-worktrees
-python harness.py cleanup --completed
+harness inspect TASK_ID
+harness unblock TASK_ID
+harness reset-task TASK_ID
+harness cleanup --stale-worktrees
+harness cleanup --completed
 ```
 
 `inspect` prints task/runtime/context/diff/log metadata. `unblock` gives a BLOCKED task a fresh retry budget. `reset-task` deletes an unintegrated task worktree/branch and returns it to PENDING; it deliberately refuses to reset a DONE task because that commit is already in integration history. Cleanup only removes harness-owned stale directories or explicitly retained worktrees for DONE tasks.
@@ -378,7 +378,7 @@ The validator guarantees that every alias resolves, and the resolved paths are i
 Every agent invocation appends a factual local record to `.harness/usage.jsonl`: task, phase, attempt, model class/name, duration, result, timeout/stall state and output size.
 
 ```bash
-python harness.py usage
+harness usage
 ```
 
 The harness intentionally does **not** fabricate token/cost numbers when Cursor's selected output format does not expose them.
@@ -401,7 +401,7 @@ For the same lint/type-check steps used by CI, install the optional development 
 
 ```bash
 pip install -r requirements-harness-dev.txt
-ruff check harness harness.py tests/harness
+ruff check harness tests/harness
 mypy harness
 ```
 
@@ -421,31 +421,31 @@ A real run that stops writes a durable report under:
 Show the concise reason and the recommended next command:
 
 ```bash
-python harness.py failure sprint-2
+harness failure sprint-2
 ```
 
 For a single blocked task, rerun only that task with a fresh attempt budget and a more expensive model class:
 
 ```bash
-python harness.py rerun-blocker sprint-2 --model-class escalation
+harness rerun-blocker sprint-2 --model-class escalation
 ```
 
 If several parallel tasks are blocked, choose one explicitly:
 
 ```bash
-python harness.py rerun-blocker sprint-2 --task S2-T4 --model-class escalation
+harness rerun-blocker sprint-2 --task S2-T4 --model-class escalation
 ```
 
 Equivalent lower-level focused execution is available with:
 
 ```bash
-python harness.py run-task S2-T4 --fresh-budget --model-class escalation
+harness run-task S2-T4 --fresh-budget --model-class escalation
 ```
 
 A focused retry reuses that task's existing worktree and prior code, but starts a fresh Cursor invocation. Successfully verified sibling tasks remain `VERIFIED`. After the blocker is fixed:
 
 ```bash
-python harness.py resume sprint-2
+harness resume sprint-2
 ```
 
 `resume` skips every task already `DONE` or `VERIFIED`, re-enters the current stage, runs only unresolved work, crosses the stage barrier, and then proceeds to later stages. It never restarts the sprint from stage 1 merely because a later task failed.
@@ -453,7 +453,7 @@ python harness.py resume sprint-2
 For a failed integration barrier, `rerun-blocker` runs only merge + stage verification. It does not invoke implementer agents again:
 
 ```bash
-python harness.py rerun-blocker sprint-2
+harness rerun-blocker sprint-2
 ```
 
 ### Docker / Compose environment isolation
@@ -509,7 +509,7 @@ The Docker lifecycle is deliberately separate from application configuration:
 | `Dockerfile` (later) | reproducible Node runtime |
 | task/stage verification | proves the environment actually works |
 
-Once Docker management is enabled, `python harness.py doctor --full` also validates that the configured Compose executable works and that every configured Compose file exists.
+Once Docker management is enabled, `harness doctor --full` also validates that the configured Compose executable works and that every configured Compose file exists.
 
 ### Retry/stop summary
 
@@ -557,9 +557,9 @@ Human-readable planning docs are under `docs/project/`.
 S1 is now fully decomposed into ten executable tasks. Inspect it with:
 
 ```bash
-python harness.py validate S1-property-resolution
-python harness.py graph S1-property-resolution
-python harness.py run S1-property-resolution --dry-run
+harness validate S1-property-resolution
+harness graph S1-property-resolution
+harness run S1-property-resolution --dry-run
 ```
 
 The S1 graph deliberately isolates the Prisma/property-identity hotspot in Stage 1, runs address normalization plus the five NYC source-client workstreams in parallel in Stage 2, integrates them through one resolver-orchestration task, then runs single-property HTTP and bounded bulk-BBL registration in parallel before the final Docker/PostgreSQL-backed behavior gate. Focused tests belong to the task that owns the behavior; the Stage-5 gate only wires the already-built components and reruns the complete S1 suite.
@@ -580,9 +580,9 @@ The project configuration starts with `execution.max_parallel_agents: 2` for the
 S0 is the first real runnable project sprint. Validate/inspect it with:
 
 ```bash
-python harness.py validate S0-foundation
-python harness.py graph S0-foundation
-python harness.py run S0-foundation --dry-run
+harness validate S0-foundation
+harness graph S0-foundation
+harness run S0-foundation --dry-run
 ```
 
 The five S0 tasks deliberately keep tests next to the behavior/foundation they own. The final S0 task performs the first real PostgreSQL/Docker integration gate and, once integrated, switches future worktrees to `npm ci` and enables per-task Docker isolation.
@@ -594,11 +594,11 @@ The five S0 tasks deliberately keep tests next to the behavior/foundation they o
 A BLOCKED task has two recovery paths. A focused implementation retry uses `rerun-blocker` / `run-task --model-class escalation`. If evidence points to a missing task or an architectural conflict, use the explicit human-gated plan-repair flow instead:
 
 ```bash
-python harness.py plan-change propose <SPRINT> --task <TASK_ID>
-python harness.py plan-change status
+harness plan-change propose <SPRINT> --task <TASK_ID>
+harness plan-change status
 # review proposal; edit and COMMIT ARCHITECTURE/roadmap/task files
-python harness.py plan-change apply <CR-ID> --affected <TASK_ID>
-python harness.py resume <SPRINT>
+harness plan-change apply <CR-ID> --affected <TASK_ID>
+harness resume <SPRINT>
 ```
 
 The planner is read-only. It must classify the problem as `IMPLEMENTATION_ONLY`, `TASK_ADDITION`, `ARCHITECTURE_CHANGE`, or `UNKNOWN`; it never edits protected planning files itself. Applying a proposal increments the persisted plan revision, snapshots the revised roadmap/architecture hashes, discovers added/changed task definitions, resets only affected non-integrated tasks, and queues already-integrated affected tasks for revalidation. Started tasks cannot simply disappear from a revision; supersede/repair them instead.
@@ -630,9 +630,9 @@ quota:
 Useful commands:
 
 ```bash
-python harness.py quota status
-python harness.py quota set-reset 2026-10-01T12:30:00+03:00
-python harness.py quota clear-reset
+harness quota status
+harness quota set-reset 2026-10-01T12:30:00+03:00
+harness quota clear-reset
 ```
 
 With `policy: wait`, the same harness process sleeps until the configured reset (+ grace). If no reset time is known it retries on the configured conservative probe interval. On Windows, the harness temporarily requests that the system stay awake only while it is quota-waiting. `Ctrl+C` is safe; a later `resume` continues from persisted state. No on-demand billing/fallback is used.
@@ -649,7 +649,7 @@ capacity:
   teardown_environment_while_waiting: true
 ```
 
-`python harness.py quota status` reports both quota and capacity wait state.
+`harness quota status` reports both quota and capacity wait state.
 
 ### Verification-only environment fallbacks
 
@@ -674,7 +674,7 @@ Independent review defaults to `reviewer -> cursor-grok-4.6-high`. A future low-
 A manual focused override such as:
 
 ```bash
-python harness.py run-task S2-T7 --fresh-budget --model-class escalation
+harness run-task S2-T7 --fresh-budget --model-class escalation
 ```
 
 is deliberately **one-shot**. It cannot silently spend four Opus calls. If that focused invocation fails, the task remains blocked for inspection/plan repair.
@@ -685,9 +685,9 @@ is deliberately **one-shot**. It cannot silently spend four Opus calls. If that 
 S2 is decomposed into nine executable tasks. Inspect it with:
 
 ```bash
-python harness.py validate S2-ingestion-lifecycle
-python harness.py graph S2-ingestion-lifecycle
-python harness.py run S2-ingestion-lifecycle --dry-run
+harness validate S2-ingestion-lifecycle
+harness graph S2-ingestion-lifecycle
+harness run S2-ingestion-lifecycle --dry-run
 ```
 
 The graph isolates the Prisma/config/source-identity hotspot in Stage 1. Stage 2 runs the Socrata client, bounded Bottleneck/request-retry executor, raw->strict-normalization->staging pipeline, and dedicated advisory-lock authority primitive in parallel. Stage 3 runs crash-safe run initialization and the replay-safe persisted-batch processor in parallel because both consume Stage-2 primitives but do not own each other's files. Stage 4 composes them into the resume/fail-stop ingestion executor. Stage 5 provides the Docker/PostgreSQL-backed lifecycle gate and explicit manual source-contract probe. S2 deliberately stops at a typed S3 publication boundary: no live ECB promotion, negative reconciliation, or property coverage publication is implemented here.
@@ -730,9 +730,9 @@ S4 keeps all ECB GET paths local-store-only, proves the property cursor can cros
 S5 is the final executable sprint. Inspect it with:
 
 ```bash
-python harness.py validate S5-acceptance-submission
-python harness.py graph S5-acceptance-submission
-python harness.py run S5-acceptance-submission --dry-run
+harness validate S5-acceptance-submission
+harness graph S5-acceptance-submission
+harness run S5-acceptance-submission --dry-run
 ```
 
 The graph is deliberately serial because every later stage consumes measured evidence from the previous one:
@@ -755,7 +755,7 @@ Codex implementation routing is now Sol Medium, Sol Medium, Sol High, Astra Medi
 
 ## v0.12.4 Codex-first provider routing
 
-Codex CLI became the primary provider when ChatGPT authentication is available. The original v0.12.4 implementation routing was Luna High, Luna High, Terra High, Sol High. Explicit Codex quota/auth/model-unavailability switches the current run to the existing Cursor Composer/Composer/Grok/Opus ladder without consuming a provider-switch attempt. Capacity/network/timeout/CLI-transient failures stay on the same provider/model and use the existing capacity wait path. Reviews and plan-repair analysis also prefer Codex Sol with Cursor fallback. `harness.py usage` separates providers.
+Codex CLI became the primary provider when ChatGPT authentication is available. The original v0.12.4 implementation routing was Luna High, Luna High, Terra High, Sol High. Explicit Codex quota/auth/model-unavailability switches the current run to the existing Cursor Composer/Composer/Grok/Opus ladder without consuming a provider-switch attempt. Capacity/network/timeout/CLI-transient failures stay on the same provider/model and use the existing capacity wait path. Reviews and plan-repair analysis also prefer Codex Sol with Cursor fallback. `harness usage` separates providers.
 
 ### Windows Codex sandbox note (v0.12.4)
 

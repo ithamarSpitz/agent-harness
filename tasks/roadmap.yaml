@@ -25,3 +25,14 @@ sprints:
       - python -m pytest -q tests/harness
       '3':
       - python -m pytest -q tests/harness
+
+  S2-cleanup:
+    name: Printed commands use the installed `harness` command
+    tasks:
+      S2-T1:
+        file: tasks/sprint-02-cleanup/01-command-name.md
+        stage: 1
+        depends_on: []
+    stage_verification:
+      '1':
+      - python -m pytest -q tests/harness
