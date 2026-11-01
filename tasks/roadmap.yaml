@@ -58,3 +58,21 @@ sprints:
     stage_verification:
       '1':
       - python -m pytest -q tests/harness
+
+  S5-release:
+    name: Release after a successful sprint; live Codex limits
+    tasks:
+      S5-T1:
+        file: tasks/sprint-05-release/01-release.md
+        stage: 1
+        depends_on: []
+      S5-T2:
+        file: tasks/sprint-05-release/02-codex-live-limits.md
+        stage: 2
+        depends_on:
+        - S5-T1
+    stage_verification:
+      '1':
+      - python -m pytest -q tests/harness
+      '2':
+      - python -m pytest -q tests/harness
