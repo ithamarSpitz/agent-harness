@@ -1,17 +1,17 @@
 # Harness operator handbook
 
-For whoever drives `harness.py` (usually Claude). Read before starting, resuming or repairing a run. Every rule here came from a mistake that cost real tokens or quota on the BookNook build (Oct 2026). `README-HARNESS.md` explains what the harness does; this file is how to operate it without wasting attempts.
+For whoever drives `harness` (usually Claude). Read before starting, resuming or repairing a run. Every rule here came from a mistake that cost real tokens or quota on the BookNook build (Oct 2026). `README-HARNESS.md` explains what the harness does; this file is how to operate it without wasting attempts.
 
 ## 1. Golden rules
 
-1. **The integration checkout stays clean, and changes to it happen only while no `harness.py` process runs.** No untracked files ever. Commit (brief fixes, harness fixes) only when the harness is idle, for example after it stopped on a blocked task. Since the base-ref fix, existing worktrees are diffed against their own base, so such commits no longer show up as task changes. A task worktree keeps its old copy of `tasks/` and docs: to give a kept worktree a changed brief, fast-forward it (`git -C <worktree> merge --ff-only build`) and set that task's `base_ref` in `.harness/state.json` to the new head.
+1. **The integration checkout stays clean, and changes to it happen only while no `harness` process runs.** No untracked files ever. Commit (brief fixes, harness fixes) only when the harness is idle, for example after it stopped on a blocked task. Since the base-ref fix, existing worktrees are diffed against their own base, so such commits no longer show up as task changes. A task worktree keeps its old copy of `tasks/` and docs: to give a kept worktree a changed brief, fast-forward it (`git -C <worktree> merge --ff-only build`) and set that task's `base_ref` in `.harness/state.json` to the new head.
 2. **Logs go outside the repo.** Redirect `run`/`resume` output to the scratchpad, never to `.harness/` or anywhere tracked. An untracked log made the first S0 run refuse to start.
 3. **Never pay for the same diagnosis twice.** When a task fails, read the evidence (section 4) before any retry. A retry without a changed input repeats the failure.
 4. **Operator mistakes look like agent failures.** A scope or protected-path violation on a file the task never touches (for example `harness.yaml`) is almost always caused by the operator, not the agent. Check what you changed first.
 
 ## 2. Before a run
 
-- `python harness.py validate`, `graph <SPRINT>`, `run <SPRINT> --dry-run`, `doctor --full`.
+- `harness validate`, `graph <SPRINT>`, `run <SPRINT> --dry-run`, `doctor --full`.
 - `git status --short` must be empty.
 - **Memory.** Check free RAM. Worktree setup (`npm ci`) runs once per parallel task at the same moment, on top of Docker and Supabase. With under about 6 GB free, use `max_parallel_agents: 2`. Claude Code kills background shells under memory pressure; the run then needs `resume`. It happened again at 2 agents with about 2 GB free (Docker/WSL 3 GB plus Chrome). After a kill: check for orphaned agent processes (`Get-CimInstance Win32_Process` filtered on `worktrees`), then `resume`; the task left `RUNNING` continues in its worktree. Ask the user to start Claude Code with `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` for long runs.
 - **Quota.** Ask the user for, or check, Codex's 5-hour and weekly limits and Cursor usage. One blocked task (3 attempts plus reviews) can burn a 5-hour Codex window.
@@ -30,7 +30,7 @@ For whoever drives `harness.py` (usually Claude). Read before starting, resuming
 
 ## 4. Reading a failure (cheap first)
 
-1. `python harness.py status <SPRINT>` and `failure <SPRINT>`.
+1. `harness status <SPRINT>` and `failure <SPRINT>`.
 2. The last agent message and the reviewer verdict, from the JSON logs:
 
    ```python
@@ -88,4 +88,15 @@ For whoever drives `harness.py` (usually Claude). Read before starting, resuming
 | Cursor stall/timeout killed only the cmd/PowerShell shim | the stalled agent kept running in the worktree next to the retry (two agents, one worktree) | shared `stop_process_tree` (`taskkill /T`), Cursor started in its own process group |
 | Cursor probe demanded exactly `OK` | probe failed on `OK.` | accept a trailing period |
 
-These fixes live in `torimitor/harness/`. Port them back to `dev/nyc-property-resolver` (or the standalone harness) before reusing it elsewhere.
+These fixes are in the standalone harness (`dev/agent-harness`, installed once as the `harness` command). `dev/nyc-property-resolver` still has an old copy without them.
+
+## 9. Code map and reviewer UI check (v0.13)
+
+- **Code map (Graphify).** `code_map.enabled: true` in `harness.yaml` makes it available; a task gets it only with `code_map: true` in its frontmatter (or `default_for_tasks: true`). Mark only tasks that must find their way through unfamiliar code; a small, well-scoped task does not need it. The map is cached in `.harness/code-map/<base sha>/` and rebuilt only when the base commit changes. Agents are told to use only `graphify explain` / `graphify path` (about 150 tokens); `graphify query` prints about 15k tokens. `graphify.exe` must be on PATH (copied to `~/.local/bin`). Usage records carry a `code_map` flag for comparing token use.
+- **Reviewer UI check (Playwright).** `ui_review` gives the reviewer the start commands, URL and Playwright tools; the reviewer decides itself whether a change can affect the UI and ends with a `UI_CHECK:` line. The harness only fails a review that changed files and stops leftover processes (configured ports, command lines containing the worktree path). Cursor needs Playwright in `~/.cursor/mcp.json`. Do not run another server on the configured ports during a sprint.
+
+## 10. Running the harness on its own repo
+
+- Drive it from a frozen, non-editable copy: `python -m venv <scratchpad>/hvenv`, `<scratchpad>/hvenv/Scripts/pip install C:/Users/itas1/dev/agent-harness`, then run `<scratchpad>/hvenv/Scripts/harness.exe` in the repo. Stage merges then cannot change the code that is running. Tests in task worktrees import the worktree's own `harness/` (conftest puts the repo root first).
+- A status Monitor must match `STATUS  TASK-ID` (status first), e.g. `grep -oE "[A-Z_]+ +S1-T[0-9]+"`. The reversed pattern stayed silent for 30 minutes.
+- Briefs that close every decision (exact config keys, prompt text, failure behavior) kept review rounds to real bugs only: S1 (Oct/Nov 2026) needed 3+3+1 attempts, with no swinging demands.
