@@ -19,6 +19,8 @@ depends_on:
   - S8-T29
   - S8-T30
   - S8-T32
+  - S8-T39
+  - S8-T41
 allowed_paths:
   - SPEC.md
   - README.md

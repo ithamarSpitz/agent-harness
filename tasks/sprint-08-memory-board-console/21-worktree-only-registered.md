@@ -33,6 +33,10 @@ An agent never runs in a folder that is not a registered Git worktree of its tas
 2. If the folder cannot be removed, raise a clear error naming the path and saying to close programs using it; never return it.
 3. Existing registered worktrees (normal resume) behave as today.
 
+# Out of scope (another task)
+
+The scheduler's resume path (`harness/scheduler.py`, which reuses `runtime.worktree` without calling `create()` when the folder exists) is fixed by S8-T41. Until then S8-T22's guard stops any agent call in a folder that is not its own worktree. Do not edit the scheduler here, and reviewers should not fail this task for it.
+
 # Acceptance criteria
 
 1. A plain folder (only `graphify-out/` inside) at the worktree path is replaced by a real worktree; the returned path is listed by `git worktree list`.
