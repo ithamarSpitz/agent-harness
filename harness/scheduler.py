@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -705,23 +706,29 @@ class Scheduler:
             runtime.finished_at = finished_at
         self.state.save()
 
-        cleanup_errors: list[str] = []
+        cleanup_warnings: list[str] = []
+        cleaned_any = False
         for task in tasks:
             runtime = self.state.get(task.id)
             if not self.config.execution.keep_successful_worktrees and runtime.worktree and runtime.branch:
+                worktree_path = Path(runtime.worktree)
                 try:
-                    self.worktrees.remove(Path(runtime.worktree), runtime.branch, delete_branch=True)
+                    self.worktrees.remove(worktree_path, runtime.branch, delete_branch=True)
                 except Exception as exc:
-                    cleanup_errors.append(f"{task.id}: {exc}")
+                    message = f"WARNING: failed to remove worktree {worktree_path}: {exc}"
+                    cleanup_warnings.append(message)
+                    print(message, file=sys.stderr)
                     continue
                 runtime.worktree = None
                 runtime.branch = None
-                self.state.save()
-        if cleanup_errors:
+                cleaned_any = True
+        if cleaned_any:
+            self.state.save()
+        if cleanup_warnings:
             write_log(
                 self.verifier.log_dir,
                 f"{sprint.id}-stage-{stage}-worktree-cleanup.log",
-                "\n".join(cleanup_errors) + "\n",
+                "\n".join(cleanup_warnings) + "\n",
             )
         self.failures.clear(sprint.id)
         return True
