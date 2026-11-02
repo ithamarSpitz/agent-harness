@@ -17,7 +17,7 @@ worktree:
 cursor:
   enabled: true
   command: agent
-  output_format: stream-json
+  output_format: text
   trust_harness_worktrees: true
   models:
     worker: composer-2.5

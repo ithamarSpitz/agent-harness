@@ -335,3 +335,9 @@ sprints:
         depends_on:
         - S8-T1
         - S8-T33
+      S8-T35:
+        file: tasks/sprint-08-memory-board-console/35-cursor-stream-json-verdict.md
+        stage: 3
+        depends_on:
+        - S8-T14
+        - S8-T26
