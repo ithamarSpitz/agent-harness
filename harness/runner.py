@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,9 +15,12 @@ from .logging_utils import write_log
 from .models import TaskSpec
 from .prompts import implement_prompt, review_prompt
 from .process_utils import cursor_prompt_via_stdin, prepare_external_argv, stop_process_tree
-from .ui_review import cursor_mcp_auto_approve_argv
+from .ui_review import cursor_mcp_auto_approve_argv, cursor_mcp_config_mentions_playwright
 from .usage import UsageRecorder, count_code_map_calls
 
+
+def _cursor_mcp_config_path() -> Path:
+    return Path.home() / ".cursor" / "mcp.json"
 
 
 class CursorAgentRunner:
@@ -36,7 +40,20 @@ class CursorAgentRunner:
         self.usage = usage
         self.repo_root = repo_root.resolve() if repo_root is not None else None
         self.worktree_root = worktree_root.resolve() if worktree_root is not None else None
+        self._playwright_mcp_warning_emitted = False
 
+    def _maybe_warn_missing_playwright_mcp(self) -> None:
+        if self._playwright_mcp_warning_emitted:
+            return
+        self._playwright_mcp_warning_emitted = True
+        path = _cursor_mcp_config_path()
+        if cursor_mcp_config_mentions_playwright(path):
+            return
+        print(
+            "WARNING: ui_review is enabled but "
+            f"{path} has no MCP server whose name or args mention playwright",
+            file=sys.stderr,
+        )
 
     def _is_verified_harness_worktree(self, workspace: Path) -> bool:
         """Return True only for a Git worktree owned by this harness runtime.
@@ -254,7 +271,8 @@ class CursorAgentRunner:
         # harness-owned worktree; read-only review/planning calls never receive it.
         if phase == "implement" and verified_harness_worktree:
             command += ["--force"]
-        if phase == "review" and self.config.ui_review.enabled:
+        if self.config.ui_review.enabled and phase in {"implement", "review"}:
+            self._maybe_warn_missing_playwright_mcp()
             command += cursor_mcp_auto_approve_argv(self.config.cursor.command)
 
         started = time.monotonic()
