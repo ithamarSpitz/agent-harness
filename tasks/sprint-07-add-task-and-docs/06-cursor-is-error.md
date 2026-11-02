@@ -31,6 +31,10 @@ Cursor's final `result` event can carry `is_error: true` while the process exits
 1. When the final result event has `is_error: true`, classify its text with the same rules as a failed call: network → `WAITING_NETWORK`, overload → `WAITING_PROVIDER_BUSY`, 5xx/server error → `WAITING_PROVIDER_ERROR`, quota → `WAITING_QUOTA`; anything else is an ordinary failed attempt.
 2. When `is_error` is false or missing and the exit code is 0, the answer is a success no matter what words it contains (no pattern matching on successful answers).
 
+# Review findings from the previous round (address them)
+
+- `test_cursor_successful_answer_does_not_trigger_wait_pattern` must use success texts that really match the configured patterns, so it fails if successful answers were classified: include at least one text for each list (for example "Implemented WebSocket reconnect handling", "quota exceeded", "503 service unavailable", "server overloaded"). Keep the `is_error` false / missing parametrization.
+
 # Acceptance criteria
 
 1. Recorded-style fake stream-json outputs with exit code 0 and `is_error: true` for each cause produce the matching status.
