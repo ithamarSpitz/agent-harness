@@ -134,14 +134,14 @@ Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`c
 
 | Config | Default | Quota | Capacity |
 | --- | --- | --- | --- |
-| `policy` | `"wait"` | `wait` \| `stop` | `wait` \| `stop` |
-| Sleep duration | — | `probe_interval_minutes` (**60**) or until `reset_at` + `reset_grace_minutes` (**5**) | `retry_interval_minutes` (**5**) |
-| `keep_awake` | `true` | Windows keep-awake during quota sleep | Same during capacity sleep |
-| `teardown_environment_while_waiting` | `true` | Tear down per-task Docker when pausing | Same |
+| `quota.policy` / `capacity.policy` | `"wait"` | `wait` \| `stop` | `wait` \| `stop` |
+| Sleep duration | — | `quota.probe_interval_minutes` (**60**) or until `quota.reset_at` + `quota.reset_grace_minutes` (**5**) | `capacity.retry_interval_minutes` (**5**) |
+| `quota.keep_awake` / `capacity.keep_awake` | `true` | Windows keep-awake during quota sleep | Same during capacity sleep |
+| `quota.teardown_environment_while_waiting` / `capacity.teardown_environment_while_waiting` | `true` | Tear down per-task Docker when pausing | Same |
 
 **Reset time:** `quota.reset_at` in `harness.yaml`, or runtime override in state meta `quota.reset_at_override` (set/cleared via CLI). `QuotaManager.configured_reset_at()` prefers the override, then yaml, else unknown.
 
-**Automatic resume:** Only inside an active `harness run` or `harness resume` loop when policy is `wait`: after sleep, the loop calls `run_sprint` again. Ctrl+C is safe; manifest may show `PAUSED_BY_USER`. There is no background daemon.
+**Automatic resume:** Only inside an active `harness run` or `harness resume` loop when `quota.policy` / `capacity.policy` is `wait`: after sleep, the loop calls `run_sprint` again. Ctrl+C is safe; manifest may show `PAUSED_BY_USER`. There is no background daemon. Focused `harness run-task` (including via `harness rerun-blocker` on a blocked task) records `QUOTA_WAIT` / `CAPACITY_WAIT` and exits **4** / **5** without sleeping, regardless of policy.
 
 **Keep-awake nesting:** An outer `KeepAwake` wraps the whole run (`execution.keep_awake_during_run`, default true). Quota/capacity waits may nest another `KeepAwake` on Windows.
 
@@ -169,14 +169,18 @@ Review-phase capacity/quota/timeout waits do **not** trigger another implement c
 
 **Codex quota:** `codex.short_quota_patterns`, `codex.weekly_quota_patterns`, `codex.quota_patterns` (separate scopes; metadata `quota_scope` may be `5h`, `weekly`, or `unspecified`).
 
-**Capacity (Cursor):** `capacity.busy_patterns`, `capacity.network_patterns`, `capacity.provider_error_patterns`. Legacy yaml keys `capacity_patterns` / `transient_patterns` merge into busy/provider lists on load.
+**Capacity (Cursor):** `capacity.busy_patterns`, `capacity.network_patterns`, `capacity.provider_error_patterns`.
 
 **Capacity (Codex):** `codex.busy_patterns`, `codex.network_patterns`, `codex.provider_error_patterns`.
+
+**Legacy yaml pattern keys (`codex:` and `capacity:` sections):** on load, `HarnessConfig._load_wait_patterns` merges legacy `capacity_patterns` and `exhaustion_patterns` into `busy_patterns`, and legacy `transient_patterns` into `provider_error_patterns` (unknown legacy transient strings are treated as provider-error-shaped). The `quota:` section uses `quota.exhaustion_patterns` only (no merge helper).
 
 Codex also uses `codex.auth_patterns` and `codex.model_unavailable_patterns` for fallback (not waiting statuses).
 
 ## Known gaps
 
 - Persisted status `WAITING_FOR_CAPACITY` maps to `WAITING_PROVIDER_ERROR`, not to `WAITING_PROVIDER_BUSY`, even when the original failure was overload-shaped.
-- Cursor pattern classification runs before the timeout override; a timed-out call is always treated as `WAITING_TIMEOUT` regardless of network-like output in the log.
+- Cursor pattern classification runs before the timeout override; a timed-out or stalled call is always treated as `WAITING_TIMEOUT` regardless of network-like output in the log.
+- Codex only sets `waiting_cause: timeout` when the hard timeout or stall watchdog fired. Output that merely matches `timeout` / `timed out` in `codex.provider_error_patterns` is classified as `provider_error` → `WAITING_PROVIDER_ERROR`, not `WAITING_TIMEOUT`.
+- Codex `_classify` checks auth and model-unavailable patterns before the timeout branch, so auth-shaped text in diagnostics can trigger same-call Cursor fallback (when enabled) instead of a capacity wait even when the call also timed out.
 - Plan repair (`PlanChangeManager.propose` via `harness plan-change propose`) uses the same Codex/Cursor routing as the table above, but `quota_exhausted`, `capacity_exhausted`, and other non-ok results raise `RuntimeError`. They do not set `WAITING_*`, sleep, or resume. The wait statuses in this document apply to implement and review only.
