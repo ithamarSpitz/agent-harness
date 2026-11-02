@@ -4,8 +4,10 @@ import concurrent.futures
 import hashlib
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .code_map import CodeMapBuilder
 from .config import HarnessConfig
@@ -55,6 +57,7 @@ class Scheduler:
         failures: FailureStore | None = None,
         roadmap: Roadmap | None = None,
         roadmap_path: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.repo_root = repo_root
         self.config = config
@@ -66,6 +69,7 @@ class Scheduler:
         self.failures = failures or FailureStore(verifier.log_dir.parent / "failures")
         self.roadmap = roadmap
         self.roadmap_path = roadmap_path
+        self._clock = clock
         self._runtime_root = verifier.log_dir.parent
         self.task_queue = TaskQueueManager(repo_root, self._runtime_root, state)
         self._merge_in_progress: tuple[str, int] | None = None
@@ -846,8 +850,7 @@ class Scheduler:
             self.code_maps.ensure_project_map(current_commit)
 
             def poll_queue(
-                pool: concurrent.futures.ThreadPoolExecutor,
-                futures: dict[concurrent.futures.Future, TaskSpec],
+                pending: list[TaskSpec],
                 active_unfinished: list[TaskSpec],
             ) -> None:
                 added = self._pickup_queue(
@@ -862,35 +865,83 @@ class Scheduler:
                         continue
                     if task not in active_unfinished:
                         active_unfinished.append(task)
+                        pending.append(task)
                     self._assert_parallel_safe(
                         [t for t in active_unfinished if self.state.get(t.id).status != TaskStatus.DONE],
                         stage,
                     )
-                    running_ids = {futures[f].id for f in futures}
-                    if task.id not in running_ids:
+
+            max_workers = max(1, self.config.execution.max_parallel_agents)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                pending = list(unfinished)
+                futures: dict[concurrent.futures.Future, TaskSpec] = {}
+                outcomes: list[TaskOutcome] = []
+                capacity_retries: dict[str, tuple[TaskSpec, float, TaskOutcome]] = {}
+                retry_seconds = max(1.0, self.config.capacity.retry_interval_minutes * 60.0)
+
+                def collect_completed(
+                    completed: set[concurrent.futures.Future],
+                ) -> None:
+                    for future in completed:
+                        task = futures.pop(future)
+                        outcome = future.result()
+                        if outcome.capacity_paused:
+                            capacity_retries[outcome.task_id] = (
+                                task,
+                                self._clock() + retry_seconds,
+                                outcome,
+                            )
+                        else:
+                            outcomes.append(outcome)
+
+                while futures or pending or capacity_retries:
+                    # Harvest completions before scheduling retries. A future may have
+                    # completed just after the previous FIRST_COMPLETED wait returned;
+                    # it must not count as an active sibling that keeps retries in-stage.
+                    already_completed = {future for future in futures if future.done()}
+                    if already_completed:
+                        collect_completed(already_completed)
+                        poll_queue(pending, unfinished)
+
+                    # With no active sibling, every unresolved task is capacity-paused.
+                    # Return to the CLI wait loop instead of sleeping inside the stage.
+                    if not futures and not pending:
+                        break
+
+                    now = self._clock()
+                    due = [
+                        task_id
+                        for task_id, (_, retry_at, _) in capacity_retries.items()
+                        if retry_at <= now
+                    ]
+                    for task_id in due:
+                        if len(futures) >= max_workers:
+                            break
+                        task, _, _ = capacity_retries.pop(task_id)
                         future = pool.submit(self._run_task, task, current_commit)
                         futures[future] = task
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, self.config.execution.max_parallel_agents)
-            ) as pool:
-                futures: dict[concurrent.futures.Future, TaskSpec] = {
-                    pool.submit(self._run_task, task, current_commit): task for task in unfinished
-                }
-                outcomes: list[TaskOutcome] = []
-                while futures:
+                    # Keep the backlog here, so due retries get the first free slot
+                    # instead of sitting behind siblings in the executor's FIFO queue.
+                    while pending and len(futures) < max_workers:
+                        task = pending.pop(0)
+                        future = pool.submit(self._run_task, task, current_commit)
+                        futures[future] = task
+
+                    wait_seconds = poll_seconds
+                    if capacity_retries and len(futures) < max_workers:
+                        next_retry_at = min(retry_at for _, retry_at, _ in capacity_retries.values())
+                        wait_seconds = min(wait_seconds, max(0.0, next_retry_at - self._clock()))
                     done, _ = concurrent.futures.wait(
                         futures.keys(),
-                        timeout=poll_seconds,
+                        timeout=wait_seconds,
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
                     if not done:
-                        poll_queue(pool, futures, unfinished)
+                        poll_queue(pending, unfinished)
                         continue
-                    for future in done:
-                        outcomes.append(future.result())
-                        del futures[future]
-                    poll_queue(pool, futures, unfinished)
+                    collect_completed(done)
+                    poll_queue(pending, unfinished)
 
             failed = [
                 outcome
@@ -898,7 +949,7 @@ class Scheduler:
                 if not outcome.ok and not outcome.quota_paused and not outcome.capacity_paused
             ]
             quota_paused = [outcome for outcome in outcomes if outcome.quota_paused]
-            capacity_paused = [outcome for outcome in outcomes if outcome.capacity_paused]
+            capacity_paused = [outcome for _, _, outcome in capacity_retries.values()]
             if failed:
                 # Preserve successfully PASSED siblings. Resume will not rerun them.
                 self._record_task_failures(sprint, stage, failed)
