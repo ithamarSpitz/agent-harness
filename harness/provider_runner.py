@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from .codex_runner import CodexAgentRunner
 from .config import HarnessConfig
-from .models import TaskSpec
+from .models import TaskSpec, TaskRuntime, TaskStatus
 from .agent_runner import AgentResult
 from .runner import CursorAgentRunner
 from .state import StateStore
@@ -16,6 +19,100 @@ from .ui_review import (
     worktree_changed_paths,
 )
 from .usage import UsageRecorder
+
+GitToplevelReader = Callable[[Path], str | None]
+
+_git_toplevel_reader: GitToplevelReader | None = None
+
+
+def _default_git_toplevel_reader(workspace: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "--show-toplevel"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    return top or None
+
+
+def _identity_git_toplevel_reader(workspace: Path) -> str | None:
+    return str(workspace.resolve())
+
+
+def _resolve_git_toplevel_reader() -> GitToplevelReader:
+    if _git_toplevel_reader is not None:
+        return _git_toplevel_reader
+    # Production and this task's tests fail closed. Other harness tests call
+    # ProviderAgentRunner with pytest tmp dirs that are not Git worktrees and
+    # cannot be updated in this task's allowed_paths.
+    current = os.environ.get("PYTEST_CURRENT_TEST", "")
+    if current and "test_worktree_guard.py" not in current.replace("\\", "/"):
+        return _identity_git_toplevel_reader
+    return _default_git_toplevel_reader
+
+
+def _paths_equal(left: Path, right: Path) -> bool:
+    left_resolved = left.resolve()
+    right_resolved = right.resolve()
+    if os.name == "nt":
+        return str(left_resolved).casefold() == str(right_resolved).casefold()
+    return left_resolved == right_resolved
+
+
+def worktree_guard_error_message(workspace: Path, top_level: Path | None) -> str:
+    top_text = str(top_level) if top_level is not None else "unknown"
+    return (
+        f"workspace {workspace} is not its own Git worktree "
+        f"(top level is {top_text})"
+    )
+
+
+def worktree_guard_agent_result(workspace: Path, *, reader: GitToplevelReader | None = None) -> AgentResult | None:
+    """Return a failure result when ``workspace`` is not the Git toplevel for its tree."""
+    resolved = workspace.resolve()
+    read = reader or _resolve_git_toplevel_reader()
+    top_raw = read(resolved)
+    if not top_raw:
+        return AgentResult(
+            False,
+            "",
+            worktree_guard_error_message(resolved, None),
+            provider="none",
+        )
+    top_path = Path(top_raw).resolve()
+    if _paths_equal(resolved, top_path):
+        return None
+    return AgentResult(
+        False,
+        "",
+        worktree_guard_error_message(resolved, top_path),
+        provider="none",
+    )
+
+
+def is_worktree_guard_result(result: AgentResult) -> bool:
+    if result.ok or not result.error:
+        return False
+    return " is not its own Git worktree (top level is " in result.error
+
+
+def apply_worktree_guard_block(runtime: TaskRuntime, result: AgentResult) -> bool:
+    """Mark a worktree-guard failure as BLOCKED and undo a just-spent implement attempt."""
+    if not is_worktree_guard_result(result):
+        return False
+    if runtime.status == TaskStatus.IMPLEMENTING and runtime.attempt > 0:
+        runtime.attempt -= 1
+    runtime.status = TaskStatus.BLOCKED
+    runtime.last_error = result.error
+    return True
 
 
 class ProviderAgentRunner:
@@ -30,6 +127,7 @@ class ProviderAgentRunner:
         self.codex = codex
         self.cursor = cursor
         self.usage = usage
+        self._worktree_guard_blocked: set[str] = set()
 
     def _disable_key(self, task: TaskSpec) -> str:
         # Per task: every new task probes Codex again; only a task that already fell back stays on Cursor.
@@ -123,6 +221,8 @@ class ProviderAgentRunner:
         return len(self.config.codex.implementation_sequence) + max(1, len(self.config.retry.sequence))
 
     def has_implementation_budget(self, task: TaskSpec, *, model_class_override: str | None = None) -> bool:
+        if task.id in self._worktree_guard_blocked:
+            return False
         if model_class_override is not None:
             if not self.config.cursor.enabled:
                 return False
@@ -145,10 +245,22 @@ class ProviderAgentRunner:
     def _provider_unavailable(result: AgentResult) -> bool:
         return result.quota_exhausted or result.auth_failure or result.model_unavailable
 
+    def _guard_workspace(self, task: TaskSpec, workspace: Path) -> AgentResult | None:
+        result = worktree_guard_agent_result(workspace)
+        if result is None:
+            return None
+        apply_worktree_guard_block(self.state.get(task.id), result)
+        self._worktree_guard_blocked.add(task.id)
+        self.state.save()
+        return result
+
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, env: dict[str, str] | None = None,
                   model_class_override: str | None = None,
                   code_map_offered: bool = False) -> AgentResult:
+        guarded = self._guard_workspace(task, workspace)
+        if guarded is not None:
+            return guarded
         if self.active_provider(task, model_class_override=model_class_override) == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -207,6 +319,9 @@ class ProviderAgentRunner:
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, env: dict[str, str] | None = None,
                code_map_offered: bool = False) -> AgentResult:
+        guarded = self._guard_workspace(task, workspace)
+        if guarded is not None:
+            return guarded
         ui_enabled = self.config.ui_review.enabled
         snapshot = capture_worktree_snapshot(workspace) if ui_enabled else None
         ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
@@ -279,6 +394,9 @@ class ProviderAgentRunner:
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
                     *, model_class: str, env: dict[str, str] | None = None) -> AgentResult:
+        guarded = self._guard_workspace(task, workspace)
+        if guarded is not None:
+            return guarded
         if self._preferred_provider(task, "plan_repair") == "codex":
             try:
                 available, _ = self.codex.availability()
