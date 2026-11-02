@@ -895,6 +895,8 @@ def parser() -> argparse.ArgumentParser:
 
     init_p = sub.add_parser("init")
     init_p.add_argument("--force", action="store_true")
+    init_p.add_argument("--public", action="store_true")
+    init_p.add_argument("--no-github", action="store_true")
 
     limits_p = sub.add_parser("limits")
     limits_p.add_argument("--json", action="store_true")
@@ -931,7 +933,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = Path(args.root).resolve()
     if args.command == "init":
-        return run_init(root, force=args.force)
+        return run_init(
+            root,
+            force=args.force,
+            public=args.public,
+            no_github=args.no_github,
+        )
     if args.command == "limits":
         return run_limits(as_json=args.json)
     if args.command == "setup-machine":
