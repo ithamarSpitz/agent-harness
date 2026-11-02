@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,62 @@ from .process_utils import prepare_external_argv, resolve_codex_argv, stop_proce
 from .prompts import implement_prompt, plan_change_prompt, review_prompt
 from .agent_runner import AgentResult
 from .usage import UsageRecorder, count_code_map_calls
+
+_BUNDLED_BROWSER_PLUGINS: tuple[str, ...] = (
+    "chrome@openai-bundled",
+    "browser@openai-bundled",
+    "computer-use@openai-bundled",
+    "unified-computer-use@openai-bundled",
+)
+_BROWSER_PLUGIN_ID_MARKERS: tuple[str, ...] = ("chrome", "browser", "computer-use")
+
+
+def codex_home_path() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+
+
+def codex_user_plugin_ids(codex_home: Path | None = None) -> list[str]:
+    home = codex_home_path() if codex_home is None else codex_home.expanduser()
+    config_path = home / "config.toml"
+    if not config_path.is_file():
+        return []
+    try:
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return []
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        return []
+    return [str(key) for key in plugins]
+
+
+def _plugin_id_is_browser_related(plugin_id: str) -> bool:
+    lowered = plugin_id.casefold()
+    return any(marker in lowered for marker in _BROWSER_PLUGIN_ID_MARKERS)
+
+
+def codex_browser_plugins_to_disable(codex_home: Path | None = None) -> list[str]:
+    disabled = set(_BUNDLED_BROWSER_PLUGINS)
+    for plugin_id in codex_user_plugin_ids(codex_home):
+        if _plugin_id_is_browser_related(plugin_id):
+            disabled.add(plugin_id)
+    return sorted(disabled)
+
+
+def codex_plugin_disable_argv(plugin_ids: list[str]) -> list[str]:
+    argv: list[str] = []
+    for plugin_id in plugin_ids:
+        escaped = plugin_id.replace('"', '\\"')
+        argv.extend(["--config", f'plugins."{escaped}".enabled=false'])
+    return argv
+
+
+def codex_playwright_mcp_argv(playwright_mcp_package: str) -> list[str]:
+    package = playwright_mcp_package.replace('"', '\\"')
+    return [
+        "--config", 'mcp_servers.playwright.command="npx"',
+        "--config", f'mcp_servers.playwright.args=["-y","{package}"]',
+    ]
 
 
 class CodexAgentRunner:
@@ -170,12 +227,9 @@ class CodexAgentRunner:
             "--config", f'model_reasoning_effort="{effective_reasoning_effort}"',
             "--config", f'approval_policy="{self.config.codex.approval_policy}"',
         )
-        if self.config.ui_review.enabled and phase == "review":
-            package = self.config.ui_review.playwright_mcp_package.replace('"', '\\"')
-            command += [
-                "--config", 'mcp_servers.playwright.command="npx"',
-                "--config", f'mcp_servers.playwright.args=["-y","{package}"]',
-            ]
+        command += codex_plugin_disable_argv(codex_browser_plugins_to_disable())
+        if self.config.ui_review.enabled and phase != "plan_repair":
+            command += codex_playwright_mcp_argv(self.config.ui_review.playwright_mcp_package)
         if not read_only and sandbox_mode == "workspace-write":
             command += ["--config", f"sandbox_workspace_write.network_access={'true' if self.config.codex.network_access else 'false'}"]
 
