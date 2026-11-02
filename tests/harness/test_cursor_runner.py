@@ -91,13 +91,18 @@ def test_cursor_wait_cause_patterns_are_specific(tmp_path: Path):
     assert runner._waiting_cause("ordinary agent failure") is None
 
 
-def test_cursor_successful_answer_does_not_trigger_wait_pattern(tmp_path: Path):
-    stream = json.dumps({
+@pytest.mark.parametrize("is_error", [False, None])
+def test_cursor_successful_answer_does_not_trigger_wait_pattern(
+    tmp_path: Path, is_error: bool | None,
+):
+    event = {
         "type": "result",
         "subtype": "success",
-        "is_error": False,
         "result": "Implemented WebSocket reconnect handling",
-    })
+    }
+    if is_error is not None:
+        event["is_error"] = is_error
+    stream = json.dumps(event)
     fake = make_python_script(
         tmp_path / "fake-cursor-success.py",
         f"import sys\nsys.stdout.write({stream!r})\n",
@@ -190,14 +195,14 @@ def test_cursor_stream_quota_error_is_detected_without_exposing_events(tmp_path:
     assert result.output == "quota exceeded: out of included usage"
 
 
-@pytest.mark.parametrize(("message", "cause"), [
-    ("connection reset by peer", "network"),
-    ("server overloaded", "provider_busy"),
-    ("503 service unavailable", "provider_error"),
-    ("unexpected upstream failure", "provider_error"),
+@pytest.mark.parametrize(("message", "cause", "quota_exhausted"), [
+    ("connection reset by peer", "network", False),
+    ("server overloaded", "provider_busy", False),
+    ("503 service unavailable", "provider_error", False),
+    ("quota exceeded: out of included usage", None, True),
 ])
 def test_cursor_zero_exit_error_result_gets_matching_wait_cause(
-    tmp_path: Path, message: str, cause: str,
+    tmp_path: Path, message: str, cause: str | None, quota_exhausted: bool,
 ):
     stream = json.dumps({
         "type": "result",
@@ -218,7 +223,34 @@ def test_cursor_zero_exit_error_result_gets_matching_wait_cause(
 
     assert not result.ok
     assert result.waiting_cause == cause
-    assert result.transient_error == (cause != "provider_busy")
+    assert result.quota_exhausted is quota_exhausted
+    assert result.transient_error == (cause in {"network", "provider_error"})
+
+
+def test_cursor_zero_exit_unclassified_error_is_an_ordinary_failure(tmp_path: Path):
+    stream = json.dumps({
+        "type": "result",
+        "subtype": "error",
+        "is_error": True,
+        "result": "ordinary agent failure",
+    })
+    fake = make_python_script(
+        tmp_path / "fake-ordinary-error.py",
+        f"import sys\nsys.stdout.write({stream!r})\n",
+    )
+    runner = CursorAgentRunner(_config(tmp_path, fake), tmp_path / "logs")
+
+    result = runner._invoke(
+        task_id="ERROR", phase="implement", prompt="x", workspace=tmp_path,
+        model_class="worker", timeout_minutes=1, log_name="ordinary-error.log",
+    )
+
+    assert not result.ok
+    assert result.error == "Cursor reported an error"
+    assert result.waiting_cause is None
+    assert not result.transient_error
+    assert not result.capacity_exhausted
+    assert not result.quota_exhausted
 
 
 def test_cursor_text_output_format_remains_raw(tmp_path: Path):
