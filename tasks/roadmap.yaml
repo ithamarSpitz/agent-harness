@@ -185,6 +185,7 @@ sprints:
         depends_on:
         - S8-T1
         - S8-T14
+        - S8-T34
       S8-T7:
         file: tasks/sprint-08-memory-board-console/07-console-read-commands.md
         stage: 2
@@ -324,3 +325,13 @@ sprints:
         stage: 4
         depends_on:
         - S8-T31
+      S8-T33:
+        file: tasks/sprint-08-memory-board-console/33-agent-ledger.md
+        stage: 1
+        depends_on: []
+      S8-T34:
+        file: tasks/sprint-08-memory-board-console/34-admission-fair-share.md
+        stage: 2
+        depends_on:
+        - S8-T1
+        - S8-T33

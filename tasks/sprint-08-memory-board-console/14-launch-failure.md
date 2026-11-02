@@ -39,6 +39,7 @@ After S7-T5 the two providers disagree: a Codex launch `OSError` becomes `WAITIN
 2. If another provider is configured and usable for that phase, fall back to it for this task (same mechanism as quota fallback) without spending an attempt.
 3. Otherwise the task becomes `BLOCKED` immediately, without spending further attempts, with that message as its error, and `harness failure` shows it plus the hint `check the program with harness setup-machine`.
 4. Network, busy, provider-error and timeout waits are unchanged.
+5. A process that starts but dies at once with a Windows start-up resource error (exit code 3221225794 = 0xC0000142, or 3221225495 = 0xC0000017) is a resource problem, not a provider problem and not a task failure: no attempt is spent, the provider is not disabled, and the task goes back to the queue to be started again later (when memory allows, after S8-T6). After 5 such launches in a row for the same task it becomes `BLOCKED` with `<provider> could not start: the computer is out of resources (exit code ...)`.
 
 # Acceptance criteria
 

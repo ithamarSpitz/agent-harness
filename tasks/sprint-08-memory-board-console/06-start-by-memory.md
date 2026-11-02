@@ -8,6 +8,7 @@ allow_protected: false
 depends_on:
   - S8-T1
   - S8-T14
+  - S8-T34
 allowed_paths:
   - harness/scheduler.py
   - tests/harness/test_scheduler_memory.py
@@ -28,8 +29,10 @@ The scheduler starts another agent only when memory allows, and a finished task 
 # Decisions (do not reopen)
 
 1. Today `run_sprint` runs a stage's tasks on a pool sized `max_parallel_agents`. Keep the stage semantics (all tasks of a stage finish before `_integrate_stage`) and the S7 queue pickup, but start tasks one by one under this rule:
-   - start a pending task when running < `max_parallel_agents` and `free_memory_gb() - estimate >= min_free_memory_gb`;
-   - when nothing is running, always start one (log a warning if memory is short), so a sprint never stalls;
+   - start a pending task only when `harness.admission.can_start(...)` (S8-T34) allows it, with this harness's project, `free_memory_gb()`, the estimate, `min_free_memory_gb`, `max_parallel_agents`, and `harness.agent_ledger.snapshot()` (S8-T33); it already covers the per-project limit, the always-one rule, memory reserved by agents that just started, and fairness between projects;
+   - register each started agent in the ledger (`register_agent`) and unregister it when its call ends (also on errors, in a `finally`);
+   - while this harness has ready tasks it cannot start, keep its waiting record up to date with `set_waiting` (0 when nothing is waiting or the run ends);
+   - log and show the admission `reason` when a task waits for memory;
    - re-check every `execution.watchdog_poll_seconds` and whenever a task finishes;
    - `estimate` = `memory_per_agent_gb` from config for now (S8-T8 replaces it with the learned value through one method, `current_memory_estimate()`).
 2. If `free_memory_gb()` returns `None`, use only `max_parallel_agents` and log once per run.
