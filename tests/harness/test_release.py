@@ -203,14 +203,14 @@ def test_failed_sprint_and_dry_run_skip_release(tmp_path: Path):
         stage_verification=[file_exists_command(missing)],
     )
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("T").status == TaskStatus.VERIFIED
+    assert state.get("T").status == TaskStatus.PASSED
     _assert_release_skipped(record, state)
 
     quota_root = tmp_path / "quota"
     scheduler, roadmap, state, _ = _init_sprint_repo(quota_root, release_commands=[marker])
     scheduler.runner = QuotaRunner()
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("T").status == TaskStatus.WAITING_FOR_QUOTA
+    assert state.get("T").status == TaskStatus.WAITING_QUOTA
     _assert_release_skipped(record, state)
 
     dry_root = tmp_path / "dry"
@@ -262,7 +262,7 @@ def test_manual_release_reruns_and_refuses_incomplete_sprint(tmp_path: Path):
     assert [marker for marker, _cwd in _recorded_calls(record)] == ["once"]
 
     runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", tmp_path / "harness.yaml")
-    runtime.state.get("T").status = TaskStatus.VERIFIED
+    runtime.state.get("T").status = TaskStatus.PASSED
     runtime.state.save()
     assert cmd_release(runtime, "s1") == 2
     assert [marker for marker, _cwd in _recorded_calls(record)] == ["once"]
@@ -294,7 +294,7 @@ def test_last_stage_barrier_recovery_runs_release(tmp_path: Path):
     )
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("T").status == TaskStatus.VERIFIED
+    assert state.get("T").status == TaskStatus.PASSED
     _assert_release_skipped(record, state)
 
     marker.write_text("ok\n", encoding="utf-8")

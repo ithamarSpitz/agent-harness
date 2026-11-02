@@ -108,7 +108,7 @@ def test_blocked_task_can_be_rerun_alone_then_resume_without_rerunning_sibling(t
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
     assert state.get("A").status == TaskStatus.BLOCKED
-    assert state.get("B").status == TaskStatus.VERIFIED
+    assert state.get("B").status == TaskStatus.PASSED
     record = failures.get("s1")
     assert record is not None
     assert record["kind"] == "TASK_BLOCKED"
@@ -123,7 +123,7 @@ def test_blocked_task_can_be_rerun_alone_then_resume_without_rerunning_sibling(t
     assert scheduler._run_task(
         roadmap.task("A"), a.base_ref or worktrees.head_commit(), model_class_override="escalation"
     ).ok
-    assert state.get("A").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
     assert runner.overrides[-1] == ("A", "escalation")
     assert runner.calls == {"A": 2, "B": 1}
 
@@ -145,8 +145,8 @@ def test_failed_stage_barrier_is_rerunnable_without_rerunning_agents(tmp_path: P
     scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.VERIFIED
-    assert state.get("B").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
+    assert state.get("B").status == TaskStatus.PASSED
     record = failures.get("s1")
     assert record is not None and record["kind"] == "STAGE_BARRIER"
     assert runner.calls == {"A": 1, "B": 1}

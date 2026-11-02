@@ -528,7 +528,7 @@ sprints:
     scheduler.task_queue.enqueue(tmp_path / "extra/B-add.md", "s1", roadmap)
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
     assert run(["git", "rev-parse", "HEAD"], tmp_path) == base_commit
-    assert state.get("A").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
 
 
 def test_merge_in_progress_rejects_current(tmp_path: Path):
@@ -1123,8 +1123,8 @@ def test_rerun_blocker_stage_barrier_includes_added_task(tmp_path: Path):
     write(tmp_path / "extra/D-add.md", task_brief("D", "out/D.txt", file_exists_command("out/D.txt")))
     scheduler.task_queue.enqueue(tmp_path / "extra/D-add.md", "s1", roadmap)
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.VERIFIED
-    assert state.get("D").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
+    assert state.get("D").status == TaskStatus.PASSED
     assert state.get("D").added
 
     marker.write_text("ok\n", encoding="utf-8")
@@ -1143,7 +1143,7 @@ def test_rerun_blocker_then_resume_picks_up_task_queued_during_barrier(tmp_path:
     _write_added_task_project(tmp_path, stage_verification=file_exists_command(marker))
     scheduler, roadmap, state = build_scheduler(tmp_path, FakeRunner())
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
 
     write(tmp_path / "extra/N-add.md", task_brief("N", "out/N.txt", file_exists_command("out/N.txt")))
     scheduler.task_queue.enqueue(tmp_path / "extra/N-add.md", "s1", roadmap, stage_choice="next")
@@ -1175,7 +1175,7 @@ def test_rerun_blocker_runs_blocked_added_task(tmp_path: Path):
     write(tmp_path / "extra/B-add.md", task_brief("B", "out/B.txt", file_exists_command("out/B.txt")))
     scheduler.task_queue.enqueue(tmp_path / "extra/B-add.md", "s1", roadmap)
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
     assert state.get("B").status == TaskStatus.BLOCKED
     assert state.get("B").added
     record = scheduler.failures.get("s1")
@@ -1187,7 +1187,7 @@ def test_rerun_blocker_runs_blocked_added_task(tmp_path: Path):
     runtime.scheduler.runner = FakeRunner()
     assert "B" not in runtime.roadmap.sprint("s1").tasks
     assert cmd_rerun_blocker(runtime, "s1", None) == 0
-    assert runtime.state.get("B").status == TaskStatus.VERIFIED
+    assert runtime.state.get("B").status == TaskStatus.PASSED
     assert runtime.state.get("B").added
 
 

@@ -35,22 +35,40 @@ class ProviderAgentRunner:
         # Per task: every new task probes Codex again; only a task that already fell back stays on Cursor.
         return f"{task.sprint}.{task.id}.provider.codex.disabled"
 
-    def _codex_enabled_for(self, task: TaskSpec) -> bool:
+    @staticmethod
+    def _phase_disable_key(task: TaskSpec, provider: str, phase: str) -> str:
+        return f"{task.sprint}.{task.id}.provider.{provider}.disabled.{phase}"
+
+    def _codex_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
         return (
             self.config.codex.enabled
             and not bool(self.state.get_meta(self._disable_key(task)))
+            and not bool(
+                phase and self.state.get_meta(self._phase_disable_key(task, "codex", phase))
+            )
         )
 
-    def _preferred_provider(self, task: TaskSpec) -> str:
+    def _cursor_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
+        return (
+            self.config.cursor.enabled
+            and not bool(
+                self.state.get_meta(f"{task.sprint}.{task.id}.provider.cursor.disabled")
+            )
+            and not bool(
+                phase and self.state.get_meta(self._phase_disable_key(task, "cursor", phase))
+            )
+        )
+
+    def _preferred_provider(self, task: TaskSpec, phase: str) -> str:
         for provider in self.config.providers.priority:
             normalized = provider.strip().casefold()
-            if normalized == "codex" and self._codex_enabled_for(task):
+            if normalized == "codex" and self._codex_enabled_for(task, phase):
                 return "codex"
-            if normalized == "cursor" and self.config.cursor.enabled:
+            if normalized == "cursor" and self._cursor_enabled_for(task, phase):
                 return "cursor"
-        if self._codex_enabled_for(task):
+        if self._codex_enabled_for(task, phase):
             return "codex"
-        if self.config.cursor.enabled:
+        if self._cursor_enabled_for(task, phase):
             return "cursor"
         return "none"
 
@@ -62,6 +80,29 @@ class ProviderAgentRunner:
                 "task_id": task.id, "reason": reason, "ok": False, "duration_seconds": 0.0,
                 "code_map": False,
             })
+
+    def fallback_after_stalls(self, task: TaskSpec, provider: str, phase: str) -> bool:
+        next_provider = None
+        if provider == "codex" and self._cursor_enabled_for(task, phase):
+            next_provider = "cursor"
+        elif provider == "cursor" and self._codex_enabled_for(task, phase):
+            try:
+                codex_available, _ = self.codex.availability(refresh=True)
+            except Exception:
+                codex_available = False
+            if codex_available:
+                next_provider = "codex"
+        if next_provider is not None:
+            self.state.set_meta(self._phase_disable_key(task, provider, phase), "stalled")
+            if self.usage is not None:
+                self.usage.record({
+                    "event_type": "provider_switch", "provider": provider,
+                    "switch_to": next_provider,
+                    "task_id": task.id, "reason": f"stalled:{phase}", "ok": False,
+                    "duration_seconds": 0.0, "code_map": False,
+                })
+            return True
+        return False
 
     def _provider_attempt(self, task: TaskSpec, provider: str) -> int:
         return int(self.state.get(task.id).provider_attempts.get(provider, 0))
@@ -76,7 +117,7 @@ class ProviderAgentRunner:
             if not self.config.cursor.enabled:
                 raise RuntimeError("Cursor is disabled in harness.yaml; remove --model-class or explicitly re-enable Cursor")
             return "cursor"
-        return self._preferred_provider(task)
+        return self._preferred_provider(task, "implement")
 
     def max_implementation_attempts(self, task: TaskSpec) -> int:
         return len(self.config.codex.implementation_sequence) + max(1, len(self.config.retry.sequence))
@@ -141,7 +182,7 @@ class ProviderAgentRunner:
                 if not self.config.cursor.enabled:
                     return AgentResult(
                         False, "", f"Codex integration error: {type(exc).__name__}",
-                        provider="codex", transient_error=True,
+                        provider="codex", transient_error=True, waiting_cause="provider_error",
                     )
                 self._mark_codex_disabled(task, f"integration_error:{type(exc).__name__}")
 
@@ -159,7 +200,7 @@ class ProviderAgentRunner:
             task, workspace, timeout_minutes, attempt, previous_failure,
             env=env, model_class_override=model_class, code_map_offered=code_map_offered,
         )
-        if not result.quota_exhausted and not result.capacity_exhausted:
+        if not result.quota_exhausted and result.waiting_cause is None:
             self._consume_provider_attempt(task, "cursor")
         return result
 
@@ -193,7 +234,7 @@ class ProviderAgentRunner:
     def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                       timeout_minutes: int, *, env: dict[str, str] | None = None,
                       code_map_offered: bool = False) -> AgentResult:
-        if self._preferred_provider(task) == "codex":
+        if self._preferred_provider(task, "review") == "codex":
             try:
                 available, _ = self.codex.availability()
                 if available:
@@ -220,7 +261,7 @@ class ProviderAgentRunner:
                 if not self.config.cursor.enabled:
                     return AgentResult(
                         False, "", f"Codex integration error: {type(exc).__name__}",
-                        provider="codex", transient_error=True,
+                        provider="codex", transient_error=True, waiting_cause="provider_error",
                     )
                 self._mark_codex_disabled(task, f"integration_error:{type(exc).__name__}")
         if not self.config.cursor.enabled:
@@ -238,7 +279,7 @@ class ProviderAgentRunner:
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
                     *, model_class: str, env: dict[str, str] | None = None) -> AgentResult:
-        if self._preferred_provider(task) == "codex":
+        if self._preferred_provider(task, "plan_repair") == "codex":
             try:
                 available, _ = self.codex.availability()
                 if available:
@@ -264,7 +305,7 @@ class ProviderAgentRunner:
                 if not self.config.cursor.enabled:
                     return AgentResult(
                         False, "", f"Codex integration error: {type(exc).__name__}",
-                        provider="codex", transient_error=True,
+                        provider="codex", transient_error=True, waiting_cause="provider_error",
                     )
                 self._mark_codex_disabled(task, f"integration_error:{type(exc).__name__}")
         if not self.config.cursor.enabled:

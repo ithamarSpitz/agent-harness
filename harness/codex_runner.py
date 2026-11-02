@@ -72,10 +72,14 @@ class CodexAgentRunner:
             return "auth"
         if self._matches(diagnostics, self.config.codex.model_unavailable_patterns):
             return "model_unavailable"
-        if self._matches(diagnostics, self.config.codex.capacity_patterns):
-            return "capacity"
-        if timed_out or start_error or self._matches(diagnostics, self.config.codex.transient_patterns):
-            return "transient"
+        if timed_out:
+            return "timeout"
+        if start_error or self._matches(diagnostics, self.config.codex.network_patterns):
+            return "network"
+        if self._matches(diagnostics, self.config.codex.busy_patterns):
+            return "provider_busy"
+        if self._matches(diagnostics, self.config.codex.provider_error_patterns):
+            return "provider_error"
         return None
 
     def _effective_sandbox(self, *, read_only: bool, windows: bool | None = None) -> str:
@@ -142,6 +146,7 @@ class CodexAgentRunner:
             "ok": result.ok, "timed_out": result.timed_out, "stalled": result.stalled,
             "quota_exhausted": result.quota_exhausted, "quota_scope": result.quota_scope,
             "capacity_exhausted": result.capacity_exhausted,
+            "waiting_cause": result.waiting_cause,
             "transient_error": result.transient_error, "auth_failure": result.auth_failure,
             "model_unavailable": result.model_unavailable, "input_tokens": result.input_tokens,
             "cached_input_tokens": result.cached_input_tokens, "output_tokens": result.output_tokens,
@@ -197,7 +202,8 @@ class CodexAgentRunner:
         except OSError as exc:
             result = AgentResult(False, "", f"Could not start Codex CLI: {exc}",
                                  duration_seconds=time.monotonic() - started, model=model,
-                                 transient_error=True, provider="codex")
+                                 transient_error=True, waiting_cause="provider_error",
+                                 provider="codex")
             write_log(self.log_dir, log_name, str(exc))
             self._record_usage(task_id, phase, model, attempt, result, code_map)
             return result
@@ -258,17 +264,19 @@ class CodexAgentRunner:
 
         kind = self._classify(diagnostics, timed_out=(timed_out or stalled))
         if return_code != 0 and kind is None:
-            kind = "transient"
+            kind = "provider_error"
         if return_code == 0 and not final_message and kind is None:
-            kind = "transient"
+            kind = "provider_error"
             diagnostics = (diagnostics + "\nCodex JSON stream contained no final agent_message").strip()
         ok = return_code == 0 and not timed_out and not stalled and kind is None
         errors = {
             "quota": "Codex usage quota exhausted",
             "quota_5h": "Codex 5-hour usage quota exhausted",
             "quota_weekly": "Codex weekly usage quota exhausted",
-            "capacity": "Codex provider capacity temporarily exhausted",
-            "transient": diagnostics or "Codex transient execution failure",
+            "network": diagnostics or "Codex network failure",
+            "provider_busy": "Codex provider temporarily overloaded",
+            "provider_error": diagnostics or "Codex provider server error",
+            "timeout": diagnostics or "Codex call timed out",
             "auth": diagnostics or "Codex authentication unavailable",
             "model_unavailable": diagnostics or f"Codex model unavailable: {model}",
         }
@@ -276,7 +284,9 @@ class CodexAgentRunner:
             ok=ok, output=final_message, error=(errors.get(kind) if kind is not None else None), timed_out=timed_out, stalled=stalled,
             duration_seconds=duration, model=model, quota_exhausted=bool(kind and kind.startswith("quota")),
             quota_scope=("5h" if kind == "quota_5h" else ("weekly" if kind == "quota_weekly" else ("unspecified" if kind == "quota" else None))),
-            capacity_exhausted=(kind == "capacity"), transient_error=(kind == "transient"),
+            capacity_exhausted=(kind == "provider_busy"),
+            transient_error=(kind in {"network", "provider_error", "timeout"}),
+            waiting_cause=(kind if kind in {"network", "provider_busy", "provider_error", "timeout"} else None),
             auth_failure=(kind == "auth"), model_unavailable=(kind == "model_unavailable"), provider="codex",
             input_tokens=usage["input_tokens"] or None, cached_input_tokens=usage["cached_input_tokens"] or None,
             output_tokens=usage["output_tokens"] or None, reasoning_output_tokens=usage["reasoning_output_tokens"] or None,

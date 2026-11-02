@@ -188,7 +188,7 @@ sprints:
 
     assert main([*common, "rerun-blocker", "s1", "--model-class", "escalation"]) == 0
     state = json.loads((tmp_path / ".harness/state.json").read_text(encoding="utf-8"))
-    assert state["tasks"]["A"]["status"] == "VERIFIED"
+    assert state["tasks"]["A"]["status"] == "PASSED"
 
     calls_before_resume = calls.read_text(encoding="utf-8").splitlines()
     assert calls_before_resume == ["cheap", "expensive"]

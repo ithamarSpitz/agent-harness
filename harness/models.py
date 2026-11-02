@@ -9,15 +9,33 @@ from typing import Any
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
     READY = "READY"
-    RUNNING = "RUNNING"
-    VERIFYING = "VERIFYING"
+    IMPLEMENTING = "IMPLEMENTING"
+    CHECKING = "CHECKING"
     REVIEWING = "REVIEWING"
-    VERIFIED = "VERIFIED"   # passed task checks, waiting for stage integration
+    PASSED = "PASSED"       # passed task checks, waiting for stage integration
+    MERGING = "MERGING"
     RETRY = "RETRY"
     DONE = "DONE"           # integrated and stage barrier passed
     BLOCKED = "BLOCKED"
-    WAITING_FOR_QUOTA = "WAITING_FOR_QUOTA"
-    WAITING_FOR_CAPACITY = "WAITING_FOR_CAPACITY"
+    WAITING_QUOTA = "WAITING_QUOTA"
+    WAITING_NETWORK = "WAITING_NETWORK"
+    WAITING_PROVIDER_BUSY = "WAITING_PROVIDER_BUSY"
+    WAITING_PROVIDER_ERROR = "WAITING_PROVIDER_ERROR"
+    WAITING_TIMEOUT = "WAITING_TIMEOUT"
+
+
+_LEGACY_TASK_STATUSES = {
+    "RUNNING": TaskStatus.IMPLEMENTING,
+    "VERIFYING": TaskStatus.CHECKING,
+    "VERIFIED": TaskStatus.PASSED,
+    "WAITING_FOR_QUOTA": TaskStatus.WAITING_QUOTA,
+    "WAITING_FOR_CAPACITY": TaskStatus.WAITING_PROVIDER_ERROR,
+}
+
+
+def _task_status(value: object) -> TaskStatus:
+    text = str(value)
+    return _LEGACY_TASK_STATUSES.get(text) or TaskStatus(text)
 
 
 @dataclass(slots=True)
@@ -60,7 +78,9 @@ class TaskRuntime:
     started_at: str | None = None
     finished_at: str | None = None
     waiting_phase: str | None = None
+    waiting_provider: str | None = None
     provider_attempts: dict[str, int] = field(default_factory=dict)
+    stall_counts: dict[str, int] = field(default_factory=dict)
     added: bool = False
     brief_path: str | None = None
 
@@ -77,7 +97,9 @@ class TaskRuntime:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "waiting_phase": self.waiting_phase,
+            "waiting_provider": self.waiting_provider,
             "provider_attempts": dict(self.provider_attempts),
+            "stall_counts": dict(self.stall_counts),
             "added": self.added,
             "brief_path": self.brief_path,
         }
@@ -86,7 +108,7 @@ class TaskRuntime:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "TaskRuntime":
         return cls(
-            status=TaskStatus(data.get("status", TaskStatus.PENDING.value)),
+            status=_task_status(data.get("status", TaskStatus.PENDING.value)),
             attempt=int(data.get("attempt", 0)),
             branch=data.get("branch"),
             worktree=data.get("worktree"),
@@ -97,7 +119,9 @@ class TaskRuntime:
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
             waiting_phase=data.get("waiting_phase"),
+            waiting_provider=data.get("waiting_provider"),
             provider_attempts={str(k): int(v) for k, v in (data.get("provider_attempts") or {}).items()},
+            stall_counts={str(k): int(v) for k, v in (data.get("stall_counts") or {}).items()},
             added=bool(data.get("added", False)),
             brief_path=data.get("brief_path"),
         )

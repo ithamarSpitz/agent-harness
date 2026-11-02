@@ -51,6 +51,8 @@ class UsageRecorder:
         return {
             "calls": 0, "seconds": 0.0, "failures": 0, "stalls": 0, "timeouts": 0,
             "quota_pauses": 0, "capacity_pauses": 0, "transient_failures": 0,
+            "waiting_network": 0, "waiting_provider_busy": 0,
+            "waiting_provider_error": 0, "waiting_timeout": 0,
             "provider_switches": 0, "input_tokens": 0, "output_tokens": 0,
         }
 
@@ -73,6 +75,10 @@ class UsageRecorder:
             row["capacity_pauses"] = int(row["capacity_pauses"]) + 1
         if event.get("transient_error", False):
             row["transient_failures"] = int(row["transient_failures"]) + 1
+        cause = event.get("waiting_cause")
+        cause_key = f"waiting_{cause}"
+        if cause in {"network", "provider_busy", "provider_error", "timeout"}:
+            row[cause_key] = int(row[cause_key]) + 1
         row["input_tokens"] = int(row["input_tokens"]) + int(event.get("input_tokens") or 0)
         row["output_tokens"] = int(row["output_tokens"]) + int(event.get("output_tokens") or 0)
 

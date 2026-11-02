@@ -97,6 +97,7 @@ def fail_review_for_worktree_edits(result: AgentResult, changed_paths: list[str]
         quota_scope=result.quota_scope,
         capacity_exhausted=result.capacity_exhausted,
         transient_error=result.transient_error,
+        waiting_cause=result.waiting_cause,
         auth_failure=result.auth_failure,
         model_unavailable=result.model_unavailable,
         provider=result.provider,

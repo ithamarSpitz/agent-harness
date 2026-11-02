@@ -30,10 +30,16 @@ class CapacityManager:
         self.state = state
 
     def waiting_tasks(self) -> list[str]:
+        waiting_statuses = {
+            TaskStatus.WAITING_NETWORK,
+            TaskStatus.WAITING_PROVIDER_BUSY,
+            TaskStatus.WAITING_PROVIDER_ERROR,
+            TaskStatus.WAITING_TIMEOUT,
+        }
         return sorted(
             task_id
             for task_id, runtime in self.state.all().items()
-            if runtime.status == TaskStatus.WAITING_FOR_CAPACITY
+            if runtime.status in waiting_statuses
         )
 
     def status(self) -> CapacityStatus:
@@ -48,7 +54,20 @@ class CapacityManager:
 
     def wait_once(self, *, sprint_id: str, sleep_fn=time.sleep) -> float:
         seconds = self.next_wait_seconds()
-        self.state.set_meta(f"{sprint_id}.run_status", "WAITING_FOR_CAPACITY")
+        waiting = [
+            runtime.status.value
+            for runtime in self.state.all().values()
+            if runtime.status in {
+                TaskStatus.WAITING_NETWORK,
+                TaskStatus.WAITING_PROVIDER_BUSY,
+                TaskStatus.WAITING_PROVIDER_ERROR,
+                TaskStatus.WAITING_TIMEOUT,
+            }
+        ]
+        self.state.set_meta(
+            f"{sprint_id}.run_status",
+            waiting[0] if waiting else TaskStatus.WAITING_PROVIDER_ERROR.value,
+        )
         with KeepAwake(self.config.capacity.keep_awake):
             remaining = seconds
             while remaining > 0:

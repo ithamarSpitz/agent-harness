@@ -99,15 +99,17 @@ class CodexConfig:
         "you've hit your usage limit", "you have hit your usage limit",
         "usage limit reached", "no codex usage remaining",
     ])
-    capacity_patterns: list[str] = field(default_factory=lambda: [
+    busy_patterns: list[str] = field(default_factory=lambda: [
         "[resource_exhausted]", "resource_exhausted", "insufficient capacity",
         "provider capacity", "server overloaded", "temporarily overloaded", "high load",
     ])
-    transient_patterns: list[str] = field(default_factory=lambda: [
-        "connection lost", "connection reset", "network error", "transport error",
-        "websocket", "service unavailable", "internal server error", "timed out",
-        "timeout", "temporary failure", "502 bad gateway", "503 service unavailable",
-        "504 gateway timeout",
+    network_patterns: list[str] = field(default_factory=lambda: [
+        "connection failed", "connection lost", "connection reset", "network error",
+        "transport error", "websocket",
+    ])
+    provider_error_patterns: list[str] = field(default_factory=lambda: [
+        "service unavailable", "internal server error", "timed out", "timeout",
+        "temporary failure", "502 bad gateway", "503 service unavailable", "504 gateway timeout",
     ])
     auth_patterns: list[str] = field(default_factory=lambda: [
         "not logged in", "please run codex login", "authentication required",
@@ -199,7 +201,7 @@ class CapacityConfig:
     retry_interval_minutes: float = 5.0
     keep_awake: bool = True
     teardown_environment_while_waiting: bool = True
-    exhaustion_patterns: list[str] = field(default_factory=lambda: [
+    busy_patterns: list[str] = field(default_factory=lambda: [
         "retriableerror: [resource_exhausted]",
         "[resource_exhausted]",
         "insufficient capacity",
@@ -207,6 +209,15 @@ class CapacityConfig:
         "server overloaded",
         "temporarily overloaded",
         "high load",
+    ])
+    network_patterns: list[str] = field(default_factory=lambda: [
+        "connection failed", "connection lost", "connection reset", "network error",
+        "transport error", "websocket",
+    ])
+    provider_error_patterns: list[str] = field(default_factory=lambda: [
+        "service unavailable", "internal server error", "temporary failure",
+        "500 internal server error", "502 bad gateway", "503 service unavailable",
+        "504 gateway timeout",
     ])
 
 
@@ -275,6 +286,21 @@ class HarnessConfig:
         }
         return CodeMapConfig(**allowed)
 
+    @staticmethod
+    def _load_wait_patterns(raw: Any, config_type: type[CodexConfig] | type[CapacityConfig]):
+        section = dict(raw or {})
+        defaults = config_type()
+        legacy_busy = section.pop("capacity_patterns", [])
+        legacy_transient = section.pop("transient_patterns", [])
+        legacy_exhaustion = section.pop("exhaustion_patterns", [])
+        if legacy_busy or legacy_exhaustion:
+            section["busy_patterns"] = list(section.get("busy_patterns", defaults.busy_patterns)) + list(legacy_busy) + list(legacy_exhaustion)
+        if legacy_transient:
+            # Custom legacy transient strings have no reliable subtype. The
+            # compatibility rule maps unknown transient failures to provider error.
+            section["provider_error_patterns"] = list(section.get("provider_error_patterns", defaults.provider_error_patterns)) + list(legacy_transient)
+        return config_type(**section)
+
     @classmethod
     def load(cls, path: Path) -> "HarnessConfig":
         raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -288,7 +314,7 @@ class HarnessConfig:
             worktree=WorktreeConfig(**raw.get("worktree", {})),
             code_map=cls._load_code_map(raw.get("code_map", {})),
             cursor=CursorConfig(**raw.get("cursor", {})),
-            codex=CodexConfig(**raw.get("codex", {})),
+            codex=cls._load_wait_patterns(raw.get("codex", {}), CodexConfig),
             providers=ProvidersConfig(**raw.get("providers", {})),
             retry=RetryConfig(**raw.get("retry", {})),
             verification=VerificationConfig(**raw.get("verification", {})),
@@ -296,7 +322,7 @@ class HarnessConfig:
             context=ContextConfig(**raw.get("context", {})),
             environment=EnvironmentConfig(**raw.get("environment", {})),
             quota=QuotaConfig(**raw.get("quota", {})),
-            capacity=CapacityConfig(**raw.get("capacity", {})),
+            capacity=cls._load_wait_patterns(raw.get("capacity", {}), CapacityConfig),
             plan_repair=PlanRepairConfig(**raw.get("plan_repair", {})),
             ui_review=UIReviewConfig(**raw.get("ui_review", {})),
             release=ReleaseConfig(**raw.get("release", {})),

@@ -88,7 +88,7 @@ class RunManifestManager:
             existing = self.runs_root / run_id / "manifest.json"
             if existing.exists():
                 existing_payload = json.loads(existing.read_text(encoding="utf-8"))
-                existing_payload["status"] = "RUNNING"
+                existing_payload["status"] = "IMPLEMENTING"
                 existing_payload.setdefault("resumed_at", []).append(datetime.now(timezone.utc).isoformat())
                 current_revision = _plan_revision(self.state)
                 if existing_payload.get("plan_revision") != current_revision:
@@ -105,6 +105,7 @@ class RunManifestManager:
         # a task's prior Codex->Cursor switch caused by quota/auth/model unavailability.
         for task_id in sprint.tasks:
             self.state.set_meta(f"{sprint.id}.{task_id}.provider.codex.disabled", None)
+            self.state.set_meta(f"{sprint.id}.{task_id}.provider.cursor.disabled", None)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_id = f"{sprint.id}-{stamp}-{uuid.uuid4().hex[:8]}"
         run_dir = self.runs_root / run_id
@@ -145,7 +146,7 @@ class RunManifestManager:
                 "architecture": _tree_hash(self.root, architecture_files),
                 "task_files": _tree_hash(self.root, self._spec_files(sprint)),
             },
-            "status": "RUNNING",
+            "status": "IMPLEMENTING",
         }
         path = run_dir / "manifest.json"
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

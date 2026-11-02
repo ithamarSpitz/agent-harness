@@ -419,7 +419,7 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
 
             record = runtime.failures.get(sprint_id)
             if record is not None and record.get("kind") == "QUOTA_WAIT":
-                runtime.manifests.set_status(sprint_id, "WAITING_FOR_QUOTA")
+                runtime.manifests.set_status(sprint_id, "WAITING_QUOTA")
                 print(runtime.failures.render(record), file=sys.stderr)
                 if runtime.config.quota.policy == "wait":
                     seconds = runtime.quota.next_wait_seconds()
@@ -432,12 +432,13 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
                     # own context is intentionally harmless/nested and also keeps
                     # standalone wait calls safe.
                     runtime.quota.wait_once(sprint_id=sprint_id)
-                    runtime.manifests.set_status(sprint_id, "RUNNING")
+                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
                     continue
                 return 4
 
             if record is not None and record.get("kind") == "CAPACITY_WAIT":
-                runtime.manifests.set_status(sprint_id, "WAITING_FOR_CAPACITY")
+                waiting = str(runtime.state.get_meta(f"{sprint_id}.run_status") or "WAITING_PROVIDER_ERROR")
+                runtime.manifests.set_status(sprint_id, waiting)
                 print(runtime.failures.render(record), file=sys.stderr)
                 if runtime.config.capacity.policy == "wait":
                     seconds = runtime.capacity.next_wait_seconds()
@@ -447,7 +448,7 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
                         file=sys.stderr,
                     )
                     runtime.capacity.wait_once(sprint_id=sprint_id)
-                    runtime.manifests.set_status(sprint_id, "RUNNING")
+                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
                     continue
                 return 5
 
@@ -586,6 +587,7 @@ def cmd_run_task(
         task_runtime.review_feedback = None
         task_runtime.commit = None
         task_runtime.provider_attempts = {}
+        task_runtime.stall_counts = {}
         runtime.state.save()
 
     base_commit = task_runtime.base_ref or subprocess.run(
@@ -600,7 +602,7 @@ def cmd_run_task(
     )  # intentional focused/debugging entrypoint
     if outcome.ok:
         runtime.failures.resolve_task(task.sprint, task_id)
-        print(f"{task_id} is VERIFIED in its worktree; run `harness resume {task.sprint}` to continue from this stage.")
+        print(f"{task_id} is PASSED in its worktree; run `harness resume {task.sprint}` to continue from this stage.")
         return 0
     if outcome.quota_paused:
         runtime.failures.record(
@@ -609,12 +611,25 @@ def cmd_run_task(
                 kind="QUOTA_WAIT",
                 stage=task.stage,
                 task_ids=[task.id],
-                message=outcome.error or "Cursor usage quota exhausted",
+                message=outcome.error or "Provider usage quota exhausted",
                 suggested_command=f"harness resume {task.sprint}",
             )
         )
-        print(outcome.error or "Cursor usage quota exhausted; state preserved", file=sys.stderr)
+        print(outcome.error or "Provider usage quota exhausted; state preserved", file=sys.stderr)
         return 4
+    if outcome.capacity_paused:
+        runtime.failures.record(
+            FailureRecord(
+                sprint=task.sprint,
+                kind="CAPACITY_WAIT",
+                stage=task.stage,
+                task_ids=[task.id],
+                message=outcome.error or "Provider call is temporarily unavailable",
+                suggested_command=f"harness resume {task.sprint}",
+            )
+        )
+        print(outcome.error or "Provider call is temporarily unavailable; state preserved", file=sys.stderr)
+        return 5
     print(outcome.error or "task failed", file=sys.stderr)
     return 3
 
@@ -746,13 +761,15 @@ def cmd_usage(runtime: Runtime) -> int:
     if not summary:
         print("No agent usage records yet.")
         return 0
-    print("provider model                         calls failures timeout quota capacity transient switches minutes")
+    print("provider model                         calls failures quota network busy server timeout switches minutes")
     for key, row in sorted(summary.items()):
         provider, _, model = key.partition(":")
         print(
             f"{provider[:8]:8} {model[:28]:28} {int(row['calls']):5d} {int(row['failures']):8d} "
-            f"{int(row['timeouts']):7d} {int(row.get('quota_pauses', 0)):5d} "
-            f"{int(row.get('capacity_pauses', 0)):8d} {int(row.get('transient_failures', 0)):9d} "
+            f"{int(row.get('quota_pauses', 0)):5d} {int(row.get('waiting_network', 0)):7d} "
+            f"{int(row.get('waiting_provider_busy', 0)):4d} "
+            f"{int(row.get('waiting_provider_error', 0)):6d} "
+            f"{int(row.get('waiting_timeout', 0)):7d} "
             f"{int(row.get('provider_switches', 0)):8d} {float(row['seconds']) / 60:7.2f}"
         )
     return 0
