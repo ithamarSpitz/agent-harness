@@ -194,6 +194,9 @@ class QuotaConfig:
         "quota exceeded",
         "spending limit reached",
         "no usage remaining",
+        "you're out of usage",
+        "you’re out of usage",
+        "increase limits for faster responses",
     ])
 
 
