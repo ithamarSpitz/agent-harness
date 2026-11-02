@@ -215,7 +215,8 @@ def test_quota_reset_override_and_wait_calculation(tmp_path: Path):
     write(tmp_path / "harness.yaml", "cursor: {models: {worker: null}}\nquota: {policy: wait, probe_interval_minutes: 60, reset_grace_minutes: 5}\n")
     config = HarnessConfig.load(tmp_path / "harness.yaml")
     state = StateStore(tmp_path / ".harness/state.json")
-    quota = QuotaManager(config, state)
+    # Fake limits source so this test never reaches Codex or Cursor.
+    quota = QuotaManager(config, state, limits_source=lambda _now: [])
     quota.set_reset_at("2030-01-01T10:00:00+00:00")
     seconds = quota.next_wait_seconds(now=datetime(2030, 1, 1, 9, 0, tzinfo=timezone.utc))
     assert seconds == 65 * 60
