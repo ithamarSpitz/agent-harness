@@ -106,6 +106,20 @@ quota:
 capacity:
   policy: wait
   retry_interval_minutes: 5
+  network_patterns:
+    - "connection failed"
+    - "connection lost"
+    - "connection reset"
+    - "network error"
+    - "transport error"
+    - "websocket"
+    - "econnrefused"
+    - "econnreset"
+    - "etimedout"
+    - "enotfound"
+    - "eai_again"
+    - "getaddrinfo"
+    - "[unavailable]"
   keep_awake: true
   teardown_environment_while_waiting: true
 

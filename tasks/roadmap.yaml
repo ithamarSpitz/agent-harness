@@ -252,6 +252,7 @@ sprints:
         - S8-T39
         - S8-T41
         - S8-T42
+        - S8-T43
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -373,3 +374,8 @@ sprints:
         stage: 3
         depends_on:
         - S8-T23
+      S8-T43:
+        file: tasks/sprint-08-memory-board-console/43-connection-errors-are-network.md
+        stage: 4
+        depends_on:
+        - S8-T38
