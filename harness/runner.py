@@ -168,6 +168,7 @@ class CursorAgentRunner:
                 value = event.get("result")
                 if isinstance(value, str):
                     result_text = value
+                reported_error = event.get("is_error") is True
                 reported = event.get("usage")
                 if isinstance(reported, dict):
                     token_fields = {
@@ -180,8 +181,7 @@ class CursorAgentRunner:
                             usage[target] = int(reported.get(source, 0) or 0)
                         except (TypeError, ValueError):
                             pass
-                if event.get("is_error") is True:
-                    reported_error = True
+                if reported_error:
                     diagnostics.append(json.dumps(event, ensure_ascii=False))
             elif event_type == "tool_call" and event.get("subtype") == "completed":
                 tool_call = event.get("tool_call")
@@ -379,8 +379,6 @@ class CursorAgentRunner:
             if classify_failure and not quota_exhausted
             else None
         )
-        if reported_error and not quota_exhausted and waiting_cause is None:
-            waiting_cause = "provider_error"
         if timed_out or stalled:
             waiting_cause = "timeout"
         capacity_exhausted = waiting_cause == "provider_busy"
@@ -398,6 +396,8 @@ class CursorAgentRunner:
             error = "Cursor provider capacity temporarily exhausted"
         elif waiting_cause is not None:
             error = f"Cursor {waiting_cause.replace('_', ' ')} failure"
+        elif reported_error:
+            error = "Cursor reported an error"
         elif not ok and error is None:
             error = f"Agent exit code {return_code}"
         result = AgentResult(
