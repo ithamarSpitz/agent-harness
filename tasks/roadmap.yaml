@@ -251,6 +251,7 @@ sprints:
         - S8-T32
         - S8-T39
         - S8-T41
+        - S8-T42
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -367,3 +368,8 @@ sprints:
         depends_on:
         - S8-T20
         - S8-T21
+      S8-T42:
+        file: tasks/sprint-08-memory-board-console/42-worktree-exact-path.md
+        stage: 3
+        depends_on:
+        - S8-T23
