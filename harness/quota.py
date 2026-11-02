@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
+import shutil
+import subprocess
+import sys
 import time
 import threading
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,6 +16,50 @@ from datetime import datetime, timedelta, timezone
 from .config import HarnessConfig
 from .state import StateStore
 from .models import TaskStatus
+
+_log = logging.getLogger(__name__)
+
+
+def _warn_keep_awake_failure() -> None:
+    _log.warning("keep-awake helper failed; continuing without sleep prevention")
+
+
+def start_macos_keep_awake(
+    *,
+    pid: int | None = None,
+    popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+) -> subprocess.Popen[bytes] | None:
+    harness_pid = os.getpid() if pid is None else pid
+    return popen(
+        ["caffeinate", "-i", "-w", str(harness_pid)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def start_linux_keep_awake(
+    *,
+    which: Callable[[str], str | None] | None = None,
+    popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+) -> subprocess.Popen[bytes] | None:
+    resolver = shutil.which if which is None else which
+    inhibit = resolver("systemd-inhibit")
+    if inhibit is None:
+        return None
+    return popen(
+        [inhibit, "--what=idle:sleep", "--why=agent harness run", "sleep", "infinity"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def stop_unix_keep_awake(proc: subprocess.Popen[bytes]) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 @dataclass(slots=True)
@@ -22,12 +71,12 @@ class QuotaStatus:
 
 
 class KeepAwake(AbstractContextManager["KeepAwake"]):
-    """Best-effort temporary Windows sleep prevention.
+    """Best-effort temporary sleep prevention on Windows, macOS, and Linux.
 
     Contexts are process-local and nest safely. This matters because a full
     `run`/`resume` now owns a keep-awake context while quota waiting may enter a
-    second context. Only the outermost active context releases the Windows
-    execution-state requirement.
+    second context. Only the outermost active context stops the platform helper
+    or releases the Windows execution-state requirement.
     """
 
     ES_CONTINUOUS = 0x80000000
@@ -35,44 +84,71 @@ class KeepAwake(AbstractContextManager["KeepAwake"]):
     _lock = threading.RLock()
     _depth = 0
     _windows_active = False
+    _unix_proc: subprocess.Popen[bytes] | None = None
 
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
         self._entered_active = False
 
+    @classmethod
+    def _session_active(cls) -> bool:
+        if os.name == "nt":
+            return cls._windows_active
+        return cls._unix_proc is not None
+
     def __enter__(self) -> "KeepAwake":
-        if not self.enabled or os.name != "nt":
+        if not self.enabled:
             return self
         with self._lock:
             if self.__class__._depth == 0:
-                try:
-                    windll = getattr(ctypes, "windll", None)
-                    if windll is None:
-                        return self
-                    result = windll.kernel32.SetThreadExecutionState(
-                        self.ES_CONTINUOUS | self.ES_SYSTEM_REQUIRED
-                    )
-                    self.__class__._windows_active = bool(result)
-                except Exception:
-                    self.__class__._windows_active = False
-            if self.__class__._windows_active:
+                if os.name == "nt":
+                    try:
+                        windll = getattr(ctypes, "windll", None)
+                        if windll is None:
+                            return self
+                        result = windll.kernel32.SetThreadExecutionState(
+                            self.ES_CONTINUOUS | self.ES_SYSTEM_REQUIRED
+                        )
+                        self.__class__._windows_active = bool(result)
+                    except Exception:
+                        self.__class__._windows_active = False
+                elif sys.platform == "darwin":
+                    try:
+                        self.__class__._unix_proc = start_macos_keep_awake()
+                    except Exception:
+                        self.__class__._unix_proc = None
+                        _warn_keep_awake_failure()
+                elif sys.platform.startswith("linux"):
+                    try:
+                        self.__class__._unix_proc = start_linux_keep_awake()
+                    except Exception:
+                        self.__class__._unix_proc = None
+                        _warn_keep_awake_failure()
+            if self._session_active():
                 self.__class__._depth += 1
                 self._entered_active = True
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if not self._entered_active or os.name != "nt":
+        if not self._entered_active:
             return
         with self._lock:
             self.__class__._depth = max(0, self.__class__._depth - 1)
-            if self.__class__._depth == 0 and self.__class__._windows_active:
-                try:
-                    windll = getattr(ctypes, "windll", None)
-                    if windll is not None:
-                        windll.kernel32.SetThreadExecutionState(self.ES_CONTINUOUS)
-                except Exception:
-                    pass
-                self.__class__._windows_active = False
+            if self.__class__._depth == 0:
+                if os.name == "nt" and self.__class__._windows_active:
+                    try:
+                        windll = getattr(ctypes, "windll", None)
+                        if windll is not None:
+                            windll.kernel32.SetThreadExecutionState(self.ES_CONTINUOUS)
+                    except Exception:
+                        pass
+                    self.__class__._windows_active = False
+                elif self.__class__._unix_proc is not None:
+                    try:
+                        stop_unix_keep_awake(self.__class__._unix_proc)
+                    except Exception:
+                        _warn_keep_awake_failure()
+                    self.__class__._unix_proc = None
         self._entered_active = False
 
 
