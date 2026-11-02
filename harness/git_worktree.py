@@ -62,7 +62,26 @@ class WorktreeManager:
             branch = f"agent/{_slug(task_id)}"
             path = self.worktree_root / _slug(task_id)
             if path.exists():
-                return branch, path
+                registered_branch = self._registered_branch(path)
+                if registered_branch == branch:
+                    return branch, path
+                if registered_branch is not None:
+                    raise GitError(
+                        f"Task worktree path {path} is registered on branch "
+                        f"{registered_branch}, expected {branch}"
+                    )
+                try:
+                    shutil.rmtree(path)
+                except OSError as exc:
+                    raise GitError(
+                        f"Cannot replace invalid task worktree at {path}; "
+                        "close programs using it and try again"
+                    ) from exc
+                if path.exists():
+                    raise GitError(
+                        f"Cannot replace invalid task worktree at {path}; "
+                        "close programs using it and try again"
+                    )
 
             # Remove stale branch if it exists but is not checked out.
             _run(["git", "branch", "-D", branch], self.repo_root, check=False)
@@ -74,6 +93,26 @@ class WorktreeManager:
             if result.returncode != 0:
                 raise GitError(result.stderr.strip() or result.stdout.strip())
             return branch, path
+
+    def _registered_branch(self, path: Path) -> str | None:
+        result = _run(["git", "worktree", "list", "--porcelain"], self.repo_root, check=False)
+        if result.returncode != 0:
+            return None
+
+        target = path.resolve()
+        worktree: Path | None = None
+        branch: str | None = None
+        for line in [*result.stdout.splitlines(), ""]:
+            if not line:
+                if worktree == target:
+                    return branch or "(detached HEAD)"
+                worktree = None
+                branch = None
+            elif line.startswith("worktree "):
+                worktree = Path(line[len("worktree "):]).resolve()
+            elif line.startswith("branch refs/heads/"):
+                branch = line[len("branch refs/heads/"):]
+        return None
 
     def changed_files(self, worktree: Path, base_ref: str) -> list[str]:
         tracked = _run(["git", "diff", "--name-only", base_ref, "--"], worktree)
