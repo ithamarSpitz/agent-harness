@@ -115,13 +115,42 @@ class QuotaOnceReviewRunner:
         return AgentResult(True, "VERDICT: PASS\n")
 
 
+class ReviewTimeoutThenFallbackRunner:
+    def __init__(self):
+        self.implement_calls = 0
+        self.review_calls = 0
+        self.provider = "codex"
+        self.fallback_calls = 0
+
+    def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
+        self.implement_calls += 1
+        (workspace / "out.txt").write_text("ok\n", encoding="utf-8")
+        return AgentResult(True, "ok", provider=self.provider)
+
+    def review(self, *args, **kwargs):
+        self.review_calls += 1
+        if self.review_calls <= 3:
+            return AgentResult(
+                False, "", "stalled", stalled=True, transient_error=True,
+                waiting_cause="timeout", provider=self.provider,
+            )
+        return AgentResult(True, "VERDICT: PASS\n", provider=self.provider)
+
+    def fallback_after_stalls(self, task, provider, phase):
+        self.fallback_calls += 1
+        assert provider == "codex"
+        assert phase == "review"
+        self.provider = "cursor"
+        return True
+
+
 def test_quota_pause_does_not_consume_implementation_attempt(tmp_path: Path):
     config, roadmap, state, worktrees, verifier, failures = init_repo(tmp_path, review=False)
     runner = QuotaOnceImplementRunner()
     scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.WAITING_FOR_QUOTA
+    assert state.get("A").status == TaskStatus.WAITING_QUOTA
     assert state.get("A").attempt == 0
     assert failures.get("s1")["kind"] == "QUOTA_WAIT"
 
@@ -137,7 +166,7 @@ def test_quota_during_review_resumes_review_without_rerunning_implementer(tmp_pa
     scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.WAITING_FOR_QUOTA
+    assert state.get("A").status == TaskStatus.WAITING_QUOTA
     assert state.get("A").waiting_phase == "review"
     assert state.get("A").attempt == 1
 
@@ -145,6 +174,41 @@ def test_quota_during_review_resumes_review_without_rerunning_implementer(tmp_pa
     assert state.get("A").status == TaskStatus.DONE
     assert runner.implement_calls == 1
     assert runner.review_calls == 2
+
+
+def test_review_timeouts_preserve_attempt_and_fallback_after_three(tmp_path: Path):
+    config, roadmap, state, worktrees, verifier, failures = init_repo(tmp_path, review=True)
+    original_verify_task = verifier.verify_task
+    verification_calls = 0
+
+    def counted_verify_task(*args, **kwargs):
+        nonlocal verification_calls
+        verification_calls += 1
+        return original_verify_task(*args, **kwargs)
+
+    verifier.verify_task = counted_verify_task
+    runner = ReviewTimeoutThenFallbackRunner()
+    scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
+    sprint = roadmap.sprint("s1")
+
+    for expected_count in range(1, 4):
+        assert not scheduler.run_sprint(sprint)
+        runtime = state.get("A")
+        assert runtime.status == TaskStatus.WAITING_TIMEOUT
+        assert runtime.attempt == 1
+        assert runtime.waiting_phase == "review"
+        assert runtime.worktree is not None and Path(runtime.worktree).exists()
+        assert runner.implement_calls == 1
+        assert runner.review_calls == expected_count
+        assert verification_calls == 1
+
+    assert runner.fallback_calls == 1
+    assert state.get("A").waiting_provider == "codex"
+    assert scheduler.run_sprint(sprint)
+    assert state.get("A").status == TaskStatus.DONE
+    assert runner.implement_calls == 1
+    assert runner.review_calls == 4
+    assert verification_calls == 1
 
 
 def test_quota_reset_override_and_wait_calculation(tmp_path: Path):
@@ -345,7 +409,7 @@ def test_capacity_pause_does_not_consume_implementation_attempt(tmp_path: Path):
     scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.WAITING_FOR_CAPACITY
+    assert state.get("A").status == TaskStatus.WAITING_PROVIDER_BUSY
     assert state.get("A").attempt == 0
     assert failures.get("s1")["kind"] == "CAPACITY_WAIT"
 
@@ -361,7 +425,7 @@ def test_capacity_during_review_resumes_review_without_rerunning_implementer(tmp
     scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier, failures=failures)
 
     assert not scheduler.run_sprint(roadmap.sprint("s1"))
-    assert state.get("A").status == TaskStatus.WAITING_FOR_CAPACITY
+    assert state.get("A").status == TaskStatus.WAITING_PROVIDER_BUSY
     assert state.get("A").waiting_phase == "review"
     assert state.get("A").attempt == 1
 

@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 import yaml
 
 from harness.codex_runner import CodexAgentRunner
@@ -17,6 +18,37 @@ from harness.process_utils import locate_codex_executable
 from harness.runner import AgentResult
 from harness.state import StateStore
 from harness.usage import UsageRecorder
+
+
+@pytest.mark.parametrize("launch_error", [
+    FileNotFoundError("CLI not found"),
+    PermissionError("CLI is not executable"),
+    OSError("Invalid executable format"),
+])
+def test_codex_launch_failure_waits_for_provider_error(tmp_path: Path, monkeypatch, launch_error):
+    usage = UsageRecorder(tmp_path / "usage.jsonl")
+    runner = CodexAgentRunner(_write_config(tmp_path, "codex"), tmp_path / "logs", usage=usage)
+
+    def fail_launch(*args, **kwargs):
+        raise launch_error
+
+    monkeypatch.setattr("harness.codex_runner.subprocess.Popen", fail_launch)
+    result = runner._invoke(
+        task_id="LAUNCH", phase="implement", prompt="x", workspace=tmp_path,
+        model="test-model", timeout_minutes=1, log_name="launch.log",
+    )
+
+    assert not result.ok
+    assert result.error == f"Could not start Codex CLI: {launch_error}"
+    assert result.provider == "codex"
+    assert result.waiting_cause == "provider_error"
+    assert result.transient_error
+    assert not result.capacity_exhausted
+    assert not result.quota_exhausted
+    assert (tmp_path / "logs" / "launch.log").read_text(encoding="utf-8") == str(launch_error)
+    event = usage.events()[0]
+    assert event["waiting_cause"] == "provider_error"
+    assert event["transient_error"]
 
 
 def _task(tmp_path: Path) -> TaskSpec:
@@ -275,6 +307,55 @@ def test_codex_quota_capacity_transient_and_model_classification(tmp_path: Path)
 
     unavailable = invoke("FAKE_MODEL_UNAVAILABLE")
     assert unavailable.model_unavailable and not unavailable.quota_exhausted
+
+
+def test_codex_wait_causes_and_legacy_pattern_config(tmp_path: Path):
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text("""
+codex:
+  capacity_patterns: [legacy busy]
+  transient_patterns: [legacy transient]
+capacity:
+  capacity_patterns: [cursor legacy busy]
+  transient_patterns: [cursor legacy transient]
+""", encoding="utf-8")
+    config = HarnessConfig.load(config_path)
+    runner = CodexAgentRunner(config, tmp_path / "logs")
+
+    assert runner._classify("connection failed", timed_out=False) == "network"
+    assert runner._classify("server overloaded", timed_out=False) == "provider_busy"
+    assert runner._classify("503 service unavailable", timed_out=False) == "provider_error"
+    assert runner._classify("anything", timed_out=True) == "timeout"
+    assert "legacy busy" in config.codex.busy_patterns
+    assert "legacy transient" in config.codex.provider_error_patterns
+    assert "cursor legacy busy" in config.capacity.busy_patterns
+    assert "cursor legacy transient" in config.capacity.provider_error_patterns
+
+
+def test_review_stall_fallback_does_not_change_implementation_provider(tmp_path: Path):
+    codex = _FakeCodex()
+    cursor = _FakeCursor()
+    router, state, _ = _router(tmp_path, codex, cursor)
+    task = _task(tmp_path)
+    workspace = tmp_path / "w"
+    workspace.mkdir()
+
+    assert router.fallback_after_stalls(task, "codex", "review")
+    assert router.active_provider(task) == "codex"
+    assert router.review(task, workspace, "base", "verification ok", 1).provider == "cursor"
+    assert router.implement(task, workspace, 1, 1, None).provider == "codex"
+    assert state.get_meta("S1.T1.provider.codex.disabled") is None
+    assert state.get_meta("S1.T1.provider.codex.disabled.review") == "stalled"
+
+
+def test_review_stall_does_not_fallback_to_unavailable_codex(tmp_path: Path):
+    codex = _FakeCodex(available=False)
+    router, state, usage = _router(tmp_path, codex, _FakeCursor())
+    task = _task(tmp_path)
+
+    assert not router.fallback_after_stalls(task, "cursor", "review")
+    assert state.get_meta("S1.T1.provider.cursor.disabled.review") is None
+    assert [e for e in usage.events() if e.get("event_type") == "provider_switch"] == []
 
 
 class _FakeCodex:

@@ -86,7 +86,30 @@ sprints:
     roadmap = Roadmap(tmp_path, tmp_path / "tasks/roadmap.yaml")
     state = StateStore(tmp_path / ".harness/state.json")
     worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    original_remove = worktrees.remove
+    remove_calls = 0
+
+    def fail_first_remove(*args, **kwargs):
+        nonlocal remove_calls
+        remove_calls += 1
+        if remove_calls == 1:
+            raise RuntimeError("synthetic cleanup failure")
+        return original_remove(*args, **kwargs)
+
+    worktrees.remove = fail_first_remove
     verifier = Verifier(config, tmp_path / ".harness/logs", worktrees)
+    original_verify_stage = verifier.verify_stage
+    merging_seen: list[int] = []
+
+    def verify_stage_with_status(*args, **kwargs):
+        log_name = args[2]
+        stage = int(log_name.rsplit("-", 1)[1])
+        stage_tasks = [task for task in roadmap.sprint("s1").tasks.values() if task.stage == stage]
+        assert all(state.get(task.id).status == TaskStatus.MERGING for task in stage_tasks)
+        merging_seen.append(stage)
+        return original_verify_stage(*args, **kwargs)
+
+    verifier.verify_stage = verify_stage_with_status
     scheduler = Scheduler(tmp_path, config, state, worktrees, FakeRunner(), verifier)
 
     assert scheduler.run_sprint(roadmap.sprint("s1"))
@@ -96,6 +119,10 @@ sprints:
     assert (tmp_path / "out/A.txt").exists()
     assert (tmp_path / "out/B.txt").exists()
     assert (tmp_path / "out/C.txt").exists()
+    assert merging_seen == [1, 2]
+    assert "A: synthetic cleanup failure" in (
+        tmp_path / ".harness/logs/s1-stage-1-worktree-cleanup.log"
+    ).read_text(encoding="utf-8")
 
 
 class SetupCheckingRunner(FakeRunner):
@@ -304,8 +331,8 @@ sprints:
     assert current_head == initial_head
     assert not (tmp_path / "out/A.txt").exists()
     assert not (tmp_path / "out/B.txt").exists()
-    assert state.get("A").status == TaskStatus.VERIFIED
-    assert state.get("B").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
+    assert state.get("B").status == TaskStatus.PASSED
     status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=tmp_path, check=True, text=True, capture_output=True
     ).stdout.strip()
@@ -373,8 +400,8 @@ sprints:
     assert worktrees.head_commit() == initial_head
     assert not (tmp_path / "out/A.txt").exists()
     assert not (tmp_path / "out/B.txt").exists()
-    assert state.get("A").status == TaskStatus.VERIFIED
-    assert state.get("B").status == TaskStatus.VERIFIED
+    assert state.get("A").status == TaskStatus.PASSED
+    assert state.get("B").status == TaskStatus.PASSED
 
 
 class FailingOnceRunner(FakeRunner):

@@ -12,6 +12,7 @@ from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .logging_utils import utc_now, write_log
 from .models import SprintSpec, TaskSpec, TaskStatus
+from .agent_runner import AgentResult
 from .provider_runner import ProviderAgentRunner
 from .state import StateStore
 from .release import ReleaseRunner, sprint_is_complete
@@ -35,6 +36,8 @@ class TaskOutcome:
     error: str | None = None
     quota_paused: bool = False
     capacity_paused: bool = False
+    waiting_status: TaskStatus | None = None
+    provider: str | None = None
 
 
 class Scheduler:
@@ -197,7 +200,8 @@ class Scheduler:
 
     def _record_quota_pause(self, sprint: SprintSpec, stage: int, outcomes: list[TaskOutcome]) -> None:
         task_ids = sorted(outcome.task_id for outcome in outcomes)
-        self.state.set_meta(f"{sprint.id}.run_status", "WAITING_FOR_QUOTA")
+        self.state.set_meta(f"{sprint.id}.run_status", TaskStatus.WAITING_QUOTA.value)
+        providers = ", ".join(sorted({outcome.provider or "unknown" for outcome in outcomes}))
         self.failures.record(
             FailureRecord(
                 sprint=sprint.id,
@@ -205,7 +209,7 @@ class Scheduler:
                 stage=stage,
                 task_ids=task_ids,
                 message=(
-                    "Cursor included usage is exhausted. Task state/worktrees were preserved and "
+                    f"Provider usage quota is exhausted ({providers}). Task state/worktrees were preserved and "
                     "quota pauses did not consume retry budget."
                 ),
                 suggested_command=f"harness resume {sprint.id}",
@@ -215,7 +219,10 @@ class Scheduler:
 
     def _record_capacity_pause(self, sprint: SprintSpec, stage: int, outcomes: list[TaskOutcome]) -> None:
         task_ids = sorted(outcome.task_id for outcome in outcomes)
-        self.state.set_meta(f"{sprint.id}.run_status", "WAITING_FOR_CAPACITY")
+        first_status = outcomes[0].waiting_status or TaskStatus.WAITING_PROVIDER_ERROR
+        self.state.set_meta(f"{sprint.id}.run_status", first_status.value)
+        causes = ", ".join(sorted({self._waiting_label(outcome.waiting_status) for outcome in outcomes}))
+        providers = ", ".join(sorted({outcome.provider or "unknown" for outcome in outcomes}))
         self.failures.record(
             FailureRecord(
                 sprint=sprint.id,
@@ -223,8 +230,8 @@ class Scheduler:
                 stage=stage,
                 task_ids=task_ids,
                 message=(
-                    "Agent provider capacity/transient infrastructure is temporarily unavailable. Task state/worktrees were preserved and "
-                    "capacity pauses did not consume retry budget."
+                    f"Agent call is waiting ({causes}; {providers}). Task state/worktrees were preserved and "
+                    "the pause did not consume retry budget."
                 ),
                 suggested_command=f"harness resume {sprint.id}",
             )
@@ -276,33 +283,106 @@ class Scheduler:
         return TaskOutcome(task.id, False, error)
 
     def _pause_for_quota(
-        self, task: TaskSpec, worktree: Path, *, phase: str, decrement_attempt: bool
+        self, task: TaskSpec, worktree: Path, *, phase: str, decrement_attempt: bool,
+        provider: str,
     ) -> TaskOutcome:
         runtime = self.state.get(task.id)
         if decrement_attempt and runtime.attempt > 0:
             runtime.attempt -= 1
-        runtime.status = TaskStatus.WAITING_FOR_QUOTA
+        runtime.status = TaskStatus.WAITING_QUOTA
         runtime.waiting_phase = phase
-        runtime.last_error = f"Cursor usage quota exhausted during {phase}"
+        runtime.waiting_provider = provider
+        runtime.last_error = f"{provider} usage quota exhausted during {phase}"
         self.state.save()
         if self.config.quota.teardown_environment_while_waiting:
             self.environment.teardown_task(task, worktree, blocked=True)
-        return TaskOutcome(task.id, False, runtime.last_error, quota_paused=True)
+        return TaskOutcome(
+            task.id, False, runtime.last_error, quota_paused=True,
+            waiting_status=runtime.status, provider=provider,
+        )
 
+
+    @staticmethod
+    def _waiting_status(cause: str | None) -> TaskStatus:
+        return {
+            "network": TaskStatus.WAITING_NETWORK,
+            "provider_busy": TaskStatus.WAITING_PROVIDER_BUSY,
+            "provider_error": TaskStatus.WAITING_PROVIDER_ERROR,
+            "timeout": TaskStatus.WAITING_TIMEOUT,
+        }.get(cause or "provider_error", TaskStatus.WAITING_PROVIDER_ERROR)
+
+    @staticmethod
+    def _waiting_label(status: TaskStatus | None) -> str:
+        if status is None:
+            return "provider error"
+        return {
+            TaskStatus.WAITING_NETWORK: "network",
+            TaskStatus.WAITING_PROVIDER_BUSY: "provider busy",
+            TaskStatus.WAITING_PROVIDER_ERROR: "provider error",
+            TaskStatus.WAITING_TIMEOUT: "timeout",
+        }.get(status, "provider error")
 
     def _pause_for_capacity(
-        self, task: TaskSpec, worktree: Path, *, phase: str, decrement_attempt: bool
+        self, task: TaskSpec, worktree: Path, *, phase: str, decrement_attempt: bool,
+        result: AgentResult,
     ) -> TaskOutcome:
         runtime = self.state.get(task.id)
         if decrement_attempt and runtime.attempt > 0:
             runtime.attempt -= 1
-        runtime.status = TaskStatus.WAITING_FOR_CAPACITY
+        cause = result.waiting_cause or ("timeout" if result.timed_out or result.stalled else (
+            "provider_busy" if result.capacity_exhausted else "provider_error"
+        ))
+        runtime.status = self._waiting_status(cause)
         runtime.waiting_phase = phase
-        runtime.last_error = f"Agent provider capacity/transient failure during {phase}"
+        runtime.waiting_provider = result.provider
+        runtime.last_error = f"{result.provider} {self._waiting_label(runtime.status)} during {phase}"
         self.state.save()
         if self.config.capacity.teardown_environment_while_waiting:
             self.environment.teardown_task(task, worktree, blocked=True)
-        return TaskOutcome(task.id, False, runtime.last_error, capacity_paused=True)
+        return TaskOutcome(
+            task.id, False, runtime.last_error, capacity_paused=True,
+            waiting_status=runtime.status, provider=result.provider,
+        )
+
+    @staticmethod
+    def _clear_phase_stalls(runtime, phase: str) -> None:
+        for key in [key for key in runtime.stall_counts if key.startswith(f"{phase}:")]:
+            del runtime.stall_counts[key]
+
+    def _handle_agent_wait(
+        self, task: TaskSpec, worktree: Path, result: AgentResult, *, phase: str,
+        decrement_attempt: bool,
+    ) -> TaskOutcome | None:
+        if result.quota_exhausted:
+            self._clear_phase_stalls(self.state.get(task.id), phase)
+            return self._pause_for_quota(
+                task, worktree, phase=phase, decrement_attempt=decrement_attempt,
+                provider=result.provider,
+            )
+        cause = result.waiting_cause or (
+            "timeout" if result.timed_out or result.stalled else
+            ("provider_busy" if result.capacity_exhausted else
+             ("provider_error" if result.transient_error else None))
+        )
+        if cause is None:
+            self._clear_phase_stalls(self.state.get(task.id), phase)
+            return None
+        runtime = self.state.get(task.id)
+        if cause == "timeout":
+            key = f"{phase}:{result.provider}"
+            runtime.stall_counts[key] = runtime.stall_counts.get(key, 0) + 1
+            if runtime.stall_counts[key] >= 3:
+                if decrement_attempt and runtime.attempt > 0:
+                    runtime.attempt -= 1
+                    decrement_attempt = False
+                if not self.runner.fallback_after_stalls(task, result.provider, phase):
+                    self.state.save()
+                    return self._block_task(task, "stalled 3 times", worktree)
+        else:
+            self._clear_phase_stalls(runtime, phase)
+        return self._pause_for_capacity(
+            task, worktree, phase=phase, decrement_attempt=decrement_attempt, result=result,
+        )
 
     def _verify_review_commit(
         self,
@@ -313,29 +393,38 @@ class Scheduler:
         timeout: int,
         task_env: dict[str, str],
         code_map_offered: bool,
+        *,
+        resume_review: bool = False,
     ) -> TaskOutcome | None:
-        runtime.status = TaskStatus.VERIFYING
-        runtime.waiting_phase = None
-        self.state.save()
-        verification = self.verifier.verify_task(task, worktree, base_ref, env=task_env)
-        if not verification.ok:
-            runtime.status = TaskStatus.RETRY
-            runtime.last_error = verification.summary
+        if resume_review:
+            verification_summary = "Task verification passed before the reviewer wait."
+            review_required = True
+        else:
+            runtime.status = TaskStatus.CHECKING
+            runtime.waiting_phase = None
+            runtime.waiting_provider = None
             self.state.save()
-            return None
+            verification = self.verifier.verify_task(task, worktree, base_ref, env=task_env)
+            if not verification.ok:
+                runtime.status = TaskStatus.RETRY
+                runtime.last_error = verification.summary
+                self.state.save()
+                return None
+            verification_summary = verification.summary
+            review_required = task.review or self.verifier.requires_review(verification.changed_files)
 
-        review_required = task.review or self.verifier.requires_review(verification.changed_files)
         if review_required:
             runtime.status = TaskStatus.REVIEWING
             self.state.save()
             review = self.runner.review(
-                task, worktree, base_ref, verification.summary, timeout,
+                task, worktree, base_ref, verification_summary, timeout,
                 env=task_env, code_map_offered=code_map_offered,
             )
-            if review.quota_exhausted:
-                return self._pause_for_quota(task, worktree, phase="review", decrement_attempt=False)
-            if review.capacity_exhausted or review.transient_error:
-                return self._pause_for_capacity(task, worktree, phase="review", decrement_attempt=False)
+            paused = self._handle_agent_wait(
+                task, worktree, review, phase="review", decrement_attempt=False
+            )
+            if paused is not None:
+                return paused
             verdict_pass = review.ok and any(
                 line.strip() == "VERDICT: PASS" for line in review.output.splitlines()
             )
@@ -355,10 +444,12 @@ class Scheduler:
             self.state.save()
             return None
 
-        runtime.status = TaskStatus.VERIFIED
+        runtime.status = TaskStatus.PASSED
         runtime.last_error = None
         runtime.review_feedback = None
         runtime.waiting_phase = None
+        runtime.waiting_provider = None
+        self._clear_phase_stalls(runtime, "review")
         self.state.save()
         self.environment.teardown_task(task, worktree, blocked=False)
         return TaskOutcome(task.id, True)
@@ -373,7 +464,7 @@ class Scheduler:
         runtime = self.state.get(task.id)
         max_attempts, timeout = self._defaults(task, model_class_override=model_class_override)
 
-        if runtime.status in {TaskStatus.DONE, TaskStatus.VERIFIED}:
+        if runtime.status in {TaskStatus.DONE, TaskStatus.PASSED}:
             return TaskOutcome(task.id, True)
 
         worktree: Path | None = None
@@ -413,9 +504,15 @@ class Scheduler:
         # If quota/capacity was exhausted only at review time, keep the already-written
         # implementation and resume from verification/review without another
         # coding-model call.
-        if runtime.status in {TaskStatus.WAITING_FOR_QUOTA, TaskStatus.WAITING_FOR_CAPACITY} and runtime.waiting_phase == "review":
+        waiting_statuses = {
+            TaskStatus.WAITING_QUOTA, TaskStatus.WAITING_NETWORK,
+            TaskStatus.WAITING_PROVIDER_BUSY, TaskStatus.WAITING_PROVIDER_ERROR,
+            TaskStatus.WAITING_TIMEOUT,
+        }
+        if runtime.status in waiting_statuses and runtime.waiting_phase == "review":
             resumed = self._verify_review_commit(
-                task, runtime, worktree, base_ref, timeout, task_env, code_map_offered
+                task, runtime, worktree, base_ref, timeout, task_env, code_map_offered,
+                resume_review=True,
             )
             if resumed is not None:
                 return resumed
@@ -426,8 +523,9 @@ class Scheduler:
             or self.runner.has_implementation_budget(task, model_class_override=model_class_override)
         ):
             runtime.attempt += 1
-            runtime.status = TaskStatus.RUNNING
+            runtime.status = TaskStatus.IMPLEMENTING
             runtime.waiting_phase = None
+            runtime.waiting_provider = None
             runtime.started_at = runtime.started_at or utc_now()
             runtime.last_error = None
             self.state.save()
@@ -446,10 +544,11 @@ class Scheduler:
                 model_class_override=attempt_model_class,
                 code_map_offered=code_map_offered,
             )
-            if result.quota_exhausted:
-                return self._pause_for_quota(task, worktree, phase="implement", decrement_attempt=True)
-            if result.capacity_exhausted or result.transient_error:
-                return self._pause_for_capacity(task, worktree, phase="implement", decrement_attempt=True)
+            paused = self._handle_agent_wait(
+                task, worktree, result, phase="implement", decrement_attempt=True
+            )
+            if paused is not None:
+                return paused
             if not result.ok:
                 previous_failure = result.error or "Agent execution failed"
                 runtime.status = TaskStatus.RETRY
@@ -475,6 +574,9 @@ class Scheduler:
 
     def _integrate_stage(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec], checkpoint: str) -> bool:
         self._merge_in_progress = (sprint.id, stage)
+        for task in tasks:
+            self.state.get(task.id).status = TaskStatus.MERGING
+        self.state.save()
         try:
             return self._integrate_stage_inner(sprint, stage, tasks, checkpoint)
         finally:
@@ -484,8 +586,8 @@ class Scheduler:
         try:
             for task in tasks:
                 runtime = self.state.get(task.id)
-                if runtime.status != TaskStatus.VERIFIED or not runtime.branch:
-                    raise GitError(f"{task.id} is not VERIFIED and cannot be integrated")
+                if runtime.status != TaskStatus.MERGING or not runtime.branch:
+                    raise GitError(f"{task.id} is not MERGING and cannot be integrated")
                 self.worktrees.merge_branch(runtime.branch, task.id)
 
             stage_env = self.environment.stage_env(sprint.id, stage, self.repo_root)
@@ -509,6 +611,9 @@ class Scheduler:
                 if rollback_error:
                     error += f" ROLLBACK FAILED: {rollback_error}"
                 self._record_stage_failure(sprint, stage, tasks, error)
+                for task in tasks:
+                    self.state.get(task.id).status = TaskStatus.PASSED
+                self.state.save()
                 return False
         except Exception as exc:
             rollback_error = self._rollback_stage(checkpoint)
@@ -516,18 +621,36 @@ class Scheduler:
             if rollback_error:
                 error += f" ROLLBACK FAILED: {rollback_error}"
             self._record_stage_failure(sprint, stage, tasks, error)
+            for task in tasks:
+                self.state.get(task.id).status = TaskStatus.PASSED
+            self.state.save()
             return False
 
+        finished_at = utc_now()
         for task in tasks:
             runtime = self.state.get(task.id)
             runtime.status = TaskStatus.DONE
-            runtime.finished_at = utc_now()
-            self.state.save()
+            runtime.finished_at = finished_at
+        self.state.save()
+
+        cleanup_errors: list[str] = []
+        for task in tasks:
+            runtime = self.state.get(task.id)
             if not self.config.execution.keep_successful_worktrees and runtime.worktree and runtime.branch:
-                self.worktrees.remove(Path(runtime.worktree), runtime.branch, delete_branch=True)
+                try:
+                    self.worktrees.remove(Path(runtime.worktree), runtime.branch, delete_branch=True)
+                except Exception as exc:
+                    cleanup_errors.append(f"{task.id}: {exc}")
+                    continue
                 runtime.worktree = None
                 runtime.branch = None
                 self.state.save()
+        if cleanup_errors:
+            write_log(
+                self.verifier.log_dir,
+                f"{sprint.id}-stage-{stage}-worktree-cleanup.log",
+                "\n".join(cleanup_errors) + "\n",
+            )
         self.failures.clear(sprint.id)
         return True
 
@@ -537,10 +660,10 @@ class Scheduler:
         if not tasks:
             raise RuntimeError(f"Sprint {sprint.id} has no stage {stage}")
         not_verified = [
-            task.id for task in tasks if self.state.get(task.id).status not in {TaskStatus.VERIFIED, TaskStatus.DONE}
+            task.id for task in tasks if self.state.get(task.id).status not in {TaskStatus.PASSED, TaskStatus.DONE}
         ]
         if not_verified:
-            raise RuntimeError(f"Cannot rerun stage {stage}; tasks not VERIFIED/DONE: {', '.join(not_verified)}")
+            raise RuntimeError(f"Cannot rerun stage {stage}; tasks not PASSED/DONE: {', '.join(not_verified)}")
         pending = [task for task in tasks if self.state.get(task.id).status != TaskStatus.DONE]
         if not pending:
             self.failures.clear(sprint.id)
@@ -698,17 +821,27 @@ class Scheduler:
             quota_paused = [outcome for outcome in outcomes if outcome.quota_paused]
             capacity_paused = [outcome for outcome in outcomes if outcome.capacity_paused]
             if failed:
-                # Preserve successfully VERIFIED siblings. Resume will not rerun them.
+                # Preserve successfully PASSED siblings. Resume will not rerun them.
                 self._record_task_failures(sprint, stage, failed)
                 print("Blocked tasks: " + ", ".join(f.task_id for f in failed))
                 return False
             if quota_paused:
                 self._record_quota_pause(sprint, stage, quota_paused)
-                print("Waiting for Cursor quota: " + ", ".join(p.task_id for p in quota_paused))
+                for provider in sorted({p.provider or "unknown" for p in quota_paused}):
+                    ids = [p.task_id for p in quota_paused if (p.provider or "unknown") == provider]
+                    print(f"Waiting (quota, {provider}): " + ", ".join(ids))
                 return False
             if capacity_paused:
                 self._record_capacity_pause(sprint, stage, capacity_paused)
-                print("Waiting for Cursor provider capacity: " + ", ".join(p.task_id for p in capacity_paused))
+                groups: dict[tuple[str, str], list[str]] = {}
+                for paused in capacity_paused:
+                    key = (
+                        self._waiting_label(paused.waiting_status),
+                        paused.provider or "unknown",
+                    )
+                    groups.setdefault(key, []).append(paused.task_id)
+                for (cause, provider), ids in sorted(groups.items()):
+                    print(f"Waiting ({cause}, {provider}): " + ", ".join(ids))
                 return False
 
             # Merge has begun: remaining queue entries cannot join this stage.

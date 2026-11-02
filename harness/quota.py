@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from .config import HarnessConfig
 from .state import StateStore
+from .models import TaskStatus
 
 
 @dataclass(slots=True)
@@ -111,7 +112,7 @@ class QuotaManager:
         return sorted(
             task_id
             for task_id, runtime in self.state.all().items()
-            if runtime.status.value == "WAITING_FOR_QUOTA"
+            if runtime.status == TaskStatus.WAITING_QUOTA
         )
 
     def status(self) -> QuotaStatus:
@@ -134,7 +135,7 @@ class QuotaManager:
 
     def wait_once(self, *, sprint_id: str, sleep_fn=time.sleep) -> float:
         seconds = self.next_wait_seconds()
-        self.state.set_meta(f"{sprint_id}.run_status", "WAITING_FOR_QUOTA")
+        self.state.set_meta(f"{sprint_id}.run_status", TaskStatus.WAITING_QUOTA.value)
         with KeepAwake(self.config.quota.keep_awake):
             # Sleep in chunks so Ctrl+C remains responsive on platforms where
             # a very long sleep is awkward to interrupt.

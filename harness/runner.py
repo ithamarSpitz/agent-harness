@@ -129,14 +129,15 @@ class CursorAgentRunner:
     @staticmethod
     def _parse_output(
         raw_output: str, code_map_command: str = ""
-    ) -> tuple[str, str, dict[str, int], int]:
-        """Extract the user-facing answer, diagnostics, usage, and shell activity."""
+    ) -> tuple[str, str, dict[str, int], int, bool]:
+        """Extract the answer, diagnostics, usage, shell activity, and error signal."""
         assistant_messages: list[str] = []
         result_text: str | None = None
         diagnostics: list[str] = []
         commands: list[str] = []
         usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
         saw_json = False
+        reported_error = False
 
         for raw in raw_output.splitlines():
             line = raw.strip()
@@ -180,6 +181,7 @@ class CursorAgentRunner:
                         except (TypeError, ValueError):
                             pass
                 if event.get("is_error") is True:
+                    reported_error = True
                     diagnostics.append(json.dumps(event, ensure_ascii=False))
             elif event_type == "tool_call" and event.get("subtype") == "completed":
                 tool_call = event.get("tool_call")
@@ -197,7 +199,13 @@ class CursorAgentRunner:
             answer = raw_output
         if not saw_json and raw_output.strip() and not diagnostics:
             diagnostics.append(raw_output.strip())
-        return answer, "\n".join(diagnostics), usage, count_code_map_calls(commands, code_map_command)
+        return (
+            answer,
+            "\n".join(diagnostics),
+            usage,
+            count_code_map_calls(commands, code_map_command),
+            reported_error,
+        )
 
     def _invoke(
         self,
@@ -283,7 +291,10 @@ class CursorAgentRunner:
         except OSError as exc:
             output = str(exc)
             write_log(self.log_dir, log_name, output)
-            result = AgentResult(False, output, f"Could not start Cursor CLI: {exc}", model=model)
+            result = AgentResult(
+                False, output, f"Could not start Cursor CLI: {exc}", model=model,
+                provider="cursor",
+            )
             self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
             return result
 
@@ -349,7 +360,7 @@ class CursorAgentRunner:
         write_log(self.log_dir, log_name, output)
 
         if self.config.cursor.output_format == "stream-json":
-            final_output, diagnostics, usage, code_map_calls = self._parse_output(
+            final_output, diagnostics, usage, code_map_calls, reported_error = self._parse_output(
                 output, self.config.code_map.command
             )
         else:
@@ -357,22 +368,36 @@ class CursorAgentRunner:
             diagnostics = ""
             usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
             code_map_calls = 0
+            reported_error = False
         classification_text = "\n".join(part for part in (final_output, diagnostics) if part)
-        quota_exhausted = self._looks_like_quota_exhaustion(classification_text)
-        capacity_exhausted = (
-            not quota_exhausted and self._looks_like_capacity_exhaustion(classification_text)
+        classify_failure = return_code != 0 or timed_out or stalled or reported_error
+        quota_exhausted = (
+            classify_failure and self._looks_like_quota_exhaustion(classification_text)
         )
+        waiting_cause = (
+            self._waiting_cause(classification_text)
+            if classify_failure and not quota_exhausted
+            else None
+        )
+        if reported_error and not quota_exhausted and waiting_cause is None:
+            waiting_cause = "provider_error"
+        if timed_out or stalled:
+            waiting_cause = "timeout"
+        capacity_exhausted = waiting_cause == "provider_busy"
         ok = (
             not timed_out
             and not stalled
             and return_code == 0
+            and not reported_error
             and not quota_exhausted
-            and not capacity_exhausted
+            and waiting_cause is None
         )
         if quota_exhausted:
             error = "Cursor usage quota exhausted"
         elif capacity_exhausted:
             error = "Cursor provider capacity temporarily exhausted"
+        elif waiting_cause is not None:
+            error = f"Cursor {waiting_cause.replace('_', ' ')} failure"
         elif not ok and error is None:
             error = f"Agent exit code {return_code}"
         result = AgentResult(
@@ -385,6 +410,9 @@ class CursorAgentRunner:
             model=model,
             quota_exhausted=quota_exhausted,
             capacity_exhausted=capacity_exhausted,
+            transient_error=waiting_cause in {"network", "provider_error", "timeout"},
+            waiting_cause=waiting_cause,
+            provider="cursor",
             input_tokens=usage["input_tokens"] or None,
             cached_input_tokens=usage["cached_input_tokens"] or None,
             output_tokens=usage["output_tokens"] or None,
@@ -399,12 +427,21 @@ class CursorAgentRunner:
         return any(pattern.casefold() in lowered for pattern in self.config.quota.exhaustion_patterns if pattern)
 
     def _looks_like_capacity_exhaustion(self, output: str) -> bool:
+        return self._matches_wait_patterns(output, self.config.capacity.busy_patterns)
+
+    @staticmethod
+    def _matches_wait_patterns(output: str, patterns: list[str]) -> bool:
         lowered = output.casefold()
-        return any(
-            pattern.casefold() in lowered
-            for pattern in self.config.capacity.exhaustion_patterns
-            if pattern
-        )
+        return any(pattern.casefold() in lowered for pattern in patterns if pattern)
+
+    def _waiting_cause(self, output: str) -> str | None:
+        if self._matches_wait_patterns(output, self.config.capacity.network_patterns):
+            return "network"
+        if self._matches_wait_patterns(output, self.config.capacity.busy_patterns):
+            return "provider_busy"
+        if self._matches_wait_patterns(output, self.config.capacity.provider_error_patterns):
+            return "provider_error"
+        return None
 
     def _record_usage(
         self,
@@ -433,6 +470,7 @@ class CursorAgentRunner:
                 "stalled": result.stalled,
                 "quota_exhausted": result.quota_exhausted,
                 "capacity_exhausted": result.capacity_exhausted,
+                "waiting_cause": result.waiting_cause,
                 "code_map": code_map,
                 "code_map_calls": code_map_calls,
                 "input_tokens": result.input_tokens,

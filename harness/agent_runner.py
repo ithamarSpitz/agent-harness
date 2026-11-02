@@ -22,6 +22,7 @@ class AgentResult:
     quota_scope: str | None = None
     capacity_exhausted: bool = False
     transient_error: bool = False
+    waiting_cause: str | None = None
     auth_failure: bool = False
     model_unavailable: bool = False
     provider: str = "cursor"
