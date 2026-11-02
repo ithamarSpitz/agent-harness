@@ -65,7 +65,7 @@ def graphify_rules_text() -> str:
     return FALLBACK_RULES
 
 
-def ensure_graphify_out_excluded(repo_root: Path) -> None:
+def _git_info_exclude_path(repo_root: Path) -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"],
         cwd=repo_root,
@@ -82,7 +82,11 @@ def ensure_graphify_out_excluded(repo_root: Path) -> None:
         common = (repo_root / common).resolve()
     exclude = common / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    line = "graphify-out/"
+    return exclude
+
+
+def _ensure_git_info_exclude_line(repo_root: Path, line: str) -> None:
+    exclude = _git_info_exclude_path(repo_root)
     existing = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
     if line in existing.splitlines():
         return
@@ -90,6 +94,14 @@ def ensure_graphify_out_excluded(repo_root: Path) -> None:
         if existing and not existing.endswith("\n"):
             handle.write("\n")
         handle.write(f"{line}\n")
+
+
+def ensure_graphify_out_excluded(repo_root: Path) -> None:
+    _ensure_git_info_exclude_line(repo_root, "graphify-out/")
+
+
+def ensure_code_map_excluded(repo_root: Path) -> None:
+    _ensure_git_info_exclude_line(repo_root, ".harness/code-map/")
 
 
 class CodeMapBuilder:
@@ -211,6 +223,11 @@ class CodeMapBuilder:
 
     def ensure_project_map(self, base_commit: str, *, env: dict[str, str] | None = None) -> bool:
         with _PROJECT_MAP_LOCK:
+            try:
+                ensure_code_map_excluded(self.repo_root)
+            except OSError as exc:
+                self._warn(f"code map skipped: {exc}")
+                return False
             self._cleanup_legacy_sha_caches()
             if not graphify_command_available(self.config):
                 self._warn("code map skipped: Graphify command not available; pip install graphifyy")
