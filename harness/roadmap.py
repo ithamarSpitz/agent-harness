@@ -12,6 +12,35 @@ class RoadmapError(ValueError):
     pass
 
 
+def task_spec_from_brief(
+    task_id: str,
+    sprint_id: str,
+    brief_path: Path,
+    *,
+    stage: int,
+) -> TaskSpec:
+    fm = _frontmatter(brief_path)
+    return TaskSpec(
+        id=task_id,
+        file=brief_path.resolve(),
+        sprint=sprint_id,
+        stage=int(stage),
+        depends_on=list(fm.get("depends_on") or []),
+        model_class=str(fm.get("model_class", "worker")),
+        review_model_class=(
+            str(fm["review_model_class"]) if fm.get("review_model_class") is not None else None
+        ),
+        max_attempts=(int(fm["max_attempts"]) if fm.get("max_attempts") is not None else None),
+        timeout_minutes=(int(fm["timeout_minutes"]) if fm.get("timeout_minutes") is not None else None),
+        review=bool(fm.get("review", True)),
+        allow_protected=bool(fm.get("allow_protected", False)),
+        allowed_paths=list(fm.get("allowed_paths") or []),
+        verification=list(fm.get("verification") or []),
+        context_refs=list(fm.get("context") or []),
+        environment=(str(fm["environment"]) if fm.get("environment") is not None else None),
+    )
+
+
 def _frontmatter(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):

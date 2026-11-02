@@ -145,6 +145,7 @@ harness status [SPRINT]
 harness graph SPRINT
 harness run SPRINT
 harness resume SPRINT
+harness add-task SPRINT BRIEF.md [--stage auto|current|next]
 harness run-task TASK_ID [--model-class escalation] [--fresh-budget]
 harness failure SPRINT
 harness rerun-blocker SPRINT [--task TASK_ID] [--model-class escalation]
@@ -156,6 +157,24 @@ harness release SPRINT
 ```
 
 `tasks/roadmap.yaml` currently contains the harmless demo DAG plus executable `S0-foundation` through `S5-acceptance-submission`.
+
+## Adding a task to a running sprint
+
+```bash
+harness add-task SPRINT BRIEF.md [--stage auto|current|next]
+```
+
+`add-task` queues a brief without stopping the sprint and without editing plan files in Git. The harness validates the frontmatter, then writes the brief atomically under `.harness/queue/` (outside the integration checkout). The running scheduler is the only process that writes `state.json`; it picks up the queue before each stage and, while a stage's tasks are running, every `execution.watchdog_poll_seconds`. A paused sprint picks up its queue on the next `run` / `resume`.
+
+Placement:
+
+- `current` joins the stage that is running now, only if that stage has not started its merge, the new task's `allowed_paths` do not conflict with any task of that stage, and every `depends_on` is already `DONE`. Otherwise the entry is rejected.
+- `next` runs in the following stage. If the current stage is the last, a new stage is created after it.
+- `auto` (default) uses `current` when those conditions hold, otherwise `next`.
+
+`harness status SPRINT` marks picked-up tasks with `(added)` and lists rejected entries with their reason. After a successful sprint the harness copies each added brief into the sprint's `tasks/` directory, appends it to `tasks/roadmap.yaml`, and commits `harness: record added tasks for <sprint>` before release. A failed sprint writes nothing to the repository.
+
+A task that joins a running stage is part of that stage's atomic barrier: if it fails, the whole stage rolls back like any other task.
 
 ## Release after a sprint
 
