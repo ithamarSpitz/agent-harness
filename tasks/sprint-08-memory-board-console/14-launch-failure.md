@@ -15,6 +15,8 @@ allowed_paths:
   - harness/scheduler.py
   - harness/models.py
   - tests/harness/test_launch_failure.py
+  - tests/harness/test_codex_provider.py
+  - tests/harness/test_cursor_runner.py
 context:
   - spec
 environment: null
@@ -41,12 +43,16 @@ After S7-T5 the two providers disagree: a Codex launch `OSError` becomes `WAITIN
 4. Network, busy, provider-error and timeout waits are unchanged.
 5. A process that starts but dies at once with a Windows start-up resource error (exit code 3221225794 = 0xC0000142, or 3221225495 = 0xC0000017) is a resource problem, not a provider problem and not a task failure: no attempt is spent, the provider is not disabled, and the task goes back to the queue to be started again later (when memory allows, after S8-T6). After 5 such launches in a row for the same task it becomes `BLOCKED` with `<provider> could not start: the computer is out of resources (exit code ...)`.
 
+# Note (Nov 2026)
+
+The fallback mechanism lives in `harness/provider_runner.py`, which this task may not change. Reusing the existing auth-failure fallback hook from the runners is acceptable here; S8-T44 gives launch failures their own fallback reason later.
+
 # Acceptance criteria
 
 1. A fake Codex launch failure with Cursor available falls back to Cursor, attempt count unchanged.
 2. A fake launch failure with no other provider makes the task `BLOCKED` at once with the message; no wait status, no extra attempts.
 3. The same holds for Cursor.
-4. Existing waiting-status tests pass unchanged.
+4. Existing waiting-status tests pass unchanged, except the two launch-failure tests in `tests/harness/test_codex_provider.py` and `tests/harness/test_cursor_runner.py`, which assert the old launch behavior and must be updated to decisions 1 to 3.
 
 # Rules for every S8 task
 
