@@ -19,28 +19,26 @@ verification:
 
 # Goal
 
-Write `docs/spec/providers.md`: providers, fallback, quota and capacity. It is one part of the harness specification; `SPEC.md` is the index that links all parts.
+Finish the `## Providers and fallback` section of `docs/spec/providers.md` (one part of the harness specification; `SPEC.md` links it). The file already exists in your worktree from earlier attempts and is mostly correct. The `## Quota and capacity` section and everything after it belongs to task S7-T14: keep it exactly as it is (do not edit, move or delete it).
 
 # Scope
 
-Codex and Cursor routing, per-task and per-phase fallback, model classes and escalation. Then every waiting status and its cause detection per provider, waits, probes, what resumes automatically, `harness quota` commands.
+Codex and Cursor routing, per-task and per-phase fallback, model classes and escalation, the implementation attempt budget, stall fallback.
 
-Required headings (exact): `## Providers and fallback`, `## Quota and capacity`.
+# Findings from the last review (fix both)
 
-# Findings from the earlier review of this part (fix them)
-
-- Codex quota, auth or model-unavailable with Cursor enabled does not wait: Codex is disabled for that task and the same call continues on Cursor. `WAITING_QUOTA` happens only when Cursor reports quota (or Cursor is disabled).
-- The command is `harness quota set-reset`, not `set-reset-at`.
+1. Implementation attempt budget, live Cursor cap: the text says each Cursor index maps to `retry.sequence[i]` or repeats the last entry. The code is `retry.sequence or [task.model_class]`, then `sequence[min(index, len-1)]` (`_cursor_model_class` in `harness/provider_runner.py`). The default `retry.sequence` is empty (`RetryConfig` in `harness/config.py`), so the live class is the task's `model_class`. The budget is `max(1, len(retry.sequence))`, so with a non-empty sequence the last-entry clamp is never reached. Make this bullet agree with the code and with the phase table in the same file.
+2. Per-phase stall fallback: after three timeouts, `fallback_after_stalls` may set the per-phase disable, then `_handle_agent_wait` still pauses with `_pause_for_capacity` and the task shows `WAITING_TIMEOUT` (`harness/scheduler.py`). The other provider runs only on the next `run`/`resume` (with `capacity.policy: wait`, after `retry_interval_minutes`); `waiting_provider` stays the stalled provider. `tests/harness/test_quota_plan_repair.py::test_review_timeouts_preserve_attempt_and_fallback_after_three` shows it. Unlike quota fallback, this is not a same-call continue: say so.
 
 # How to write it
 
-- Start from the matching sections of the reviewed draft `tasks/sprint-07-add-task-and-docs/spec-draft.md` (written in an earlier round). Check every sentence against the code in `harness/` and fix what does not match. When the code and the draft disagree, the code wins.
-- Describe what the code does today, not what it should do. Behavior that looks like a bug goes in a final `## Known gaps` section of your file, described as it actually behaves.
-- Where Codex and Cursor behave differently, say so explicitly; do not describe one provider's rule as universal.
-- Plain, precise English, short sections, tables for statuses, transitions and keys. No history.
+- Check every sentence against the code in `harness/`. When the code and the text disagree, the code wins.
+- Describe what the code does today. Behavior that looks like a bug goes in the `## Known gaps` section at the end, described as it actually behaves.
+- Where Codex and Cursor behave differently, say so explicitly.
+- Plain, precise English, short sections, tables where useful. No history.
 
 # Acceptance criteria
 
 1. The required headings exist (checked by the verification command).
 2. Every command, status, config key and default named exists in the code with that name and value.
-3. No sentence describes behavior the code does not have.
+3. No sentence in your section describes behavior the code does not have.
