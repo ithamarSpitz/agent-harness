@@ -235,6 +235,16 @@ def test_folder_outside_any_repo_fails_guard(tmp_path: Path):
     assert is_worktree_guard_result(result)
 
 
+class _PlainFolderWorktreeManager(WorktreeManager):
+    """Returns an unregistered plain folder so the workspace guard can fire."""
+
+    def create(self, task_id: str, base_ref: str) -> tuple[str, Path]:
+        branch = f"agent/{task_id}"
+        path = self.worktree_root / task_id
+        path.mkdir(parents=True, exist_ok=True)
+        return branch, path
+
+
 def test_worktree_guard_blocks_task_without_spending_attempt(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -259,11 +269,12 @@ sprints:
     run(["git", "commit", "-m", "tasks"], repo)
     roadmap = Roadmap(repo, repo / "tasks/roadmap.yaml")
     state = StateStore(repo / ".harness/state.json")
-    worktrees = WorktreeManager(repo, repo / ".harness")
+    # Real WorktreeManager.create() (S8-T21) replaces plain folders with registered
+    # worktrees; use a stand-in so the scheduler still reaches the guard.
+    worktrees = _PlainFolderWorktreeManager(repo, repo / ".harness")
     verifier = Verifier(config, repo / ".harness/logs", worktrees)
     failures = FailureStore(repo / ".harness/failures")
     stale = worktrees.worktree_root / "A"
-    stale.mkdir(parents=True)
     codex = _FakeCodex()
     cursor = _FakeCursor()
     runner = ProviderAgentRunner(config, state, codex, cursor)
