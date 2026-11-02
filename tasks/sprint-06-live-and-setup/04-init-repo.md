@@ -10,6 +10,7 @@ depends_on:
 allowed_paths:
   - harness/init_project.py
   - harness/cli.py
+  - tests/harness/conftest.py
   - tests/harness/test_init_project.py
 context: []
 environment: null
@@ -32,6 +33,15 @@ verification:
 5. **Wiring.** The generated `harness.yaml` adds `ARCHITECTURE.md` to `paths.protected` and the alias `architecture: ARCHITECTURE.md` under `context.aliases`. The generated example brief lists `architecture` in `context`, and the task template explains that briefs name the architecture sections they rely on.
 6. The options `--public` and `--no-github` are added to the `init` subcommand in `harness/cli.py`.
 7. Output lines stay as today (`created` / `updated` / `skipped (exists)`) plus one line each for git, GitHub and the first commit.
+
+# Test safety (added after a real incident, do not reopen)
+
+During this task's verification, tests called the real, logged-in GitHub CLI and created 8 real repositories on the user's account, one of them public. Tests must never be able to reach real GitHub:
+
+1. Add an autouse fixture in `tests/harness/conftest.py` that puts a temporary directory first on `PATH` containing a fake `gh` (a `gh.cmd` on Windows and an executable `gh` script on POSIX) that prints `real gh is blocked in tests` and exits 1. Tests that need `gh` put their own fake before it.
+2. Every test of `harness init` either passes `--no-github` or installs a fake `gh` that records its arguments; tests assert on those recorded arguments.
+3. Pushes in tests go only to a local bare repository created in the test's temp directory.
+4. Add a test proving that with no test fake installed, `harness init` cannot reach the real `gh` (the blocking fake is what runs).
 
 # Acceptance criteria
 
