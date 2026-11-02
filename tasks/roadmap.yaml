@@ -94,13 +94,30 @@ sprints:
         stage: 3
         depends_on:
         - S7-T2
+      S7-T6:
+        file: tasks/sprint-07-add-task-and-docs/06-cursor-is-error.md
+        stage: 4
+        depends_on:
+        - S7-T5
+      S7-T7:
+        file: tasks/sprint-07-add-task-and-docs/07-stall-resume-review-only.md
+        stage: 4
+        depends_on:
+        - S7-T5
+      S7-T8:
+        file: tasks/sprint-07-add-task-and-docs/08-merging-consistent.md
+        stage: 5
+        depends_on:
+        - S7-T7
       S7-T3:
         file: tasks/sprint-07-add-task-and-docs/03-spec.md
-        stage: 4
+        stage: 6
         depends_on:
-        - S7-T5
+        - S7-T6
+        - S7-T8
       S7-T4:
         file: tasks/sprint-07-add-task-and-docs/04-readme.md
-        stage: 4
+        stage: 6
         depends_on:
-        - S7-T5
+        - S7-T6
+        - S7-T8
