@@ -61,6 +61,8 @@ class TaskRuntime:
     finished_at: str | None = None
     waiting_phase: str | None = None
     provider_attempts: dict[str, int] = field(default_factory=dict)
+    added: bool = False
+    brief_path: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         data = {
@@ -76,6 +78,8 @@ class TaskRuntime:
             "finished_at": self.finished_at,
             "waiting_phase": self.waiting_phase,
             "provider_attempts": dict(self.provider_attempts),
+            "added": self.added,
+            "brief_path": self.brief_path,
         }
         return data
 
@@ -94,4 +98,6 @@ class TaskRuntime:
             finished_at=data.get("finished_at"),
             waiting_phase=data.get("waiting_phase"),
             provider_attempts={str(k): int(v) for k, v in (data.get("provider_attempts") or {}).items()},
+            added=bool(data.get("added", False)),
+            brief_path=data.get("brief_path"),
         )

@@ -15,6 +15,8 @@ from .models import SprintSpec, TaskSpec, TaskStatus
 from .provider_runner import ProviderAgentRunner
 from .state import StateStore
 from .release import ReleaseRunner, sprint_is_complete
+from .roadmap import Roadmap
+from .task_queue import TaskQueueManager
 from .verifier import Verifier
 
 
@@ -46,6 +48,8 @@ class Scheduler:
         verifier: Verifier,
         environment: EnvironmentManager | None = None,
         failures: FailureStore | None = None,
+        roadmap: Roadmap | None = None,
+        roadmap_path: Path | None = None,
     ):
         self.repo_root = repo_root
         self.config = config
@@ -55,6 +59,11 @@ class Scheduler:
         self.verifier = verifier
         self.environment = environment or EnvironmentManager(repo_root, config, verifier.log_dir)
         self.failures = failures or FailureStore(verifier.log_dir.parent / "failures")
+        self.roadmap = roadmap
+        self.roadmap_path = roadmap_path
+        self._runtime_root = verifier.log_dir.parent
+        self.task_queue = TaskQueueManager(repo_root, self._runtime_root, state)
+        self._merge_in_progress: tuple[str, int] | None = None
         self.code_maps = CodeMapBuilder(
             config.code_map, verifier.log_dir.parent, verifier.log_dir, repo_root
         )
@@ -465,6 +474,13 @@ class Scheduler:
             return str(exc)
 
     def _integrate_stage(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec], checkpoint: str) -> bool:
+        self._merge_in_progress = (sprint.id, stage)
+        try:
+            return self._integrate_stage_inner(sprint, stage, tasks, checkpoint)
+        finally:
+            self._merge_in_progress = None
+
+    def _integrate_stage_inner(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec], checkpoint: str) -> bool:
         try:
             for task in tasks:
                 runtime = self.state.get(task.id)
@@ -516,6 +532,7 @@ class Scheduler:
         return True
 
     def rerun_stage_barrier(self, sprint: SprintSpec, stage: int) -> bool:
+        self.task_queue.merge_added_tasks_from_state(sprint)
         tasks = [task for task in sprint.tasks.values() if task.stage == stage]
         if not tasks:
             raise RuntimeError(f"Sprint {sprint.id} has no stage {stage}")
@@ -533,21 +550,71 @@ class Scheduler:
         checkpoint = self.worktrees.head_commit()
         ok = self._integrate_stage(sprint, stage, pending, checkpoint)
         if ok:
+            # Merge finished: remaining queue entries cannot join this stage, but
+            # auto/next must still be able to create a following stage before we
+            # treat the sprint as complete (Decision 3/4).
+            self._pickup_queue(sprint, current_stage=stage, merge_in_progress=True)
             self.finalize_completed_sprint(sprint)
         return ok
 
     def finalize_completed_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> None:
+        if self.task_queue.pending_entries(sprint.id):
+            return
         if not sprint_is_complete(self.state, sprint):
             return
+        if not dry_run and self.roadmap_path is not None:
+            self.task_queue.record_added_tasks_to_repo(sprint, self.roadmap_path)
         self.state.set_meta(f"{sprint.id}.run_status", "COMPLETED")
         self.failures.clear(sprint.id)
         ReleaseRunner(self.config, self.repo_root, self.verifier).maybe_run_after_sprint_complete(
             self.state, sprint.id, dry_run=dry_run
         )
 
+    def _open_stages(self, sprint: SprintSpec, *, skip: set[int] | None = None) -> list[int]:
+        skip = skip or set()
+        return sorted(
+            {
+                task.stage
+                for task in sprint.tasks.values()
+                if self.state.get(task.id).status != TaskStatus.DONE and task.stage not in skip
+            }
+        )
+
+    def _pickup_queue(
+        self,
+        sprint: SprintSpec,
+        *,
+        current_stage: int,
+        merge_in_progress: bool,
+    ) -> list[TaskSpec]:
+        if self.roadmap is None:
+            return []
+        stage_tasks = [task for task in sprint.tasks.values() if task.stage == current_stage]
+        return self.task_queue.process_pending(
+            sprint,
+            self.roadmap,
+            current_stage=current_stage,
+            stage_tasks=stage_tasks,
+            merge_in_progress=merge_in_progress,
+            scheduler=self,
+        )
+
     def run_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> bool:
-        stages = sorted({task.stage for task in sprint.tasks.values()})
-        for stage in stages:
+        poll_seconds = max(1, self.config.execution.watchdog_poll_seconds)
+        dry_run_seen: set[int] = set()
+        while True:
+            self.task_queue.merge_added_tasks_from_state(sprint)
+            open_stages = self._open_stages(sprint, skip=dry_run_seen)
+            if not open_stages:
+                if not dry_run:
+                    stages = sorted({task.stage for task in sprint.tasks.values()}) or [1]
+                    self._pickup_queue(sprint, current_stage=stages[-1], merge_in_progress=True)
+                    if self._open_stages(sprint):
+                        continue
+                break
+            stage = open_stages[0]
+            if not dry_run:
+                self._pickup_queue(sprint, current_stage=stage, merge_in_progress=False)
             tasks = [task for task in sprint.tasks.values() if task.stage == stage]
             unfinished = [task for task in tasks if self.state.get(task.id).status != TaskStatus.DONE]
             if not unfinished:
@@ -556,6 +623,7 @@ class Scheduler:
             self._assert_parallel_safe(unfinished, stage)
             if dry_run:
                 print(f"Stage {stage}: " + ", ".join(task.id for task in unfinished))
+                dry_run_seen.add(stage)
                 continue
 
             not_ready = [task.id for task in unfinished if not self._dependencies_done(task)]
@@ -575,11 +643,52 @@ class Scheduler:
             self.state.set_meta(f"{sprint.id}.stage.{stage}.base_commit", current_commit)
             self.code_maps.ensure_project_map(current_commit)
 
+            def poll_queue(
+                pool: concurrent.futures.ThreadPoolExecutor,
+                futures: dict[concurrent.futures.Future, TaskSpec],
+                active_unfinished: list[TaskSpec],
+            ) -> None:
+                added = self._pickup_queue(
+                    sprint,
+                    current_stage=stage,
+                    merge_in_progress=self._merge_in_progress == (sprint.id, stage),
+                )
+                for task in added:
+                    if task.stage != stage:
+                        continue
+                    if self.state.get(task.id).status == TaskStatus.DONE:
+                        continue
+                    if task not in active_unfinished:
+                        active_unfinished.append(task)
+                    self._assert_parallel_safe(
+                        [t for t in active_unfinished if self.state.get(t.id).status != TaskStatus.DONE],
+                        stage,
+                    )
+                    running_ids = {futures[f].id for f in futures}
+                    if task.id not in running_ids:
+                        future = pool.submit(self._run_task, task, current_commit)
+                        futures[future] = task
+
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, self.config.execution.max_parallel_agents)
             ) as pool:
-                futures = {pool.submit(self._run_task, task, current_commit): task for task in unfinished}
-                outcomes = [future.result() for future in concurrent.futures.as_completed(futures)]
+                futures: dict[concurrent.futures.Future, TaskSpec] = {
+                    pool.submit(self._run_task, task, current_commit): task for task in unfinished
+                }
+                outcomes: list[TaskOutcome] = []
+                while futures:
+                    done, _ = concurrent.futures.wait(
+                        futures.keys(),
+                        timeout=poll_seconds,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        poll_queue(pool, futures, unfinished)
+                        continue
+                    for future in done:
+                        outcomes.append(future.result())
+                        del futures[future]
+                    poll_queue(pool, futures, unfinished)
 
             failed = [
                 outcome
@@ -601,6 +710,9 @@ class Scheduler:
                 self._record_capacity_pause(sprint, stage, capacity_paused)
                 print("Waiting for Cursor provider capacity: " + ", ".join(p.task_id for p in capacity_paused))
                 return False
+
+            # Merge has begun: remaining queue entries cannot join this stage.
+            self._pickup_queue(sprint, current_stage=stage, merge_in_progress=True)
 
             if not self._integrate_stage(sprint, stage, unfinished, current_commit):
                 return False

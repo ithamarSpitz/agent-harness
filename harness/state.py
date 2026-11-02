@@ -61,7 +61,10 @@ class StateStore:
         return self._meta.get(key, default)
     def reset_task(self, task_id: str) -> None:
         with self._lock:
-            self._data[task_id] = TaskRuntime()
+            previous = self._data.get(task_id)
+            added = bool(previous.added) if previous is not None else False
+            brief_path = previous.brief_path if previous is not None else None
+            self._data[task_id] = TaskRuntime(added=added, brief_path=brief_path)
             self.save()
 
     def meta(self) -> dict[str, object]:

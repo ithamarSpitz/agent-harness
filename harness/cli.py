@@ -30,6 +30,7 @@ from .init_project import run_init
 from .limits import run_limits
 from .machine_setup import run_setup_machine
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
+from .task_queue import TaskQueueError, TaskQueueManager
 from .verifier import Verifier
 
 
@@ -77,7 +78,18 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
     codex_runner = CodexAgentRunner(config, runtime_root / "logs", context, usage)
     runner = ProviderAgentRunner(config, state, codex_runner, cursor_runner, usage)
     verifier = Verifier(config, runtime_root / "logs", worktrees)
-    scheduler = Scheduler(root, config, state, worktrees, runner, verifier, environment, failures)
+    scheduler = Scheduler(
+        root,
+        config,
+        state,
+        worktrees,
+        runner,
+        verifier,
+        environment,
+        failures,
+        roadmap=roadmap,
+        roadmap_path=roadmap_path,
+    )
     manifests = RunManifestManager(root, runtime_root, state)
     validator = ProjectValidator(root, roadmap, config)
     quota = QuotaManager(config, state)
@@ -106,10 +118,17 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
     )
 
 
-def cmd_status(roadmap: Roadmap, state: StateStore, sprint_id: str | None) -> int:
+def cmd_status(
+    roadmap: Roadmap,
+    state: StateStore,
+    sprint_id: str | None,
+    runtime_root: Path | None = None,
+) -> int:
+    queue = TaskQueueManager(roadmap.root, runtime_root or (roadmap.root / ".harness"), state)
     sprint_ids = [sprint_id] if sprint_id else list(roadmap.sprints)
     for sid in sprint_ids:
         sprint = roadmap.sprint(sid)
+        queue.merge_added_tasks_from_state(sprint)
         print(f"{sid}: {sprint.name}")
         release_line = format_release_status(state, sid)
         if release_line:
@@ -119,14 +138,44 @@ def cmd_status(roadmap: Roadmap, state: StateStore, sprint_id: str | None) -> in
             for task in sorted((t for t in sprint.tasks.values() if t.stage == stage), key=lambda x: x.id):
                 rt = state.get(task.id)
                 suffix = f" attempt={rt.attempt}" if rt.attempt else ""
+                if rt.added:
+                    suffix += " (added)"
                 if rt.last_error:
                     suffix += f" error={rt.last_error.splitlines()[0][:100]}"
                 print(f"    {rt.status.value:10} {task.id}{suffix}")
+        for task_id, reason in queue.rejected_entries(sid):
+            short = reason.splitlines()[0][:100]
+            print(f"    REJECTED   {task_id} {short}")
+    return 0
+
+
+def cmd_add_task(
+    runtime: Runtime,
+    sprint_id: str,
+    brief_path: Path,
+    *,
+    stage_choice: str,
+) -> int:
+    if stage_choice not in {"auto", "current", "next"}:
+        print(f"Invalid --stage value {stage_choice!r}; expected auto, current, or next", file=sys.stderr)
+        return 2
+    try:
+        queued = runtime.scheduler.task_queue.enqueue(
+            brief_path,
+            sprint_id,
+            runtime.roadmap,
+            stage_choice=stage_choice,
+        )
+    except TaskQueueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(f"Queued task at {queued}")
     return 0
 
 
 def cmd_release(runtime: Runtime, sprint_id: str) -> int:
     sprint = runtime.roadmap.sprint(sprint_id)
+    runtime.scheduler.task_queue.merge_added_tasks_from_state(sprint)
     if not sprint_is_complete(runtime.state, sprint):
         print(
             f"Sprint {sprint_id} is not complete; release runs only after every task is DONE.",
@@ -317,6 +366,9 @@ def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
         return 2
     sprint = runtime.roadmap.sprint(sprint_id)
     if dry_run:
+        queue = getattr(runtime.scheduler, "task_queue", None)
+        if queue is not None:
+            queue.merge_added_tasks_from_state(sprint)
         ok = runtime.scheduler.run_sprint(sprint, dry_run=True)
         return 0 if ok else 3
 
@@ -325,6 +377,7 @@ def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
 
 
 def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
+    runtime.scheduler.task_queue.merge_added_tasks_from_state(sprint)
     if not _run_pending_revalidations(runtime, sprint_id):
         record = runtime.failures.get(sprint_id)
         if record:
@@ -333,6 +386,14 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
 
     if all(runtime.state.get(task.id).status == TaskStatus.DONE for task in sprint.tasks.values()):
         # Last-stage `rerun-blocker` marks tasks DONE without going through `run_sprint`.
+        # Drain the queue first: a brief queued during the barrier (or while the
+        # last stage was merging) must still be placed in a new stage on resume.
+        stages = sorted({task.stage for task in sprint.tasks.values()}) or [1]
+        runtime.scheduler._pickup_queue(
+            sprint, current_stage=stages[-1], merge_in_progress=True
+        )
+
+    if all(runtime.state.get(task.id).status == TaskStatus.DONE for task in sprint.tasks.values()):
         # Finalize (and run release once) so `resume` still performs the sprint's last step.
         runtime.scheduler.finalize_completed_sprint(sprint)
         print(f"Sprint {sprint_id} is already complete; nothing to resume/run.")
@@ -441,8 +502,12 @@ def cmd_unblock(state: StateStore, task_id: str) -> int:
     return 0
 
 
+def _resolve_task(runtime: Runtime, task_id: str):
+    return runtime.scheduler.task_queue.resolve_task(runtime.roadmap, task_id)
+
+
 def cmd_reset_task(runtime: Runtime, task_id: str) -> int:
-    task = runtime.roadmap.task(task_id)  # validate id
+    task = _resolve_task(runtime, task_id)
     task_runtime = runtime.state.get(task_id)
     if task_runtime.status == TaskStatus.DONE:
         print(
@@ -462,7 +527,7 @@ def cmd_reset_task(runtime: Runtime, task_id: str) -> int:
 
 
 def cmd_verify(runtime: Runtime, task_id: str) -> int:
-    task = runtime.roadmap.task(task_id)
+    task = _resolve_task(runtime, task_id)
     task_runtime = runtime.state.get(task_id)
     if not task_runtime.worktree or not task_runtime.base_ref:
         print(f"{task_id} has no active worktree/base_ref", file=sys.stderr)
@@ -473,7 +538,7 @@ def cmd_verify(runtime: Runtime, task_id: str) -> int:
 
 
 def cmd_review(runtime: Runtime, task_id: str, timeout: int) -> int:
-    task = runtime.roadmap.task(task_id)
+    task = _resolve_task(runtime, task_id)
     task_runtime = runtime.state.get(task_id)
     if not task_runtime.worktree or not task_runtime.base_ref:
         print(f"{task_id} has no active worktree/base_ref", file=sys.stderr)
@@ -497,7 +562,7 @@ def cmd_run_task(
     model_class: str | None = None,
     fresh_budget: bool = False,
 ) -> int:
-    task = runtime.roadmap.task(task_id)
+    task = _resolve_task(runtime, task_id)
     report = runtime.validator.validate(task.sprint)
     if not report.ok:
         print(report.render(), file=sys.stderr)
@@ -601,6 +666,7 @@ def cmd_rerun_blocker(
             print("Stage failure record has no valid stage number.", file=sys.stderr)
             return 2
         sprint = runtime.roadmap.sprint(sprint_id)
+        runtime.scheduler.task_queue.merge_added_tasks_from_state(sprint)
         ok = runtime.scheduler.rerun_stage_barrier(sprint, stage)
         if ok:
             print(f"Stage {stage} barrier passed. Run `harness resume {sprint_id}` to continue with the next stage.")
@@ -614,7 +680,7 @@ def cmd_rerun_blocker(
 
 
 def cmd_inspect(runtime: Runtime, task_id: str) -> int:
-    task = runtime.roadmap.task(task_id)
+    task = _resolve_task(runtime, task_id)
     task_runtime = runtime.state.get(task_id)
     payload: dict[str, object] = {
         "task": {
@@ -728,7 +794,7 @@ def cmd_plan_change_propose(
         print("Plan repair is disabled in harness.yaml", file=sys.stderr)
         return 2
     runtime.plan_changes.ensure_baseline(runtime.roadmap)
-    task = runtime.roadmap.task(task_id)
+    task = _resolve_task(runtime, task_id)
     if task.sprint != sprint_id:
         print(f"{task_id} belongs to {task.sprint}, not {sprint_id}", file=sys.stderr)
         return 2
@@ -926,6 +992,11 @@ def parser() -> argparse.ArgumentParser:
     pca.add_argument("--affected", action="append", default=[])
     pcr = pc_sub.add_parser("reject")
     pcr.add_argument("request")
+
+    at = sub.add_parser("add-task")
+    at.add_argument("sprint")
+    at.add_argument("brief")
+    at.add_argument("--stage", default="auto", choices=["auto", "current", "next"])
     return p
 
 
@@ -948,7 +1019,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runtime = build_runtime(root, roadmap_path, config_path)
         if args.command == "status":
-            return cmd_status(runtime.roadmap, runtime.state, args.sprint)
+            return cmd_status(runtime.roadmap, runtime.state, args.sprint, runtime.root / ".harness")
+        if args.command == "add-task":
+            return cmd_add_task(
+                runtime,
+                args.sprint,
+                (root / args.brief).resolve(),
+                stage_choice=args.stage,
+            )
         if args.command == "release":
             return cmd_release(runtime, args.sprint)
         if args.command == "graph":
