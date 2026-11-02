@@ -63,14 +63,14 @@ import time
 
 args = sys.argv[1:]
 workspace = pathlib.Path(args[args.index('--workspace') + 1])
-for i in range(20):
+for i in range(70):
     with (workspace / 'progress.txt').open('a', encoding='utf-8') as fh:
         fh.write(str(i))
     time.sleep(0.1)
 """)
     write(tmp_path / "harness.yaml", f"""
 execution:
-  stall_timeout_minutes: 0.01
+  stall_timeout_minutes: 0.1
   watchdog_poll_seconds: 0.01
 worktree: {{}}
 cursor:
@@ -94,7 +94,9 @@ doctor: {{}}
     )
     assert result.ok
     assert not result.stalled
-    assert (tmp_path / "progress.txt").read_text(encoding="utf-8") == "012345678910111213141516171819"
+    assert (tmp_path / "progress.txt").read_text(encoding="utf-8") == "".join(
+        str(i) for i in range(70)
+    )
 
 
 def test_resource_exhausted_is_capacity_not_quota(tmp_path: Path):
