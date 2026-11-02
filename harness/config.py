@@ -10,6 +10,8 @@ import yaml
 @dataclass(slots=True)
 class ExecutionConfig:
     max_parallel_agents: int = 3
+    min_free_memory_gb: float = 2.0
+    memory_per_agent_gb: float = 1.5
     default_max_attempts: int = 2
     default_timeout_minutes: int = 35
     # Optional start-point guard. On the first run of a sprint, the current
@@ -275,6 +277,20 @@ class HarnessConfig:
     doctor: DoctorConfig
 
     @classmethod
+    def _load_execution(cls, raw: Any) -> ExecutionConfig:
+        section = dict(raw or {})
+        # v0.1 exposed require_clean_base/--allow-dirty, but atomic rollback
+        # fundamentally requires a clean integration checkout. Ignore the old
+        # config key for backwards compatibility and always enforce cleanliness.
+        section.pop("require_clean_base", None)
+        config = ExecutionConfig(**section)
+        if config.min_free_memory_gb <= 0:
+            raise ValueError("execution.min_free_memory_gb must be greater than zero")
+        if config.memory_per_agent_gb <= 0:
+            raise ValueError("execution.memory_per_agent_gb must be greater than zero")
+        return config
+
+    @classmethod
     def _load_code_map(cls, raw: Any) -> CodeMapConfig:
         section = dict(raw or {})
         section.pop("enabled", None)
@@ -304,13 +320,8 @@ class HarnessConfig:
     @classmethod
     def load(cls, path: Path) -> "HarnessConfig":
         raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        execution_raw = dict(raw.get("execution", {}))
-        # v0.1 exposed require_clean_base/--allow-dirty, but atomic rollback
-        # fundamentally requires a clean integration checkout. Ignore the old
-        # config key for backwards compatibility and always enforce cleanliness.
-        execution_raw.pop("require_clean_base", None)
         return cls(
-            execution=ExecutionConfig(**execution_raw),
+            execution=cls._load_execution(raw.get("execution", {})),
             worktree=WorktreeConfig(**raw.get("worktree", {})),
             code_map=cls._load_code_map(raw.get("code_map", {})),
             cursor=CursorConfig(**raw.get("cursor", {})),
