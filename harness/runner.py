@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -14,7 +15,7 @@ from .models import TaskSpec
 from .prompts import implement_prompt, review_prompt
 from .process_utils import cursor_prompt_via_stdin, prepare_external_argv, stop_process_tree
 from .ui_review import cursor_mcp_auto_approve_argv
-from .usage import UsageRecorder
+from .usage import UsageRecorder, count_code_map_calls
 
 
 
@@ -124,6 +125,79 @@ class CursorAgentRunner:
     def _stop_process(proc: subprocess.Popen[str]) -> None:
         # proc is the cmd/PowerShell shim on Windows; terminating it alone orphans the agent.
         stop_process_tree(proc)
+
+    @staticmethod
+    def _parse_output(
+        raw_output: str, code_map_command: str = ""
+    ) -> tuple[str, str, dict[str, int], int]:
+        """Extract the user-facing answer, diagnostics, usage, and shell activity."""
+        assistant_messages: list[str] = []
+        result_text: str | None = None
+        diagnostics: list[str] = []
+        commands: list[str] = []
+        usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+        saw_json = False
+
+        for raw in raw_output.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                diagnostics.append(line)
+                continue
+            if not isinstance(event, dict):
+                continue
+            saw_json = True
+            event_type = event.get("type")
+            if event_type == "assistant":
+                message = event.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, list):
+                    text = "".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    )
+                    if text:
+                        assistant_messages.append(text)
+            elif event_type == "result":
+                value = event.get("result")
+                if isinstance(value, str):
+                    result_text = value
+                reported = event.get("usage")
+                if isinstance(reported, dict):
+                    token_fields = {
+                        "input_tokens": "inputTokens",
+                        "cached_input_tokens": "cacheReadTokens",
+                        "output_tokens": "outputTokens",
+                    }
+                    for target, source in token_fields.items():
+                        try:
+                            usage[target] = int(reported.get(source, 0) or 0)
+                        except (TypeError, ValueError):
+                            pass
+                if event.get("is_error") is True:
+                    diagnostics.append(json.dumps(event, ensure_ascii=False))
+            elif event_type == "tool_call" and event.get("subtype") == "completed":
+                tool_call = event.get("tool_call")
+                shell_call = tool_call.get("shellToolCall") if isinstance(tool_call, dict) else None
+                args = shell_call.get("args") if isinstance(shell_call, dict) else None
+                command = args.get("command") if isinstance(args, dict) else None
+                if isinstance(command, str):
+                    commands.append(command)
+
+        if result_text is not None:
+            answer = result_text
+        elif assistant_messages:
+            answer = assistant_messages[-1]
+        else:
+            answer = raw_output
+        if not saw_json and raw_output.strip() and not diagnostics:
+            diagnostics.append(raw_output.strip())
+        return answer, "\n".join(diagnostics), usage, count_code_map_calls(commands, code_map_command)
 
     def _invoke(
         self,
@@ -274,9 +348,19 @@ class CursorAgentRunner:
             output = (output + "\n" + error).strip() + "\n"
         write_log(self.log_dir, log_name, output)
 
-        quota_exhausted = self._looks_like_quota_exhaustion(output)
+        if self.config.cursor.output_format == "stream-json":
+            final_output, diagnostics, usage, code_map_calls = self._parse_output(
+                output, self.config.code_map.command
+            )
+        else:
+            final_output = output
+            diagnostics = ""
+            usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+            code_map_calls = 0
+        classification_text = "\n".join(part for part in (final_output, diagnostics) if part)
+        quota_exhausted = self._looks_like_quota_exhaustion(classification_text)
         capacity_exhausted = (
-            not quota_exhausted and self._looks_like_capacity_exhaustion(output)
+            not quota_exhausted and self._looks_like_capacity_exhaustion(classification_text)
         )
         ok = (
             not timed_out
@@ -293,7 +377,7 @@ class CursorAgentRunner:
             error = f"Agent exit code {return_code}"
         result = AgentResult(
             ok=ok,
-            output=output,
+            output=final_output,
             error=error,
             timed_out=timed_out,
             stalled=stalled,
@@ -301,8 +385,13 @@ class CursorAgentRunner:
             model=model,
             quota_exhausted=quota_exhausted,
             capacity_exhausted=capacity_exhausted,
+            input_tokens=usage["input_tokens"] or None,
+            cached_input_tokens=usage["cached_input_tokens"] or None,
+            output_tokens=usage["output_tokens"] or None,
         )
-        self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
+        self._record_usage(
+            task_id, phase, effective_model_class, model, attempt, result, code_map, code_map_calls
+        )
         return result
 
     def _looks_like_quota_exhaustion(self, output: str) -> bool:
@@ -326,6 +415,7 @@ class CursorAgentRunner:
         attempt: int | None,
         result: AgentResult,
         code_map: bool = False,
+        code_map_calls: int = 0,
     ) -> None:
         if self.usage is None:
             return
@@ -344,6 +434,10 @@ class CursorAgentRunner:
                 "quota_exhausted": result.quota_exhausted,
                 "capacity_exhausted": result.capacity_exhausted,
                 "code_map": code_map,
+                "code_map_calls": code_map_calls,
+                "input_tokens": result.input_tokens,
+                "cached_input_tokens": result.cached_input_tokens,
+                "output_tokens": result.output_tokens,
                 "output_bytes": len(result.output.encode("utf-8", errors="replace")),
             }
         )

@@ -41,7 +41,7 @@ class CodeMapConfig:
 class CursorConfig:
     enabled: bool = True
     command: str = "agent"
-    output_format: str = "text"
+    output_format: str = "stream-json"
     # Headless Cursor requires workspace trust. The harness only supplies --trust
     # for Git worktrees it created and can verify as registered worktrees.
     trust_harness_worktrees: bool = True
