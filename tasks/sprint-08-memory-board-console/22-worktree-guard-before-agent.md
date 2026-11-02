@@ -32,6 +32,10 @@ A stale plain folder was used as a worktree; Git inside it resolved to the integ
 1. Before each agent call in `harness/provider_runner.py`, run `git -C <workspace> rev-parse --show-toplevel` and compare (resolved, case-insensitive on Windows) with the workspace path.
 2. If they differ or the command fails: do not call the agent; the task becomes `BLOCKED` with `workspace <path> is not its own Git worktree (top level is <x>)`, no attempt spent.
 
+# Note after stage 1 integration (Nov 2026)
+
+Stage 1 integration failed: with S8-T21 merged, WorktreeManager.create() replaces a plain folder at the task worktree path with a real worktree, so test_worktree_guard_blocks_task_without_spending_attempt no longer reaches the guard (assert runtime.attempt == 0 failed, 1 == 0). Your worktree is now based on a commit that already contains S8-T21. Keep the guard code; update only that scheduler-level test so it still reaches the guard: give the Scheduler a WorktreeManager stand-in (subclass or fake) whose create() returns a plain folder that is not a registered worktree, and keep every assertion (BLOCKED, attempt 0, the message, no implement call). Run the full tests/harness suite.
+
 # Acceptance criteria
 
 1. A real temporary worktree passes the check.
