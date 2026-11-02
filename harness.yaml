@@ -20,9 +20,10 @@ cursor:
   output_format: text
   trust_harness_worktrees: true
   models:
-    worker: composer-2.5
-    hard_worker: cursor-grok-4.6-high
-    reviewer: cursor-grok-4.6-high
+    # TRIAL (Nov 2 2026): Cursor Auto while both Cursor pools are at 100%; undo with git revert.
+    worker: auto
+    hard_worker: auto
+    reviewer: auto
     escalation: claude-opus-5-thinking-high
 
 providers:
