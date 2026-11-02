@@ -46,10 +46,11 @@ Task statuses say exactly what is happening, without getting longer. Today `RUNN
 
 2. **Classification.** Split today's `capacity` / `transient` classification (Codex in `codex_runner.py`, Cursor in `runner.py`, patterns in `config.py`) into the four causes above. Keep the existing pattern lists' contents; move each existing pattern into the matching new list (network, busy, provider error); timeouts come from the timeout flag, not patterns. Unknown transient errors map to `WAITING_PROVIDER_ERROR`. Old config keys (`capacity_patterns`, `transient_patterns`) still load and are merged into the new lists.
 3. **Behavior unchanged.** All four new waiting statuses behave exactly like `WAITING_FOR_CAPACITY` today (same retry interval, no attempt spent, same resume path). `WAITING_QUOTA` behaves like `WAITING_FOR_QUOTA`.
-4. **MERGING** is set on every task of a stage when `_integrate_stage` starts, and becomes `DONE` (pass) or goes back as today (rollback) when it ends.
-5. **Compatibility.** A `state.json` written with old names loads: map `RUNNING`→`IMPLEMENTING`, `VERIFYING`→`CHECKING`, `VERIFIED`→`PASSED`, `WAITING_FOR_QUOTA`→`WAITING_QUOTA`, `WAITING_FOR_CAPACITY`→`WAITING_PROVIDER_ERROR`.
-6. Messages name the real provider and cause: today a Codex network failure prints "Waiting for Cursor provider capacity" (`scheduler.py`, `run_sprint`) and the quota message always says "Cursor". Print the provider recorded for that task's call and the specific cause, e.g. `Waiting (network, codex): S6-T1, S6-T2`.
-7. Every place that prints or compares statuses (`status`, `failure`, `quota status`, `usage`, recovery commands, messages) uses the new names.
+4. **A stalled or timed-out reviewer is not a failed attempt.** Today, when the reviewer call stalls (`stall_timeout_minutes`) or times out, the task spends an implementation attempt and the coding agent reruns with feedback `Agent stalled`. Instead: set `WAITING_TIMEOUT`, keep the worktree and the implementation as they are, spend no attempt, and on resume rerun only the review (same as capacity waits during review today). The same applies to a stalled implementation call: `WAITING_TIMEOUT`, no attempt spent, rerun that phase. After 3 consecutive stalls of the same phase for the same task, fall back to the next provider for that phase the way quota fallback does; if none is left, BLOCKED with the reason `stalled 3 times`.
+5. **MERGING** is set on every task of a stage when `_integrate_stage` starts, and becomes `DONE` (pass) or goes back as today (rollback) when it ends.
+6. **Compatibility.** A `state.json` written with old names loads: map `RUNNING`→`IMPLEMENTING`, `VERIFYING`→`CHECKING`, `VERIFIED`→`PASSED`, `WAITING_FOR_QUOTA`→`WAITING_QUOTA`, `WAITING_FOR_CAPACITY`→`WAITING_PROVIDER_ERROR`.
+7. Messages name the real provider and cause: today a Codex network failure prints "Waiting for Cursor provider capacity" (`scheduler.py`, `run_sprint`) and the quota message always says "Cursor". Print the provider recorded for that task's call and the specific cause, e.g. `Waiting (network, codex): S6-T1, S6-T2`.
+8. Every place that prints or compares statuses (`status`, `failure`, `quota status`, `usage`, recovery commands, messages) uses the new names.
 
 # Acceptance criteria
 
@@ -57,4 +58,5 @@ Task statuses say exactly what is happening, without getting longer. Today `RUNN
 2. A stage being integrated shows `MERGING` for its tasks; after success they are `DONE`.
 3. An old `state.json` with every old name loads with the mapped names.
 4. Old `capacity_patterns` / `transient_patterns` config keys still work.
-5. No old status name appears in `harness/` except in the compatibility mapping.
+5. A fake reviewer that stalls leaves the task in `WAITING_TIMEOUT` with the same attempt count and an untouched worktree; resume reruns only the review; three stalls in a row switch provider.
+6. No old status name appears in `harness/` except in the compatibility mapping.
