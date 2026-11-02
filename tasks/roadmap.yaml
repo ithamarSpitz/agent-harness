@@ -115,6 +115,36 @@ sprints:
         depends_on:
         - S7-T6
         - S7-T8
+      S7-T9:
+        file: tasks/sprint-07-add-task-and-docs/09-spec-lifecycle.md
+        stage: 6
+        depends_on:
+        - S7-T6
+        - S7-T8
+      S7-T10:
+        file: tasks/sprint-07-add-task-and-docs/10-spec-providers.md
+        stage: 6
+        depends_on:
+        - S7-T6
+        - S7-T8
+      S7-T11:
+        file: tasks/sprint-07-add-task-and-docs/11-spec-review.md
+        stage: 6
+        depends_on:
+        - S7-T6
+        - S7-T8
+      S7-T12:
+        file: tasks/sprint-07-add-task-and-docs/12-spec-operations.md
+        stage: 6
+        depends_on:
+        - S7-T6
+        - S7-T8
+      S7-T13:
+        file: tasks/sprint-07-add-task-and-docs/13-spec-configuration.md
+        stage: 6
+        depends_on:
+        - S7-T6
+        - S7-T8
       S7-T4:
         file: tasks/sprint-07-add-task-and-docs/04-readme.md
         stage: 6
