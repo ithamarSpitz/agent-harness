@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,6 +22,41 @@ AGENTS_MD_NEW = f"""# Agent Operating Contract
 {HARNESS_AGENTS_BLOCK}
 """
 
+ARCHITECTURE_MD = """# Architecture
+
+## Goal and users
+
+Describe the product outcome and the people or systems it serves.
+
+## Scope and non-goals
+
+Define what the system includes and what it deliberately does not include.
+
+## Stack
+
+List the languages, frameworks, infrastructure, and key runtime constraints.
+
+## Components (what each does and owns)
+
+Describe each major component, its responsibility, and the data or behavior it owns.
+
+## Data model
+
+Document the important entities, relationships, storage, and lifecycle rules.
+
+## Interfaces and contracts between components
+
+Record APIs, events, file formats, and other boundaries components must preserve.
+
+## Testing strategy (which commands prove what)
+
+Map test layers and verification commands to the behavior they demonstrate.
+
+## Decisions (dated, with the reason)
+
+Record significant decisions with the date, chosen approach, and rationale.
+"""
+
 TASK_TEMPLATE_MD = """---
 # Task identity and scheduling (required unless noted).
 id: S?-T?
@@ -32,7 +69,8 @@ allow_protected: false
 depends_on: []
 allowed_paths:
   - src/example/**
-# Logical context aliases from harness.yaml, or repo-relative paths.
+# Logical context aliases from harness.yaml, or repo-relative paths. Briefs should
+# name the architecture sections they rely on when describing their required context.
 context: []
 # Set to docker only when environment.docker_enabled is true in harness.yaml.
 environment: null
@@ -67,7 +105,8 @@ allow_protected: false
 depends_on: []
 allowed_paths:
   - .gitignore
-context: []
+context:
+  - architecture
 environment: null
 verification:
   - python -c "pass"
@@ -161,11 +200,13 @@ paths:
     - harness.yaml
     - tasks/**
     - AGENTS.md
+    - ARCHITECTURE.md
   review_required: []
 
 # Stable logical names for task context aliases.
 context:
-  aliases: {}
+  aliases:
+    architecture: ARCHITECTURE.md
 
 # Per-task Docker/Compose isolation (opt in via task environment: docker).
 environment:
@@ -232,13 +273,77 @@ NEXT_STEPS = (
 
 def _is_git_repo(root: Path) -> bool:
     result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
+        ["git", "rev-parse", "--show-toplevel"],
         cwd=root,
         text=True,
         capture_output=True,
         check=False,
     )
-    return result.returncode == 0 and result.stdout.strip() == "true"
+    if result.returncode != 0:
+        return False
+    return Path(result.stdout.strip()).resolve() == root.resolve()
+
+
+def _has_origin(root: Path) -> bool:
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _github_command(root: Path, *, public: bool) -> list[str]:
+    visibility = "--public" if public else "--private"
+    return ["gh", "repo", "create", root.name, visibility, "--source", ".", "--remote", "origin"]
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def _harness_git_commit_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("GIT_AUTHOR_NAME", "Agent Harness")
+    env.setdefault("GIT_AUTHOR_EMAIL", "harness@local")
+    env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
+    env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
+    return env
+
+
+def _setup_github(root: Path, *, public: bool, no_github: bool) -> str:
+    if _has_origin(root):
+        return "GitHub: skipped (origin exists)"
+    if no_github:
+        return "GitHub: skipped (--no-github)"
+
+    command = _github_command(root, public=public)
+    later = _format_command(command)
+    gh = shutil.which("gh")
+    if gh is None:
+        return f"GitHub: WARNING: gh is unavailable; run `{later}` later."
+    auth = subprocess.run(
+        [gh, "auth", "status"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if auth.returncode != 0:
+        return f"GitHub: WARNING: gh is not logged in; run `{later}` later."
+
+    created = subprocess.run(
+        [gh, *command[1:]],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        return f"GitHub: WARNING: repository creation failed; run `{later}` later."
+    return "GitHub: created origin remote"
 
 
 def _roadmap_yaml(project_name: str) -> str:
@@ -316,17 +421,52 @@ def _update_gitignore(root: Path, path: Path, lines: list[str]) -> None:
     lines.append(f"{display}: updated")
 
 
-def run_init(root: Path, *, force: bool = False) -> int:
+def run_init(
+    root: Path,
+    *,
+    force: bool = False,
+    public: bool = False,
+    no_github: bool = False,
+) -> int:
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
 
-    if not _is_git_repo(root):
-        print("WARNING: root is not a Git repository; harness init will still create files.", flush=True)
+    created_repo = not _is_git_repo(root)
+    if created_repo:
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        git_line = "Git: initialized repository on main"
+    else:
+        git_line = "Git: existing repository"
 
     _write_template_file(root, root / "harness.yaml", HARNESS_YAML, force=force, lines=lines)
-    _write_template_file(root, root / "tasks" / "roadmap.yaml", _roadmap_yaml(root.name), force=force, lines=lines)
-    _write_template_file(root, root / "tasks" / "TASK_TEMPLATE.md", TASK_TEMPLATE_MD, force=force, lines=lines)
+    _write_template_file(
+        root,
+        root / "ARCHITECTURE.md",
+        ARCHITECTURE_MD,
+        force=False,
+        lines=lines,
+    )
+    _write_template_file(
+        root,
+        root / "tasks" / "roadmap.yaml",
+        _roadmap_yaml(root.name),
+        force=force,
+        lines=lines,
+    )
+    _write_template_file(
+        root,
+        root / "tasks" / "TASK_TEMPLATE.md",
+        TASK_TEMPLATE_MD,
+        force=force,
+        lines=lines,
+    )
     _write_template_file(
         root,
         root / "tasks" / "sprint-01-example" / "01-example.md",
@@ -337,7 +477,50 @@ def run_init(root: Path, *, force: bool = False) -> int:
     _update_agents_md(root, root / "AGENTS.md", lines)
     _update_gitignore(root, root / ".gitignore", lines)
 
+    github_line = _setup_github(root, public=public, no_github=no_github)
+    if created_repo:
+        subprocess.run(
+            [
+                "git",
+                "add",
+                "--",
+                "harness.yaml",
+                "ARCHITECTURE.md",
+                "tasks/roadmap.yaml",
+                "tasks/TASK_TEMPLATE.md",
+                "tasks/sprint-01-example/01-example.md",
+                "AGENTS.md",
+                ".gitignore",
+            ],
+            cwd=root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Initial harness setup"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=True,
+            env=_harness_git_commit_env(),
+        )
+        if _has_origin(root):
+            subprocess.run(
+                ["git", "push", "-u", "origin", "main"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            commit_line = "First commit: created; push attempted"
+        else:
+            commit_line = "First commit: created; no origin to push"
+    else:
+        commit_line = "First commit: skipped (existing repository; files are ready to commit)"
+
     for line in lines:
         print(line)
+    print(git_line)
+    print(github_line)
+    print(commit_line)
     print(NEXT_STEPS)
     return 0
