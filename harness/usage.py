@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -9,13 +10,20 @@ from typing import Any
 from .logging_utils import utc_now
 
 
+def count_code_map_calls(commands: list[str], configured_command: str) -> int:
+    """Count executed shell commands containing the configured command as a word."""
+    command = configured_command.strip()
+    if not command:
+        return 0
+    pattern = re.compile(rf"(?<![\w-]){re.escape(command)}(?![\w-])")
+    return sum(1 for line in commands if pattern.search(line))
+
+
 class UsageRecorder:
     """Append-only local accounting for agent calls.
 
-    Cursor's text CLI does not guarantee token/cost metadata, so this records
-    facts the harness can prove: calls, requested model, duration, outcome and
-    output size. If machine-readable usage is exposed later, it can be added
-    without changing task definitions.
+    Records provider-reported token usage and observed agent activity alongside
+    call metadata and outcomes.
     """
 
     def __init__(self, path: Path):

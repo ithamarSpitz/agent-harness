@@ -155,7 +155,7 @@ code_map:
 cursor:
   enabled: true
   command: agent
-  output_format: text
+  output_format: stream-json
   trust_harness_worktrees: true
   models:
     worker: composer-2.5

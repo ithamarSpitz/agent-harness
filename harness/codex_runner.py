@@ -14,7 +14,7 @@ from .models import TaskSpec
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 from .prompts import implement_prompt, plan_change_prompt, review_prompt
 from .agent_runner import AgentResult
-from .usage import UsageRecorder
+from .usage import UsageRecorder, count_code_map_calls
 
 
 class CodexAgentRunner:
@@ -87,9 +87,10 @@ class CodexAgentRunner:
         return self.config.codex.sandbox
 
     @staticmethod
-    def _parse_events(raw_stdout: str) -> tuple[str, str, dict[str, int]]:
+    def _parse_events(raw_stdout: str, code_map_command: str = "") -> tuple[str, str, dict[str, int], int]:
         messages: list[str] = []
         diagnostics: list[str] = []
+        commands: list[str] = []
         usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
         saw_json = False
         for raw in raw_stdout.splitlines():
@@ -107,6 +108,10 @@ class CodexAgentRunner:
                 text = item.get("text")
                 if isinstance(text, str):
                     messages.append(text)
+            if typ == "item.completed" and item.get("type") == "command_execution":
+                command = item.get("command")
+                if isinstance(command, str):
+                    commands.append(command)
             if typ in {"error", "turn.failed"}:
                 diagnostics.append(json.dumps(event, ensure_ascii=False))
             if typ == "turn.completed" and isinstance(event.get("usage"), dict):
@@ -118,11 +123,16 @@ class CodexAgentRunner:
                         pass
         if not saw_json and raw_stdout.strip():
             diagnostics.append(raw_stdout.strip())
-        return (messages[-1] if messages else "", "\n".join(diagnostics), usage)
+        return (
+            messages[-1] if messages else "",
+            "\n".join(diagnostics),
+            usage,
+            count_code_map_calls(commands, code_map_command),
+        )
 
     def _record_usage(
         self, task_id: str, phase: str, model: str, attempt: int | None,
-        result: AgentResult, code_map: bool = False,
+        result: AgentResult, code_map: bool = False, code_map_calls: int = 0,
     ) -> None:
         if self.usage is None:
             return
@@ -137,6 +147,7 @@ class CodexAgentRunner:
             "cached_input_tokens": result.cached_input_tokens, "output_tokens": result.output_tokens,
             "reasoning_output_tokens": result.reasoning_output_tokens,
             "code_map": code_map,
+            "code_map_calls": code_map_calls,
             "output_bytes": len(result.output.encode("utf-8", errors="replace")),
         })
 
@@ -234,7 +245,9 @@ class CodexAgentRunner:
         with lock:
             raw_stdout = "".join(stdout_lines)
             raw_stderr = "".join(stderr_lines)
-        final_message, event_diagnostics, usage = self._parse_events(raw_stdout)
+        final_message, event_diagnostics, usage, code_map_calls = self._parse_events(
+            raw_stdout, self.config.code_map.command
+        )
         diagnostics = "\n".join(x for x in [event_diagnostics, raw_stderr] if x.strip())
         if timed_out:
             diagnostics = (diagnostics + f"\nCodex timed out after {timeout_minutes} minutes").strip()
@@ -268,7 +281,7 @@ class CodexAgentRunner:
             input_tokens=usage["input_tokens"] or None, cached_input_tokens=usage["cached_input_tokens"] or None,
             output_tokens=usage["output_tokens"] or None, reasoning_output_tokens=usage["reasoning_output_tokens"] or None,
         )
-        self._record_usage(task_id, phase, model, attempt, result, code_map)
+        self._record_usage(task_id, phase, model, attempt, result, code_map, code_map_calls)
         return result
 
     def _context_paths(self, task: TaskSpec) -> list[str]:
