@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .codex_runner import CodexAgentRunner
 from .config import HarnessConfig
+from .logging_utils import write_log
 from .models import TaskSpec, TaskRuntime, TaskStatus
 from .agent_runner import AgentResult
 from .runner import CursorAgentRunner
@@ -254,6 +255,29 @@ class ProviderAgentRunner:
         self.state.save()
         return result
 
+    def _safe_ui_review_cleanup(
+        self,
+        *,
+        task: TaskSpec,
+        workspace: Path,
+        ports_before: dict[int, str],
+    ) -> None:
+        """Stop new ui_review listeners / worktree processes; never raise to the caller."""
+        try:
+            cleanup_ui_review_processes(
+                config=self.config.ui_review,
+                worktree=workspace,
+                log_dir=self.codex.log_dir,
+                task_id=task.id,
+                ports_before=ports_before,
+            )
+        except Exception as exc:
+            write_log(
+                self.codex.log_dir,
+                f"{task.id}-ui-review-cleanup.log",
+                f"cleanup failed: {type(exc).__name__}: {exc}\n",
+            )
+
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, env: dict[str, str] | None = None,
                   model_class_override: str | None = None,
@@ -261,6 +285,24 @@ class ProviderAgentRunner:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
+        ui_enabled = self.config.ui_review.enabled
+        ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
+        try:
+            return self._implement_inner(
+                task, workspace, timeout_minutes, attempt, previous_failure,
+                env=env, model_class_override=model_class_override,
+                code_map_offered=code_map_offered,
+            )
+        finally:
+            if ui_enabled:
+                self._safe_ui_review_cleanup(
+                    task=task, workspace=workspace, ports_before=ports_before,
+                )
+
+    def _implement_inner(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
+                         previous_failure: str | None, *, env: dict[str, str] | None = None,
+                         model_class_override: str | None = None,
+                         code_map_offered: bool = False) -> AgentResult:
         if self.active_provider(task, model_class_override=model_class_override) == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -338,12 +380,8 @@ class ProviderAgentRunner:
             return result
         finally:
             if ui_enabled:
-                cleanup_ui_review_processes(
-                    config=self.config.ui_review,
-                    worktree=workspace,
-                    log_dir=self.codex.log_dir,
-                    task_id=task.id,
-                    ports_before=ports_before,
+                self._safe_ui_review_cleanup(
+                    task=task, workspace=workspace, ports_before=ports_before,
                 )
 
     def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
