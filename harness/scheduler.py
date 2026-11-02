@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -349,6 +350,73 @@ class Scheduler:
         for key in [key for key in runtime.stall_counts if key.startswith(f"{phase}:")]:
             del runtime.stall_counts[key]
 
+    @staticmethod
+    def _verification_commit_meta_key(task_id: str) -> str:
+        return f"tasks.{task_id}.verification_commit"
+
+    @staticmethod
+    def _verification_tree_meta_key(task_id: str) -> str:
+        return f"tasks.{task_id}.verification_fingerprint"
+
+    @staticmethod
+    def _worktree_head(worktree: Path) -> str:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=worktree,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    @staticmethod
+    def _worktree_porcelain(worktree: Path) -> str:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
+    def _worktree_verification_fingerprint(self, worktree: Path, base_ref: str) -> str:
+        porcelain = self._worktree_porcelain(worktree)
+        hasher = hashlib.sha256()
+        hasher.update(porcelain.encode("utf-8"))
+        for path in sorted(self.worktrees.changed_files(worktree, base_ref)):
+            file_path = worktree / path
+            if file_path.is_file():
+                hasher.update(path.encode("utf-8"))
+                hasher.update(file_path.read_bytes())
+        return hasher.hexdigest()
+
+    def _record_verification_worktree(self, task_id: str, worktree: Path, base_ref: str) -> None:
+        commit_key = self._verification_commit_meta_key(task_id)
+        if not self.state.get_meta(commit_key):
+            self.state.set_meta(commit_key, self._worktree_head(worktree))
+        self.state.set_meta(
+            self._verification_tree_meta_key(task_id),
+            self._worktree_verification_fingerprint(worktree, base_ref),
+        )
+
+    def _review_resume_skips_verification(
+        self, task_id: str, worktree: Path, base_ref: str,
+    ) -> bool:
+        recorded_commit = self.state.get_meta(self._verification_commit_meta_key(task_id))
+        if not isinstance(recorded_commit, str) or not recorded_commit:
+            return False
+        if self._worktree_head(worktree) != recorded_commit:
+            return False
+        recorded_fingerprint = self.state.get_meta(self._verification_tree_meta_key(task_id))
+        if not isinstance(recorded_fingerprint, str):
+            return False
+        return self._worktree_verification_fingerprint(worktree, base_ref) == recorded_fingerprint
+
     def _handle_agent_wait(
         self, task: TaskSpec, worktree: Path, result: AgentResult, *, phase: str,
         decrement_attempt: bool,
@@ -396,7 +464,10 @@ class Scheduler:
         *,
         resume_review: bool = False,
     ) -> TaskOutcome | None:
-        if resume_review:
+        skip_verification = resume_review and self._review_resume_skips_verification(
+            task.id, worktree, base_ref,
+        )
+        if skip_verification:
             verification_summary = "Task verification passed before the reviewer wait."
             review_required = True
         else:
@@ -410,6 +481,7 @@ class Scheduler:
                 runtime.last_error = verification.summary
                 self.state.save()
                 return None
+            self._record_verification_worktree(task.id, worktree, base_ref)
             verification_summary = verification.summary
             review_required = task.review or self.verifier.requires_review(verification.changed_files)
 
