@@ -249,6 +249,7 @@ sprints:
         - S8-T29
         - S8-T30
         - S8-T32
+        - S8-T39
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -354,3 +355,8 @@ sprints:
         file: tasks/sprint-08-memory-board-console/38-verification-timeout.md
         stage: 3
         depends_on: []
+      S8-T39:
+        file: tasks/sprint-08-memory-board-console/39-quota-fallback-not-sticky.md
+        stage: 3
+        depends_on:
+        - S8-T28
