@@ -156,3 +156,171 @@ sprints:
         depends_on:
         - S7-T6
         - S7-T8
+  S8-memory-board-console:
+    name: Agents by free memory, live board and console
+    tasks:
+      S8-T1:
+        file: tasks/sprint-08-memory-board-console/01-memory-reader.md
+        stage: 1
+        depends_on: []
+      S8-T2:
+        file: tasks/sprint-08-memory-board-console/02-process-tree-peak.md
+        stage: 1
+        depends_on: []
+      S8-T3:
+        file: tasks/sprint-08-memory-board-console/03-board-render.md
+        stage: 1
+        depends_on: []
+      S8-T4:
+        file: tasks/sprint-08-memory-board-console/04-terminal-draw.md
+        stage: 1
+        depends_on: []
+      S8-T5:
+        file: tasks/sprint-08-memory-board-console/05-console-input.md
+        stage: 1
+        depends_on: []
+      S8-T6:
+        file: tasks/sprint-08-memory-board-console/06-start-by-memory.md
+        stage: 3
+        depends_on:
+        - S8-T1
+        - S8-T14
+      S8-T7:
+        file: tasks/sprint-08-memory-board-console/07-console-read-commands.md
+        stage: 2
+        depends_on:
+        - S8-T3
+      S8-T8:
+        file: tasks/sprint-08-memory-board-console/08-learned-estimate.md
+        stage: 4
+        depends_on:
+        - S8-T2
+        - S8-T6
+      S8-T9:
+        file: tasks/sprint-08-memory-board-console/09-console-change-commands.md
+        stage: 3
+        depends_on:
+        - S8-T7
+      S8-T10:
+        file: tasks/sprint-08-memory-board-console/10-events-and-stop.md
+        stage: 5
+        depends_on:
+        - S8-T8
+      S8-T11:
+        file: tasks/sprint-08-memory-board-console/11-board-in-run-and-watch.md
+        stage: 7
+        depends_on:
+        - S8-T3
+        - S8-T4
+        - S8-T20
+      S8-T12:
+        file: tasks/sprint-08-memory-board-console/12-console-screen.md
+        stage: 8
+        depends_on:
+        - S8-T5
+        - S8-T9
+        - S8-T11
+      S8-T14:
+        file: tasks/sprint-08-memory-board-console/14-launch-failure.md
+        stage: 2
+        depends_on:
+        - S8-T16
+        - S8-T25
+        - S8-T26
+      S8-T15:
+        file: tasks/sprint-08-memory-board-console/15-timing-tests.md
+        stage: 1
+        depends_on: []
+      S8-T13:
+        file: tasks/sprint-08-memory-board-console/13-docs.md
+        stage: 9
+        depends_on:
+        - S8-T12
+        - S8-T15
+        - S8-T17
+        - S8-T18
+        - S8-T19
+        - S8-T22
+        - S8-T23
+        - S8-T24
+        - S8-T27
+        - S8-T28
+        - S8-T29
+        - S8-T30
+        - S8-T32
+      S8-T16:
+        file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
+        stage: 1
+        depends_on: []
+      S8-T17:
+        file: tasks/sprint-08-memory-board-console/17-current-brief-in-prompt.md
+        stage: 1
+        depends_on: []
+      S8-T18:
+        file: tasks/sprint-08-memory-board-console/18-quota-wait-until-reset.md
+        stage: 2
+        depends_on:
+        - S8-T16
+      S8-T19:
+        file: tasks/sprint-08-memory-board-console/19-version-bump.md
+        stage: 1
+        depends_on: []
+      S8-T20:
+        file: tasks/sprint-08-memory-board-console/20-self-host-continue.md
+        stage: 6
+        depends_on:
+        - S8-T10
+      S8-T21:
+        file: tasks/sprint-08-memory-board-console/21-worktree-only-registered.md
+        stage: 1
+        depends_on: []
+      S8-T22:
+        file: tasks/sprint-08-memory-board-console/22-worktree-guard-before-agent.md
+        stage: 1
+        depends_on: []
+      S8-T23:
+        file: tasks/sprint-08-memory-board-console/23-worktree-remove-reports.md
+        stage: 2
+        depends_on:
+        - S8-T21
+      S8-T24:
+        file: tasks/sprint-08-memory-board-console/24-code-map-ignored.md
+        stage: 1
+        depends_on: []
+      S8-T25:
+        file: tasks/sprint-08-memory-board-console/25-codex-playwright-for-all.md
+        stage: 1
+        depends_on: []
+      S8-T26:
+        file: tasks/sprint-08-memory-board-console/26-cursor-playwright-for-all.md
+        stage: 1
+        depends_on: []
+      S8-T27:
+        file: tasks/sprint-08-memory-board-console/27-implementer-uses-playwright.md
+        stage: 2
+        depends_on:
+        - S8-T17
+      S8-T28:
+        file: tasks/sprint-08-memory-board-console/28-cleanup-after-implementer.md
+        stage: 2
+        depends_on:
+        - S8-T22
+      S8-T29:
+        file: tasks/sprint-08-memory-board-console/29-retry-resets-budget.md
+        stage: 3
+        depends_on:
+        - S8-T23
+      S8-T30:
+        file: tasks/sprint-08-memory-board-console/30-codex-watchdog-file-activity.md
+        stage: 3
+        depends_on:
+        - S8-T14
+      S8-T31:
+        file: tasks/sprint-08-memory-board-console/31-keep-awake-all-platforms.md
+        stage: 1
+        depends_on: []
+      S8-T32:
+        file: tasks/sprint-08-memory-board-console/32-keep-awake-run-task.md
+        stage: 4
+        depends_on:
+        - S8-T31

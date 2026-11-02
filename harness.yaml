@@ -1,7 +1,7 @@
 version: 5
 
 execution:
-  max_parallel_agents: 2
+  max_parallel_agents: 3
   default_max_attempts: 3
   default_timeout_minutes: 35
   base_ref: null
@@ -17,7 +17,7 @@ worktree:
 cursor:
   enabled: true
   command: agent
-  output_format: text
+  output_format: stream-json
   trust_harness_worktrees: true
   models:
     worker: composer-2.5
@@ -77,6 +77,7 @@ context:
   aliases:
     readme: README.md
     operator: HARNESS-OPERATOR.md
+    spec: SPEC.md
 
 environment:
   docker_enabled: false
@@ -112,5 +113,7 @@ doctor:
 # After a sprint passes: publish and install the new version, so every project uses it at once.
 release:
   commands:
+    - python scripts/bump_version.py
+    - git commit -m "release: bump version" -- harness/__init__.py
     - git push origin HEAD
     - python -m pip install --user --no-deps --force-reinstall .

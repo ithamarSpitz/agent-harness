@@ -5,8 +5,9 @@ This repository is the agent harness itself: a Python orchestrator (`harness/`) 
 ## Source-of-truth order
 
 1. The current task brief under `tasks/`.
-2. `README.md` (what the harness does) and `HARNESS-OPERATOR.md` (how it is operated).
-3. Existing implementation and tests.
+2. `SPEC.md` and its parts under `docs/spec/` (what the harness must do, exactly). Read only the parts your task needs.
+3. `README.md` (how it is used) and `HARNESS-OPERATOR.md` (how it is operated).
+4. Existing implementation and tests.
 
 Never silently resolve a conflict between these. Stop and report it.
 
@@ -23,7 +24,7 @@ Never silently resolve a conflict between these. Stop and report it.
 - The harness is project-agnostic. Nothing project-specific (BookNook, npm, Supabase) goes into `harness/`.
 - New config keys get a default that keeps today's behavior, so existing `harness.yaml` files load unchanged.
 - Tests never call real Codex, Cursor, Graphify, Playwright or the network. Use fake commands (small Python scripts) and temp Git repos, as the existing tests do.
-- Work only on the current task. Do not modify files outside `allowed_paths`. Do not edit `harness.yaml`, `tasks/**`, `AGENTS.md` or `HARNESS-OPERATOR.md`.
+- Work only on the current task. Do not modify files outside `allowed_paths`. Do not edit `harness.yaml`, `tasks/**`, `AGENTS.md` or `HARNESS-OPERATOR.md`. Edit `SPEC.md` or `docs/spec/**` only when they are in your `allowed_paths`.
 - Do not weaken or delete tests to make verification pass.
 - Do not commit; the harness owns commits and merges.
 
