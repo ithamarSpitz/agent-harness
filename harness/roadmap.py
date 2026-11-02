@@ -73,7 +73,7 @@ class Roadmap:
                 merged = {**fm, **row}
                 tasks[task_id] = TaskSpec(
                     id=task_id,
-                    file=Path(row["file"]),
+                    file=task_path.resolve(),
                     sprint=sprint_id,
                     stage=int(merged.get("stage", 1)),
                     depends_on=list(merged.get("depends_on", [])),
