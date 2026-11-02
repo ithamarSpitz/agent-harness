@@ -255,8 +255,9 @@ sprints:
         depends_on: []
       S8-T17:
         file: tasks/sprint-08-memory-board-console/17-current-brief-in-prompt.md
-        stage: 1
-        depends_on: []
+        stage: 3
+        depends_on:
+        - S8-T36
       S8-T18:
         file: tasks/sprint-08-memory-board-console/18-quota-wait-until-reset.md
         stage: 2
@@ -298,7 +299,7 @@ sprints:
         depends_on: []
       S8-T27:
         file: tasks/sprint-08-memory-board-console/27-implementer-uses-playwright.md
-        stage: 2
+        stage: 4
         depends_on:
         - S8-T17
       S8-T28:
@@ -341,3 +342,15 @@ sprints:
         depends_on:
         - S8-T14
         - S8-T26
+      S8-T36:
+        file: tasks/sprint-08-memory-board-console/36-absolute-task-paths.md
+        stage: 2
+        depends_on: []
+      S8-T37:
+        file: tasks/sprint-08-memory-board-console/37-cursor-out-of-usage.md
+        stage: 2
+        depends_on: []
+      S8-T38:
+        file: tasks/sprint-08-memory-board-console/38-verification-timeout.md
+        stage: 3
+        depends_on: []

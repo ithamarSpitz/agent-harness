@@ -1,6 +1,6 @@
 ---
 id: S8-T27
-stage: 2
+stage: 4
 model_class: worker
 timeout_minutes: 30
 review: true

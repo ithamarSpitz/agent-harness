@@ -1,11 +1,12 @@
 ---
 id: S8-T17
-stage: 1
+stage: 3
 model_class: worker
 timeout_minutes: 40
 review: true
 allow_protected: false
-depends_on: []
+depends_on:
+  - S8-T36
 allowed_paths:
   - harness/prompts.py
   - tests/harness/test_prompts_brief.py
@@ -34,6 +35,12 @@ The coding agent and the reviewer always work from the current brief in the plan
 1. Every prompt that names the brief (implementation, retry, review, and any other prompt in `prompts.py`) embeds the full current brief text, read from the project's integration checkout (the path the roadmap points to), under a heading `Task brief (current version)`.
 2. The prompt says: this embedded brief is the current version; if the copy in your worktree differs, follow the embedded one and do not edit the worktree copy.
 3. If the brief cannot be read, the prompt falls back to today's path instruction and says so.
+
+4. After S8-T36, `task.file` from the roadmap loader is an absolute path under the project root; read the brief from it. Do not read it relative to the process's current folder.
+
+# Finding from the earlier review (fix it)
+
+An earlier version read `task.file` relative to the current folder and its test used only an absolute path. Add a test that loads a temp project's roadmap (relative `file:` entries) with the real loader, builds the prompts while the current folder is somewhere else, and checks the full brief text is embedded.
 
 # Acceptance criteria
 

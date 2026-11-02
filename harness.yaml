@@ -89,6 +89,18 @@ quota:
   reset_grace_minutes: 5
   keep_awake: true
   teardown_environment_while_waiting: true
+  exhaustion_patterns:
+    - "usage limit reached"
+    - "you've hit your usage limit"
+    - "you have hit your usage limit"
+    - "out of included usage"
+    - "monthly usage limit"
+    - "quota exceeded"
+    - "spending limit reached"
+    - "no usage remaining"
+    - "you're out of usage"
+    - "you’re out of usage"
+    - "increase limits for faster responses"
 
 capacity:
   policy: wait
