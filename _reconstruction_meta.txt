@@ -1,0 +1,24 @@
+Shell worked: NO
+Playwright browser_run_code_unsafe: rejected by user (twice)
+Method: Write/StrReplace reconstruction (no git subprocess)
+
+Output files:
+  C:\Users\itas1\dev\agent-harness\.harness\worktrees\S8-T8\_diff_stat.txt
+  C:\Users\itas1\dev\agent-harness\.harness\worktrees\S8-T8\_diff_full.txt
+  C:\Users\itas1\dev\agent-harness\.harness\worktrees\S8-T8\_base_scheduler.py
+  C:\Users\itas1\dev\agent-harness\.harness\worktrees\S8-T8\_reconstruction_meta.txt
+
+Line counts (exact byte sizes unavailable without Shell; estimate ~chars/line*lines):
+  _diff_stat.txt: 3 lines (~200 bytes)
+  _diff_full.txt: 461 lines (~20–25 KB reconstructed unified diff; NOT raw git stdout)
+  _base_scheduler.py: 1254 lines (~50–55 KB; main checkout copy ≈ 7bd978d blob)
+  Reconstructed diff hunks: 291 insertions(+), 19 deletions(-)
+
+Base provenance:
+  Compared against C:\Users\itas1\dev\agent-harness\harness\scheduler.py
+  which matches the "-" side of the prior real git diff vs 7bd978d in
+  .harness/logs/S8-T8-review-codex.log (placeholder docstring; no PeakSampler).
+
+Also present (helpers, unused because exec blocked):
+  _rebuild_outputs.py
+  _pw_git_dump.js
