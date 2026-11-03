@@ -36,6 +36,10 @@ The live board appears in the terminal that runs the sprint, and in any other te
 4. `harness status` gets the one-line `parallel ...` summary while a sprint runs.
 5. Unicode symbols only when the stream supports them; colors off with `NO_COLOR`.
 
+# Note (Nov 2026)
+
+S8-T32 added a placeholder `harness watch` (`cmd_watch` in `harness/cli.py`) that only prints status inside `KeepAwake`. Replace that placeholder with the real board loop; keep the `KeepAwake` wrapping and its tests, and do not register a second `watch` subcommand.
+
 # Acceptance criteria
 
 1. Non-TTY `run` output is byte-identical to before (fake runner).
