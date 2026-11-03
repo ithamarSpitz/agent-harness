@@ -346,13 +346,24 @@ class QuotaManager:
             if target > now:
                 return max(_MIN_WAIT_SECONDS, (target - now).total_seconds())
 
-        future = [
-            info
-            for info in self._limits_resets(now)
-            if info.reset_at.astimezone(timezone.utc) > now
-        ]
-        if future:
-            earliest = min(future, key=lambda info: info.reset_at.astimezone(timezone.utc))
+        # Per provider: usable again at the latest full-window reset.
+        # Across providers: wait until the earliest of those times.
+        by_provider: dict[str, QuotaResetInfo] = {}
+        for info in self._limits_resets(now):
+            reset_utc = info.reset_at.astimezone(timezone.utc)
+            if reset_utc <= now:
+                continue
+            current = by_provider.get(info.provider)
+            if current is None or reset_utc > current.reset_at.astimezone(timezone.utc):
+                by_provider[info.provider] = QuotaResetInfo(
+                    provider=info.provider,
+                    reset_at=reset_utc,
+                )
+        if by_provider:
+            earliest = min(
+                by_provider.values(),
+                key=lambda info: info.reset_at.astimezone(timezone.utc),
+            )
             reset_utc = earliest.reset_at.astimezone(timezone.utc)
             raw = (reset_utc - now).total_seconds() + _LIMITS_GRACE_SECONDS
             seconds = min(_MAX_LIMITS_WAIT_SECONDS, max(_MIN_WAIT_SECONDS, raw))
