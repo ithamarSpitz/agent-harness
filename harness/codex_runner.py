@@ -19,7 +19,7 @@ from .models import (
 )
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 from .prompts import implement_prompt, plan_change_prompt, review_prompt
-from .runner import AgentResult
+from .runner import AgentResult, CursorAgentRunner
 from .usage import UsageRecorder, count_code_map_calls
 
 _BUNDLED_BROWSER_PLUGINS: tuple[str, ...] = (
@@ -291,15 +291,23 @@ class CodexAgentRunner:
         hard_timeout = max(0.01, float(timeout_minutes)) * 60.0
         stall_timeout = max(0.0, float(self.config.execution.stall_timeout_minutes)) * 60.0
         poll = max(0.1, float(self.config.execution.watchdog_poll_seconds))
+        # Same activity rule as Cursor: CLI output or worktree file changes.
+        signature = CursorAgentRunner._workspace_signature(workspace)
+        last_repo_activity = started
         while proc.poll() is None:
             now = time.monotonic()
             if now - started >= hard_timeout:
                 timed_out = True
                 self._stop_process(proc)
                 break
+            new_signature = CursorAgentRunner._workspace_signature(workspace)
+            if new_signature != signature:
+                signature = new_signature
+                last_repo_activity = now
             with lock:
-                last = last_output[0]
-            if stall_timeout > 0 and now - last >= stall_timeout:
+                output_activity = last_output[0]
+            last_activity = max(output_activity, last_repo_activity)
+            if stall_timeout > 0 and now - last_activity >= stall_timeout:
                 stalled = True
                 self._stop_process(proc)
                 break
