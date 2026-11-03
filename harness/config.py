@@ -267,6 +267,13 @@ class DoctorConfig:
 
 
 @dataclass(slots=True)
+class SelfHostingConfig:
+    # When true, after a non-final stage integrates the scheduler pauses with
+    # RESTART_ON_NEW_CODE and the CLI resumes from a frozen copy of that commit.
+    enabled: bool = False
+
+
+@dataclass(slots=True)
 class HarnessConfig:
     execution: ExecutionConfig
     worktree: WorktreeConfig
@@ -285,6 +292,7 @@ class HarnessConfig:
     ui_review: UIReviewConfig
     release: ReleaseConfig
     doctor: DoctorConfig
+    self_hosting: SelfHostingConfig = field(default_factory=SelfHostingConfig)
 
     @classmethod
     def _load_execution(cls, raw: Any) -> ExecutionConfig:
@@ -352,4 +360,5 @@ class HarnessConfig:
             ui_review=UIReviewConfig(**raw.get("ui_review", {})),
             release=ReleaseConfig(**raw.get("release", {})),
             doctor=DoctorConfig(**raw.get("doctor", {})),
+            self_hosting=SelfHostingConfig(**raw.get("self_hosting", {})),
         )
