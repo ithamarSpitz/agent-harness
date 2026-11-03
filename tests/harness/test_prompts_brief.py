@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from harness.config import UIReviewConfig
 from harness.models import TaskSpec
 from harness.prompts import implement_prompt, plan_change_prompt, review_prompt
 from harness.roadmap import Roadmap
@@ -106,3 +107,61 @@ sprints:
         assert BRIEF_FOLLOW_INSTRUCTION in prompt
         assert "MARKER_FROM_LOADER" in prompt
         assert brief_body in prompt or "# Brief body MARKER_FROM_LOADER" in prompt
+
+
+def test_implement_and_retry_prompts_include_enabled_ui_review_instructions(
+    tmp_path: Path,
+) -> None:
+    brief = tmp_path / "tasks" / "T1.md"
+    write(brief, "# Task\n")
+    task = _task(brief)
+    ui_review = UIReviewConfig(
+        enabled=True,
+        start_commands=["python -m fake_app --port 4321"],
+        url="http://127.0.0.1:4321/example",
+    )
+
+    implement = implement_prompt(task, ui_review=ui_review)
+    retry = implement_prompt(task, previous_failure="failed", ui_review=ui_review)
+
+    for prompt in (implement, retry):
+        assert "use the Playwright tools" in prompt
+        assert "Do not use other browser or computer-use tools" in prompt
+        assert "python -m fake_app --port 4321" in prompt
+        assert "http://127.0.0.1:4321/example" in prompt
+        assert "Stop the app before finishing" in prompt
+
+
+def test_disabled_ui_review_adds_no_browser_instruction(tmp_path: Path) -> None:
+    brief = tmp_path / "tasks" / "T1.md"
+    write(brief, "# Task\n")
+    task = _task(brief)
+
+    prompts = (
+        implement_prompt(task),
+        implement_prompt(task, previous_failure="failed"),
+        implement_prompt(task, ui_review=UIReviewConfig(enabled=False)),
+    )
+
+    for prompt in prompts:
+        assert "Playwright" not in prompt
+        assert "browser" not in prompt
+        assert "computer-use" not in prompt
+
+
+def test_implement_ui_review_does_not_change_review_prompt(tmp_path: Path) -> None:
+    brief = tmp_path / "tasks" / "T1.md"
+    write(brief, "# Task\n")
+    task = _task(brief)
+
+    before = review_prompt(task, "abc123", "ok")
+    implement_prompt(
+        task,
+        ui_review=UIReviewConfig(
+            enabled=True,
+            start_commands=["python -m fake_app"],
+            url="http://127.0.0.1:8000",
+        ),
+    )
+
+    assert review_prompt(task, "abc123", "ok") == before

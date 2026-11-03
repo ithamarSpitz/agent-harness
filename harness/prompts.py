@@ -53,6 +53,19 @@ A UI problem you saw is a FAIL finding.
 """
 
 
+def _implement_ui_review_section(ui_review: UIReviewConfig) -> str:
+    commands = "\n".join(ui_review.start_commands)
+    return f"""
+
+UI check:
+If your changes affect the UI, use the Playwright tools to check them. Do not use other browser or computer-use tools.
+1. Start the app from the repository root with the configured UI review command:
+{commands}
+2. Open {ui_review.url} with the Playwright tools and check the changed behavior.
+3. Stop the app before finishing.
+"""
+
+
 def _read_current_brief(task: TaskSpec) -> str | None:
     """Read the brief from task.file (absolute under the project root after S8-T36)."""
     try:
@@ -107,6 +120,7 @@ def implement_prompt(
     context_paths: list[str] | None = None,
     code_map_offered: bool = False,
     code_map_command: str = "graphify",
+    ui_review: UIReviewConfig | None = None,
 ) -> str:
     retry = ""
     if previous_failure:
@@ -120,6 +134,11 @@ This is a fresh retry context. The previous attempt failed for the following rea
 
 Inspect the current working tree, fix only the failure, and do not broaden scope.
 """
+    ui_section = (
+        _implement_ui_review_section(ui_review)
+        if ui_review is not None and ui_review.enabled
+        else ""
+    )
     return f"""You are executing task {task.id}.
 
 {_brief_for_implement(task)}
@@ -129,7 +148,7 @@ Follow the task scope exactly. Read only the declared/referenced context first; 
 
 Do not redesign the architecture. Do not work on future tasks. Do not commit changes; the harness owns commits and integration.
 
-Run the verification commands listed in the task before finishing when possible.{retry}
+Run the verification commands listed in the task before finishing when possible.{ui_section}{retry}
 
 Finish with a concise report containing:
 STATUS
