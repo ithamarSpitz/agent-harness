@@ -351,7 +351,8 @@ class ProviderAgentRunner:
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, env: dict[str, str] | None = None,
                   model_class_override: str | None = None,
-                  code_map_offered: bool = False) -> AgentResult:
+                  code_map_offered: bool = False,
+                  on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
@@ -362,6 +363,7 @@ class ProviderAgentRunner:
                 task, workspace, timeout_minutes, attempt, previous_failure,
                 env=env, model_class_override=model_class_override,
                 code_map_offered=code_map_offered,
+                on_process_start=on_process_start,
             )
         finally:
             if ui_enabled:
@@ -372,7 +374,8 @@ class ProviderAgentRunner:
     def _implement_inner(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                          previous_failure: str | None, *, env: dict[str, str] | None = None,
                          model_class_override: str | None = None,
-                         code_map_offered: bool = False) -> AgentResult:
+                         code_map_offered: bool = False,
+                         on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         if self.active_provider(task, model_class_override=model_class_override) == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -384,6 +387,7 @@ class ProviderAgentRunner:
                             task, workspace, timeout_minutes, attempt, previous_failure,
                             model=model, reasoning_effort=reasoning_effort, env=env,
                             code_map_offered=code_map_offered,
+                            on_process_start=on_process_start,
                         )
                         if self._codex_should_fallback(result):
                             if not self.config.cursor.enabled:
@@ -422,6 +426,7 @@ class ProviderAgentRunner:
         result = self.cursor.implement(
             task, workspace, timeout_minutes, attempt, previous_failure,
             env=env, model_class_override=model_class, code_map_offered=code_map_offered,
+            on_process_start=on_process_start,
         )
         if self._should_consume_cursor_attempt(result):
             self._consume_provider_attempt(task, "cursor")
@@ -429,7 +434,8 @@ class ProviderAgentRunner:
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, env: dict[str, str] | None = None,
-               code_map_offered: bool = False) -> AgentResult:
+               code_map_offered: bool = False,
+               on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
@@ -440,6 +446,7 @@ class ProviderAgentRunner:
             result = self._review_inner(
                 task, workspace, base_ref, verification_summary, timeout_minutes,
                 env=env, code_map_offered=code_map_offered,
+                on_process_start=on_process_start,
             )
             if ui_enabled and snapshot is not None:
                 after = capture_worktree_snapshot(workspace)
@@ -455,7 +462,8 @@ class ProviderAgentRunner:
 
     def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                       timeout_minutes: int, *, env: dict[str, str] | None = None,
-                      code_map_offered: bool = False) -> AgentResult:
+                      code_map_offered: bool = False,
+                      on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         if self._preferred_provider(task, "review") == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -464,6 +472,7 @@ class ProviderAgentRunner:
                         task, workspace, base_ref, verification_summary, timeout_minutes,
                         model=self.config.codex.review_model, env=env,
                         code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
                     )
                     if self._codex_should_fallback(result):
                         if not self.config.cursor.enabled:
@@ -496,6 +505,7 @@ class ProviderAgentRunner:
         return self.cursor.review(
             task, workspace, base_ref, verification_summary, timeout_minutes,
             env=env, code_map_offered=code_map_offered,
+            on_process_start=on_process_start,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,

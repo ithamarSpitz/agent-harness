@@ -6,6 +6,7 @@ import subprocess
 import tomllib
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import HarnessConfig
@@ -222,7 +223,8 @@ class CodexAgentRunner:
     def _invoke(self, *, task_id: str, phase: str, prompt: str, workspace: Path, model: str,
                 timeout_minutes: int, log_name: str, attempt: int | None = None,
                 env: dict[str, str] | None = None, read_only: bool = False,
-                reasoning_effort: str | None = None, code_map: bool = False) -> AgentResult:
+                reasoning_effort: str | None = None, code_map: bool = False,
+                on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         sandbox_mode = self._effective_sandbox(read_only=read_only)
         effective_reasoning_effort = reasoning_effort or self.config.codex.reasoning_effort
         command = resolve_codex_argv(
@@ -256,6 +258,8 @@ class CodexAgentRunner:
                 start_new_session=(os.name != "nt"),
                 creationflags=creationflags,
             )
+            if on_process_start is not None:
+                on_process_start(proc.pid)
             assert proc.stdin is not None
             proc.stdin.write(prompt)
             proc.stdin.close()
@@ -391,7 +395,8 @@ class CodexAgentRunner:
 
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, model: str, reasoning_effort: str | None = None,
-                  env: dict[str, str] | None = None, code_map_offered: bool = False) -> AgentResult:
+                  env: dict[str, str] | None = None, code_map_offered: bool = False,
+                  on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id, phase="implement",
@@ -405,12 +410,13 @@ class CodexAgentRunner:
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-attempt-{attempt}-codex.log",
             attempt=attempt, env=env, read_only=False, reasoning_effort=reasoning_effort,
-            code_map=code_map_offered,
+            code_map=code_map_offered, on_process_start=on_process_start,
         )
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, model: str, env: dict[str, str] | None = None,
-               code_map_offered: bool = False) -> AgentResult:
+               code_map_offered: bool = False,
+               on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id, phase="review",
@@ -420,6 +426,7 @@ class CodexAgentRunner:
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-review-codex.log",
             env=env, read_only=not self.config.ui_review.enabled, code_map=code_map_offered,
+            on_process_start=on_process_start,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
