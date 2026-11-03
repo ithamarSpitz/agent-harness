@@ -14,6 +14,7 @@ allowed_paths:
   - harness/runner.py
   - harness/scheduler.py
   - tests/harness/test_usage_fields.py
+  - tests/harness/test_cli_end_to_end.py
 context:
   - spec
 environment: null
@@ -39,6 +40,10 @@ S9-T6 (Nov 2026) appends every usage record to `~/.harness/outcomes.jsonl`, but 
 2. Review calls include `review_verdict` (`PASS`/`FAIL`, parsed with the same parser the scheduler uses) and `finding_count` (number of top-level finding items after a FAIL; 0 for PASS).
 3. After verification of an attempt, the scheduler appends one usage-style record with `phase: "verification"`, `verification_ok`, the task, attempt and duration, through the same `harness/usage.py` path, so it reaches both logs.
 4. The per-project `usage.jsonl` keeps all existing keys; new keys are only added.
+
+# Note (Nov 3 2026)
+
+The new `phase: "verification"` record adds a line to `.harness/usage.jsonl`; `tests/harness/test_cli_end_to_end.py` counts usage lines and expects 2. Update that expectation (count call records and the verification record separately) instead of changing the new behavior.
 
 # Acceptance criteria
 
