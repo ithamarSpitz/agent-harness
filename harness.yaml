@@ -120,7 +120,6 @@ capacity:
     - "eai_again"
     - "getaddrinfo"
     - "[unavailable]"
-    - "retriableerror"
     - "nghttp2"
     - "stream closed"
   keep_awake: true
