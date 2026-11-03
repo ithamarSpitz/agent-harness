@@ -436,3 +436,88 @@ sprints:
         file: tasks/sprint-08-memory-board-console/52-ledger-windows-retries.md
         stage: 9
         depends_on: []
+  S9-claude-and-routing:
+    name: Claude Code provider, provider choice by urgency, shared outcomes log
+    tasks:
+      S9-T1:
+        file: tasks/sprint-09-claude-and-routing/01-claude-config.md
+        stage: 1
+        depends_on: []
+      S9-T2:
+        file: tasks/sprint-09-claude-and-routing/02-claude-runner.md
+        stage: 2
+        depends_on:
+        - S9-T1
+      S9-T3:
+        file: tasks/sprint-09-claude-and-routing/03-claude-quota.md
+        stage: 3
+        depends_on:
+        - S9-T2
+      S9-T4:
+        file: tasks/sprint-09-claude-and-routing/04-live-headroom.md
+        stage: 1
+        depends_on: []
+      S9-T5:
+        file: tasks/sprint-09-claude-and-routing/05-choose-provider.md
+        stage: 1
+        depends_on: []
+      S9-T6:
+        file: tasks/sprint-09-claude-and-routing/06-outcomes-log.md
+        stage: 1
+        depends_on: []
+      S9-T7:
+        file: tasks/sprint-09-claude-and-routing/07-task-final-outcome.md
+        stage: 2
+        depends_on:
+        - S9-T6
+      S9-T8:
+        file: tasks/sprint-09-claude-and-routing/08-models-report.md
+        stage: 2
+        depends_on:
+        - S9-T6
+      S9-T9:
+        file: tasks/sprint-09-claude-and-routing/09-import-history.md
+        stage: 4
+        depends_on:
+        - S9-T8
+      S9-T10:
+        file: tasks/sprint-09-claude-and-routing/10-wire-claude.md
+        stage: 3
+        depends_on:
+        - S9-T2
+        - S9-T4
+        - S9-T5
+      S9-T11:
+        file: tasks/sprint-09-claude-and-routing/11-claude-playwright.md
+        stage: 4
+        depends_on:
+        - S9-T3
+        - S9-T10
+      S9-T12:
+        file: tasks/sprint-09-claude-and-routing/12-board-shows-choice.md
+        stage: 4
+        depends_on:
+        - S9-T10
+      S9-T14:
+        file: tasks/sprint-09-claude-and-routing/14-verifier-pid-argument.md
+        stage: 1
+        depends_on: []
+      S9-T15:
+        file: tasks/sprint-09-claude-and-routing/15-review-impact-check.md
+        stage: 1
+        depends_on: []
+      S9-T16:
+        file: tasks/sprint-09-claude-and-routing/16-review-gets-callers.md
+        stage: 2
+        depends_on:
+        - S9-T15
+      S9-T13:
+        file: tasks/sprint-09-claude-and-routing/13-docs.md
+        stage: 5
+        depends_on:
+        - S9-T14
+        - S9-T16
+        - S9-T7
+        - S9-T9
+        - S9-T11
+        - S9-T12

@@ -1,7 +1,7 @@
 version: 5
 
 execution:
-  max_parallel_agents: 2
+  max_parallel_agents: 4
   default_max_attempts: 3
   default_timeout_minutes: 35
   base_ref: null
@@ -17,14 +17,18 @@ worktree:
 cursor:
   enabled: true
   command: agent
-  output_format: text
+  output_format: stream-json
   trust_harness_worktrees: true
   models:
-    # TRIAL (Nov 2 2026): Cursor Auto while both Cursor pools are at 100%; undo with git revert.
+    # Auto implements while both Cursor pools are at 100% (until Nov 26 2026). Auto never reviews
+    # (user decision, Nov 3 2026); S9-T5 decision 7 makes this routing permanent.
     worker: auto
     hard_worker: auto
-    reviewer: auto
+    reviewer: cursor-grok-4.6-high
     escalation: claude-opus-5-thinking-high
+
+self_hosting:
+  enabled: true
 
 providers:
   priority:
