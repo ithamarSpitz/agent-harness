@@ -557,11 +557,17 @@ class CursorAgentRunner:
         model_class_override: str | None = None,
         code_map_offered: bool = False,
     ) -> AgentResult:
+        ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id,
             phase="implement",
             prompt=implement_prompt(
-                task, previous_failure, self._context_paths(task), code_map_offered, self.config.code_map.command
+                task,
+                previous_failure,
+                self._context_paths(task),
+                code_map_offered,
+                self.config.code_map.command,
+                ui_review=ui,
             ),
             workspace=workspace,
             model_class=task.model_class,

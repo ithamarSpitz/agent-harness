@@ -392,10 +392,16 @@ class CodexAgentRunner:
     def implement(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
                   previous_failure: str | None, *, model: str, reasoning_effort: str | None = None,
                   env: dict[str, str] | None = None, code_map_offered: bool = False) -> AgentResult:
+        ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
             task_id=task.id, phase="implement",
             prompt=implement_prompt(
-                task, previous_failure, self._context_paths(task), code_map_offered, self.config.code_map.command
+                task,
+                previous_failure,
+                self._context_paths(task),
+                code_map_offered,
+                self.config.code_map.command,
+                ui_review=ui,
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-attempt-{attempt}-codex.log",
             attempt=attempt, env=env, read_only=False, reasoning_effort=reasoning_effort,
