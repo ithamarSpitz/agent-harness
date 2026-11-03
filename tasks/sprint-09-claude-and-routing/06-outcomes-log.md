@@ -35,6 +35,10 @@ Each project keeps its own `.harness/usage.jsonl` (for example `C:\Users\itas1\t
 3. Writing the shared log never fails the task: errors are logged once and ignored.
 4. The per-project `usage.jsonl` stays exactly as it is.
 
+# Scope note (Nov 2026)
+
+This task writes the fields the usage records already carry; fields they do not carry yet (`sprint`, `effort`, `verification_ok`, `review_verdict`, `finding_count`) are `null` here. Filling them in the runners and the scheduler is S9-T18 (those files are outside this task's paths). Tests must prove that any of these values present in the usage record are copied to the shared log.
+
 # Acceptance criteria
 
 1. Two fake projects writing at the same time produce valid, complete lines in one file.
