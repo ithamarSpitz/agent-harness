@@ -45,7 +45,7 @@ After S7-T5 the two providers disagree: a Codex launch `OSError` becomes `WAITIN
 
 # Note (Nov 2026)
 
-The fallback mechanism lives in `harness/provider_runner.py`, which this task may not change. Reusing the existing auth-failure fallback hook from the runners is acceptable here; S8-T44 gives launch failures their own fallback reason later. S8-T44 also stops `ProviderAgentRunner` from consuming a Cursor provider attempt on launch and resource failures (that code is in `provider_runner.py`). So in this task: do not work around it by faking `waiting_cause` or other flags, and scheduler-level tests of the 5-requeue rule may use a runner without model routing. Reviewers should not fail this task for the Cursor provider-attempt consumption; S8-T44 owns it.
+The fallback mechanism lives in `harness/provider_runner.py`, which this task may not change. Reusing the existing auth-failure fallback hook from the runners is acceptable here; S8-T44 gives launch failures their own fallback reason later. S8-T44 also stops `ProviderAgentRunner` from consuming a Cursor provider attempt on launch and resource failures (that code is in `provider_runner.py`). So in this task: do not work around it by faking `waiting_cause` or other flags, and scheduler-level tests of the 5-requeue rule may use a runner without model routing. Reviewers should not fail this task for the Cursor provider-attempt consumption; S8-T44 owns it. Likewise `CapacityManager.wait_once` (`harness/capacity.py`) relabeling the resource pause as `WAITING_PROVIDER_ERROR` during `harness run` is owned by S8-T47; scheduler-level tests are enough here.
 
 # Acceptance criteria
 
