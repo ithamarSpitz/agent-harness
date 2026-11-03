@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/review-workspace","session_id":"review-stream-sample","model":"Composer 2.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Review the task changes and reply with VERDICT: PASS or VERDICT: FAIL."}]},"session_id":"review-stream-sample"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I checked the allowed paths and the verification commands."}]},"session_id":"review-stream-sample"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The implementation matches the brief against the acceptance criteria."}]},"session_id":"review-stream-sample"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"VERDICT: PASS"}]},"session_id":"review-stream-sample"}
+{"type":"result","subtype":"success","duration_ms":2100,"duration_api_ms":2100,"is_error":false,"result":"I checked the allowed paths and the verification commands.The implementation matches the brief against the acceptance criteria.VERDICT: PASS","session_id":"review-stream-sample","request_id":"review-req-1","usage":{"inputTokens":1200,"outputTokens":45,"cacheReadTokens":800,"cacheWriteTokens":0}}
