@@ -34,6 +34,10 @@ Agents should check UI changes in a browser, but through the Playwright MCP serv
 2. When `ui_review` is disabled, prompts say nothing about browsers.
 3. Review prompts are unchanged.
 
+# Scope note (Nov 2026)
+
+This task changes only the prompt builder in `harness/prompts.py` (and its tests). Passing `config.ui_review` from the Cursor and Codex runners (`harness/runner.py`, `harness/codex_runner.py`) is S8-T49. Tests here call the prompt builder directly with the configuration; reviewers should not fail this task because the runners do not pass it yet.
+
 # Acceptance criteria
 
 1. With `ui_review` enabled, implementation and retry prompts contain the instruction with the configured command and URL; review prompts are unchanged.

@@ -258,6 +258,7 @@ sprints:
         - S8-T46
         - S8-T47
         - S8-T48
+        - S8-T49
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -411,3 +412,9 @@ sprints:
         stage: 8
         depends_on:
         - S8-T41
+      S8-T49:
+        file: tasks/sprint-08-memory-board-console/49-pass-ui-review-to-prompts.md
+        stage: 5
+        depends_on:
+        - S8-T27
+        - S8-T44
