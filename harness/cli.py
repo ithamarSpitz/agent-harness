@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .board_loop import (
+    BoardLoop,
+    count_running_agents,
+    find_active_sprint_id,
+    format_parallel_summary,
+    memory_estimate_gb,
+    should_use_board,
+    sprint_has_active_run,
+    suppress_progress_stdout,
+)
 from .capacity import CapacityManager
 from .config import HarnessConfig
 from .context import ContextResolver
@@ -15,6 +26,7 @@ from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .manifest import RunManifestManager
+from .memory import free_memory_gb
 from .models import TaskRuntime, TaskStatus
 from .plan_change import PlanChangeManager, _relative_brief_path
 from .quota import KeepAwake, QuotaManager
@@ -124,6 +136,8 @@ def cmd_status(
     state: StateStore,
     sprint_id: str | None,
     runtime_root: Path | None = None,
+    *,
+    config: HarnessConfig | None = None,
 ) -> int:
     queue = TaskQueueManager(roadmap.root, runtime_root or (roadmap.root / ".harness"), state)
     sprint_ids = [sprint_id] if sprint_id else list(roadmap.sprints)
@@ -134,6 +148,18 @@ def cmd_status(
         release_line = format_release_status(state, sid)
         if release_line:
             print(f"  {release_line}")
+        if config is not None and sprint_has_active_run(state, sid):
+            running = count_running_agents(state, sprint)
+            maximum = max(1, int(config.execution.max_parallel_agents))
+            print(
+                "  "
+                + format_parallel_summary(
+                    running=running,
+                    maximum=maximum,
+                    free_gb=free_memory_gb(),
+                    per_agent_gb=memory_estimate_gb(state, config),
+                )
+            )
         for stage in sorted({t.stage for t in sprint.tasks.values()}):
             print(f"  Stage {stage}")
             for task in sorted((t for t in sprint.tasks.values() if t.stage == stage), key=lambda x: x.id):
@@ -156,7 +182,26 @@ def cmd_watch(runtime: Runtime, sprint_id: str | None) -> int:
 
 
 def _cmd_watch_live(runtime: Runtime, sprint_id: str | None) -> int:
-    return cmd_status(runtime.roadmap, runtime.state, sprint_id, runtime.root / ".harness")
+    resolved = sprint_id or find_active_sprint_id(runtime.roadmap, runtime.state)
+    if resolved is None:
+        print("No active sprint run to watch; pass a sprint id.", file=sys.stderr)
+        return 2
+    # Resolve once so a missing sprint fails before the loop.
+    runtime.roadmap.sprint(resolved)
+    loop = BoardLoop(
+        runtime,
+        resolved,
+        stream=sys.stdout,
+        reload_from_disk=True,
+        stop_when_finished=True,
+    )
+    try:
+        loop.run_until_stopped()
+    except KeyboardInterrupt:
+        loop.stop()
+    finally:
+        loop.close()
+    return 0
 
 
 def cmd_add_task(
@@ -344,7 +389,13 @@ def _check_plan_gate(runtime: Runtime) -> None:
             f"Inspect it with `harness plan-change status {open_request}`."
         )
 
-def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
+def cmd_run(
+    runtime: Runtime,
+    sprint_id: str,
+    dry_run: bool,
+    *,
+    no_board: bool = False,
+) -> int:
     report = runtime.validator.validate(sprint_id)
     if not report.ok:
         print(report.render(), file=sys.stderr)
@@ -383,10 +434,19 @@ def cmd_run(runtime: Runtime, sprint_id: str, dry_run: bool) -> int:
         return 0 if ok else 3
 
     with KeepAwake(runtime.config.execution.keep_awake_during_run):
+        # Tests may stub `_cmd_run_live` without the newer keyword.
+        if "no_board" in inspect.signature(_cmd_run_live).parameters:
+            return _cmd_run_live(runtime, sprint_id, sprint, no_board=no_board)
         return _cmd_run_live(runtime, sprint_id, sprint)
 
 
-def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
+def _cmd_run_live(
+    runtime: Runtime,
+    sprint_id: str,
+    sprint,
+    *,
+    no_board: bool = False,
+) -> int:
     runtime.scheduler.task_queue.merge_added_tasks_from_state(sprint)
     if not _run_pending_revalidations(runtime, sprint_id):
         record = runtime.failures.get(sprint_id)
@@ -409,6 +469,8 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
         print(f"Sprint {sprint_id} is already complete; nothing to resume/run.")
         return 0
 
+    board: BoardLoop | None = None
+    use_board = should_use_board(sys.stdout, no_board=no_board)
     try:
         _prepare_sprint_base(runtime.config, runtime.state, runtime.worktrees, sprint_id)
         manifest_path = runtime.manifests.start_or_resume(
@@ -421,79 +483,96 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
         )
         print(f"Run manifest: {manifest_path.relative_to(runtime.root)}")
 
-        while True:
-            ok = runtime.scheduler.run_sprint(sprint, dry_run=False)
-            if ok:
-                runtime.manifests.finish(sprint_id, success=True)
-                return 0
+        real_stdout = sys.stdout
+        if use_board:
+            board = BoardLoop(
+                runtime,
+                sprint_id,
+                stream=real_stdout,
+                reload_from_disk=False,
+                stop_when_finished=False,
+            )
+            board.start_background()
 
-            record = runtime.failures.get(sprint_id)
-            if record is not None and record.get("kind") == "QUOTA_WAIT":
-                runtime.manifests.set_status(sprint_id, "WAITING_QUOTA")
-                print(runtime.failures.render(record), file=sys.stderr)
-                if runtime.config.quota.policy == "wait":
-                    seconds = runtime.quota.next_wait_seconds()
-                    print(
-                        f"Quota policy=wait: preserving state and sleeping about {seconds / 60:.1f} minutes "
-                        "before retrying. Ctrl+C is safe; `resume` will continue later.",
-                        file=sys.stderr,
+        def _run_loop() -> int:
+            while True:
+                ok = runtime.scheduler.run_sprint(sprint, dry_run=False)
+                if ok:
+                    runtime.manifests.finish(sprint_id, success=True)
+                    return 0
+
+                record = runtime.failures.get(sprint_id)
+                if record is not None and record.get("kind") == "QUOTA_WAIT":
+                    runtime.manifests.set_status(sprint_id, "WAITING_QUOTA")
+                    print(runtime.failures.render(record), file=sys.stderr)
+                    if runtime.config.quota.policy == "wait":
+                        seconds = runtime.quota.next_wait_seconds()
+                        print(
+                            f"Quota policy=wait: preserving state and sleeping about {seconds / 60:.1f} minutes "
+                            "before retrying. Ctrl+C is safe; `resume` will continue later.",
+                            file=sys.stderr,
+                        )
+                        # The outer run-level KeepAwake remains active. QuotaManager's
+                        # own context is intentionally harmless/nested and also keeps
+                        # standalone wait calls safe.
+                        runtime.quota.wait_once(sprint_id=sprint_id)
+                        runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
+                        continue
+                    return 4
+
+                if record is not None and record.get("kind") == "CAPACITY_WAIT":
+                    waiting = str(runtime.state.get_meta(f"{sprint_id}.run_status") or "WAITING_PROVIDER_ERROR")
+                    runtime.manifests.set_status(sprint_id, waiting)
+                    print(runtime.failures.render(record), file=sys.stderr)
+                    if runtime.config.capacity.policy == "wait":
+                        seconds = runtime.capacity.next_wait_seconds()
+                        print(
+                            f"Capacity policy=wait: preserving state and retrying in about "
+                            f"{seconds / 60:.1f} minutes. Ctrl+C is safe; `resume` will continue later.",
+                            file=sys.stderr,
+                        )
+                        runtime.capacity.wait_once(sprint_id=sprint_id)
+                        runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
+                        continue
+                    return 5
+
+                if record is not None and record.get("kind") == "RESTART_ON_NEW_CODE":
+                    commit = runtime.worktrees.head_commit()
+                    target = ensure_frozen_copy(runtime.root, commit)
+                    if target is None:
+                        print(
+                            "WARNING: self-host frozen copy failed; continuing on current code.",
+                            file=sys.stderr,
+                        )
+                        runtime.failures.clear(sprint_id)
+                        runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
+                        continue
+                    try:
+                        roadmap_arg = str(runtime.roadmap_path.relative_to(runtime.root))
+                    except ValueError:
+                        roadmap_arg = str(runtime.roadmap_path)
+                    try:
+                        config_arg = str(runtime.config_path.relative_to(runtime.root))
+                    except ValueError:
+                        config_arg = str(runtime.config_path)
+                    # KeepAwake remains active in the outer cmd_run context while we wait.
+                    return run_resume_with_frozen_copy(
+                        sprint_id,
+                        target,
+                        repo_root=runtime.root,
+                        roadmap=roadmap_arg,
+                        config=config_arg,
                     )
-                    # The outer run-level KeepAwake remains active. QuotaManager's
-                    # own context is intentionally harmless/nested and also keeps
-                    # standalone wait calls safe.
-                    runtime.quota.wait_once(sprint_id=sprint_id)
-                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
-                    continue
-                return 4
 
-            if record is not None and record.get("kind") == "CAPACITY_WAIT":
-                waiting = str(runtime.state.get_meta(f"{sprint_id}.run_status") or "WAITING_PROVIDER_ERROR")
-                runtime.manifests.set_status(sprint_id, waiting)
-                print(runtime.failures.render(record), file=sys.stderr)
-                if runtime.config.capacity.policy == "wait":
-                    seconds = runtime.capacity.next_wait_seconds()
-                    print(
-                        f"Capacity policy=wait: preserving state and retrying in about "
-                        f"{seconds / 60:.1f} minutes. Ctrl+C is safe; `resume` will continue later.",
-                        file=sys.stderr,
-                    )
-                    runtime.capacity.wait_once(sprint_id=sprint_id)
-                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
-                    continue
-                return 5
+                runtime.manifests.finish(sprint_id, success=False)
+                if record is not None:
+                    print(runtime.failures.render(record), file=sys.stderr)
+                return 3
 
-            if record is not None and record.get("kind") == "RESTART_ON_NEW_CODE":
-                commit = runtime.worktrees.head_commit()
-                target = ensure_frozen_copy(runtime.root, commit)
-                if target is None:
-                    print(
-                        "WARNING: self-host frozen copy failed; continuing on current code.",
-                        file=sys.stderr,
-                    )
-                    runtime.failures.clear(sprint_id)
-                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
-                    continue
-                try:
-                    roadmap_arg = str(runtime.roadmap_path.relative_to(runtime.root))
-                except ValueError:
-                    roadmap_arg = str(runtime.roadmap_path)
-                try:
-                    config_arg = str(runtime.config_path.relative_to(runtime.root))
-                except ValueError:
-                    config_arg = str(runtime.config_path)
-                # KeepAwake remains active in the outer cmd_run context while we wait.
-                return run_resume_with_frozen_copy(
-                    sprint_id,
-                    target,
-                    repo_root=runtime.root,
-                    roadmap=roadmap_arg,
-                    config=config_arg,
-                )
-
-            runtime.manifests.finish(sprint_id, success=False)
-            if record is not None:
-                print(runtime.failures.render(record), file=sys.stderr)
-            return 3
+        if use_board:
+            with suppress_progress_stdout(real_stdout):
+                return _run_loop()
+        return _run_loop()
     except KeyboardInterrupt:
         runtime.manifests.set_status(sprint_id, "PAUSED_BY_USER")
         print("Run interrupted safely; state is persisted. Use `resume` to continue.", file=sys.stderr)
@@ -514,6 +593,9 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
             pass
         print(f"Run stopped: {message}", file=sys.stderr)
         return 3
+    finally:
+        if board is not None:
+            board.close()
 
 
 def _reset_implementation_budget(task_runtime: TaskRuntime) -> None:
@@ -1001,9 +1083,11 @@ def parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run")
     r.add_argument("sprint")
     r.add_argument("--dry-run", action="store_true")
+    r.add_argument("--no-board", action="store_true")
 
     rs = sub.add_parser("resume")
     rs.add_argument("sprint")
+    rs.add_argument("--no-board", action="store_true")
 
     rel = sub.add_parser("release")
     rel.add_argument("sprint")
@@ -1111,7 +1195,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runtime = build_runtime(root, roadmap_path, config_path)
         if args.command == "status":
-            return cmd_status(runtime.roadmap, runtime.state, args.sprint, runtime.root / ".harness")
+            # Tests may stub `cmd_status` without the newer keyword.
+            if "config" in inspect.signature(cmd_status).parameters:
+                return cmd_status(
+                    runtime.roadmap,
+                    runtime.state,
+                    args.sprint,
+                    runtime.root / ".harness",
+                    config=getattr(runtime, "config", None),
+                )
+            return cmd_status(
+                runtime.roadmap,
+                runtime.state,
+                args.sprint,
+                runtime.root / ".harness",
+            )
         if args.command == "watch":
             return cmd_watch(runtime, args.sprint)
         if args.command == "add-task":
@@ -1126,7 +1224,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "graph":
             return cmd_graph(runtime.roadmap, args.sprint)
         if args.command in {"run", "resume"}:
-            return cmd_run(runtime, args.sprint, getattr(args, "dry_run", False))
+            return cmd_run(
+                runtime,
+                args.sprint,
+                getattr(args, "dry_run", False),
+                no_board=bool(getattr(args, "no_board", False)),
+            )
         if args.command == "run-task":
             return cmd_run_task(
                 runtime, args.task, model_class=args.model_class, fresh_budget=args.fresh_budget
