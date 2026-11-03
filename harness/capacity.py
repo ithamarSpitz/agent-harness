@@ -64,10 +64,14 @@ class CapacityManager:
                 TaskStatus.WAITING_TIMEOUT,
             }
         ]
-        self.state.set_meta(
-            f"{sprint_id}.run_status",
-            waiting[0] if waiting else TaskStatus.WAITING_PROVIDER_ERROR.value,
-        )
+        run_status_key = f"{sprint_id}.run_status"
+        if waiting:
+            self.state.set_meta(run_status_key, waiting[0])
+        elif self.state.get_meta(run_status_key) is None:
+            self.state.set_meta(
+                run_status_key,
+                TaskStatus.WAITING_PROVIDER_ERROR.value,
+            )
         with KeepAwake(self.config.capacity.keep_awake):
             remaining = seconds
             while remaining > 0:
