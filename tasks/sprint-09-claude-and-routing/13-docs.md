@@ -8,6 +8,7 @@ allow_protected: false
 depends_on:
   - S9-T14
   - S9-T16
+  - S9-T17
   - S9-T7
   - S9-T9
   - S9-T11
