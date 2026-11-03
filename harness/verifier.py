@@ -3,6 +3,8 @@ from __future__ import annotations
 import fnmatch
 import os
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,6 +12,12 @@ from .config import HarnessConfig
 from .git_worktree import WorktreeManager
 from .logging_utils import write_log
 from .models import TaskSpec
+from .process_utils import stop_process_tree
+
+# Identity of the real subprocess.run at import time. Unit tests that replace
+# subprocess.run (to assert encoding kwargs) are honoured via this check so
+# those assertions keep working while production always uses Popen + tree kill.
+_SUBPROCESS_RUN = subprocess.run
 
 
 @dataclass(slots=True)
@@ -20,6 +28,14 @@ class VerificationResult:
     changed_files: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class _CommandOutcome:
+    returncode: int
+    output: str
+    timed_out: bool
+    timeout_minutes: float
+
+
 def _matches(path: str, pattern: str) -> bool:
     normalized = pattern.rstrip("/")
     if normalized.endswith("/**"):
@@ -28,12 +44,22 @@ def _matches(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, normalized)
 
 
+def _tail_lines(text: str, count: int = 40) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    return "\n".join(lines[-count:])
+
+
+def _timeout_message(timeout_minutes: float, command: str) -> str:
+    return f"timed out after {timeout_minutes:g} minutes: {command}"
+
+
 class Verifier:
     def __init__(self, config: HarnessConfig, log_dir: Path, worktrees: WorktreeManager):
         self.config = config
         self.log_dir = log_dir
         self.worktrees = worktrees
-
 
     def _verification_env(self, env: dict[str, str] | None) -> dict[str, str]:
         # When the scheduler passes an explicit task/stage environment it is
@@ -52,6 +78,128 @@ class Verifier:
         for key, value in self.config.verification.env.items():
             merged.setdefault(str(key), str(value))
         return merged
+
+    def _verification_timeout_seconds(self) -> float:
+        return max(0.01, float(self.config.execution.verification_timeout_minutes)) * 60.0
+
+    def _run_timed_command(
+        self,
+        command: str,
+        workspace: Path,
+        env: dict[str, str],
+        timeout_seconds: float,
+    ) -> _CommandOutcome:
+        """Run one shell command; on timeout kill the whole process tree.
+
+        Output is collected on a background reader so a hang still yields the
+        last lines printed before the limit. Windows uses taskkill /T; POSIX
+        starts a new session so the group can be signalled together.
+        """
+        timeout_minutes = float(timeout_seconds) / 60.0
+
+        # Legacy unit tests replace subprocess.run to assert utf-8 decoding kwargs.
+        if subprocess.run is not _SUBPROCESS_RUN:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=True,
+                    capture_output=True,
+                    env=env,
+                    timeout=timeout_seconds,
+                )
+                return _CommandOutcome(
+                    int(completed.returncode),
+                    f"{completed.stdout}{completed.stderr}",
+                    False,
+                    timeout_minutes,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout if isinstance(exc.stdout, str) else (
+                    exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
+                )
+                stderr = exc.stderr if isinstance(exc.stderr, str) else (
+                    exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+                )
+                return _CommandOutcome(
+                    -1,
+                    stdout + (f"\n{stderr}" if stderr else ""),
+                    True,
+                    timeout_minutes,
+                )
+
+        output_chunks: list[str] = []
+        output_lock = threading.Lock()
+        proc: subprocess.Popen[str] = subprocess.Popen(
+            command,
+            cwd=workspace,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            # Own process group so stop_process_tree never reaches the harness.
+            start_new_session=(os.name != "nt"),
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+            ),
+        )
+
+        def read_output() -> None:
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                with output_lock:
+                    output_chunks.append(chunk)
+
+        reader = threading.Thread(
+            target=read_output, name="verification-stdout", daemon=True
+        )
+        reader.start()
+
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        timed_out = False
+        while proc.poll() is None:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                stop_process_tree(proc)
+                break
+            try:
+                proc.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            stop_process_tree(proc)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        reader.join(timeout=2)
+
+        with output_lock:
+            output = "".join(output_chunks)
+        returncode = -1 if timed_out else int(proc.returncode if proc.returncode is not None else -1)
+        return _CommandOutcome(returncode, output, timed_out, timeout_minutes)
+
+    def _render_command(self, command: str, outcome: _CommandOutcome) -> str:
+        if outcome.timed_out:
+            message = _timeout_message(outcome.timeout_minutes, command)
+            tail = _tail_lines(outcome.output)
+            body = f"{message}\n{tail}".rstrip()
+            return f"$ {command}\n{body}".rstrip()
+        return (
+            f"$ {command}\nexit={outcome.returncode}\n{outcome.output}"
+        ).rstrip()
 
     def requires_review(self, changed_files: list[str]) -> bool:
         return any(
@@ -85,11 +233,13 @@ class Verifier:
         command_outputs: list[str] = []
         commands = [*self.config.verification.global_task_commands, *task.verification]
         command_env = self._verification_env(env)
+        timeout_seconds = self._verification_timeout_seconds()
         for command in commands:
-            proc = subprocess.run(command, cwd=workspace, text=True, encoding="utf-8", errors="replace", shell=True, capture_output=True, env=command_env)
-            rendered = f"$ {command}\nexit={proc.returncode}\n{proc.stdout}{proc.stderr}".rstrip()
-            command_outputs.append(rendered)
-            if proc.returncode != 0:
+            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            command_outputs.append(self._render_command(command, outcome))
+            if outcome.timed_out:
+                failures.append(_timeout_message(outcome.timeout_minutes, command))
+            elif outcome.returncode != 0:
                 failures.append(f"Verification command failed: {command}")
 
         summary = "\n\n".join([
@@ -99,7 +249,6 @@ class Verifier:
         ])
         write_log(self.log_dir, f"{task.id}-verification.log", summary)
         return VerificationResult(not failures, summary, failures, changed)
-
 
     def verify_integrated_task(
         self, task: TaskSpec, workspace: Path, *, env: dict[str, str] | None = None
@@ -112,10 +261,13 @@ class Verifier:
         failures: list[str] = []
         outputs: list[str] = []
         command_env = self._verification_env(env)
+        timeout_seconds = self._verification_timeout_seconds()
         for command in [*self.config.verification.global_task_commands, *task.verification]:
-            proc = subprocess.run(command, cwd=workspace, text=True, encoding="utf-8", errors="replace", shell=True, capture_output=True, env=command_env)
-            outputs.append(f"$ {command}\nexit={proc.returncode}\n{proc.stdout}{proc.stderr}".rstrip())
-            if proc.returncode != 0:
+            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            outputs.append(self._render_command(command, outcome))
+            if outcome.timed_out:
+                failures.append(_timeout_message(outcome.timeout_minutes, command))
+            elif outcome.returncode != 0:
                 failures.append(f"Revalidation command failed: {command}")
         summary = "\n\n".join([*outputs, "Failures:\n" + ("\n".join(failures) if failures else "(none)")])
         write_log(self.log_dir, f"{task.id}-revalidation.log", summary)
@@ -132,38 +284,24 @@ class Verifier:
     ) -> tuple[bool, str, str | None, int | str | None]:
         outputs: list[str] = []
         command_env = self._verification_env(env)
+        effective_timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else self._verification_timeout_seconds()
+        )
         for command in commands:
-            try:
-                proc = subprocess.run(
-                    command,
-                    cwd=workspace,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    shell=True,
-                    capture_output=True,
-                    env=command_env,
-                    timeout=timeout_seconds,
-                )
-                outputs.append(
-                    f"$ {command}\nexit={proc.returncode}\n{proc.stdout}{proc.stderr}".rstrip()
-                )
-                if proc.returncode != 0:
-                    summary = "\n\n".join(outputs)
-                    write_log(self.log_dir, log_name, summary)
-                    return False, summary, command, proc.returncode
-            except subprocess.TimeoutExpired as exc:
-                stdout = exc.stdout if isinstance(exc.stdout, str) else (
-                    exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
-                )
-                stderr = exc.stderr if isinstance(exc.stderr, str) else (
-                    exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-                )
-                rendered = stdout + (f"\n{stderr}" if stderr else "")
-                outputs.append(f"$ {command}\nTIMEOUT\n{rendered}".rstrip())
+            outcome = self._run_timed_command(
+                command, workspace, command_env, effective_timeout
+            )
+            outputs.append(self._render_command(command, outcome))
+            if outcome.timed_out:
                 summary = "\n\n".join(outputs)
                 write_log(self.log_dir, log_name, summary)
                 return False, summary, command, "timeout"
+            if outcome.returncode != 0:
+                summary = "\n\n".join(outputs)
+                write_log(self.log_dir, log_name, summary)
+                return False, summary, command, outcome.returncode
         summary = "\n\n".join(outputs)
         write_log(self.log_dir, log_name, summary)
         return True, summary, None, None
@@ -174,10 +312,13 @@ class Verifier:
         failures: list[str] = []
         outputs: list[str] = []
         command_env = self._verification_env(env)
+        timeout_seconds = self._verification_timeout_seconds()
         for command in [*self.config.verification.stage_commands, *commands]:
-            proc = subprocess.run(command, cwd=workspace, text=True, encoding="utf-8", errors="replace", shell=True, capture_output=True, env=command_env)
-            outputs.append(f"$ {command}\nexit={proc.returncode}\n{proc.stdout}{proc.stderr}".rstrip())
-            if proc.returncode != 0:
+            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            outputs.append(self._render_command(command, outcome))
+            if outcome.timed_out:
+                failures.append(_timeout_message(outcome.timeout_minutes, command))
+            elif outcome.returncode != 0:
                 failures.append(f"Stage command failed: {command}")
         summary = "\n\n".join([*outputs, "Failures:\n" + ("\n".join(failures) if failures else "(none)")])
         write_log(self.log_dir, f"{stage_name}-verification.log", summary)
