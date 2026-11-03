@@ -45,6 +45,8 @@ Real implementation, retry and review calls go to the provider chosen by S9-T5, 
 
 - A quota disable (`<sprint>.<task>.provider.<p>.disabled = "quota:..."` in state meta) today is cleared only when the task leaves `WAITING_QUOTA`. On Nov 3 2026 Codex stayed disabled for S9-T16 and S9-T17 after its 5-hour window reset (0% used), because one was rerun with `run-task --fresh-budget` and the other was in `WAITING_TIMEOUT`, so Cursor Auto did the work while Codex sat idle. Fix: a quota disable is ignored once the headroom snapshot shows that provider with free capacity again (and cleared, with the existing `re-enabled` message), and `run-task --fresh-budget`, `reset-task`, `retry` and `unblock` clear quota disables too. Add tests for both.
 
+- Scope split (operator, Nov 3 2026, do not reopen): clearing a quota disable when the headroom snapshot shows capacity again must work whether or not `claude.enabled` (that is this task). Passing `model_class="auto"` for the first implementation attempt and using headroom routing in projects without Claude are S9-T26's job; do not implement them here, and a review must not fail this task for their absence. Review calls pass a review model class, never `task.model_class`, so a review is never treated as Auto.
+
 # Acceptance criteria
 
 1. Fake headroom favoring Claude → the implementation call goes to the fake Claude runner, with the reason logged.

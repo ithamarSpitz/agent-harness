@@ -36,6 +36,7 @@ S9-T5 (`harness/routing.py`, `choose_provider`) has the rule "the first implemen
 2. Use the live headroom snapshot for choices in every project. When no headroom data is available, the order is exactly `providers.priority` (as S9-T10 decision 5 intended).
 3. Reviews never go to Cursor Auto and never to the provider that implemented the task (already recorded as `provider.implementer`); if no other reviewer is available, the review waits as today.
 4. Log the choice and reason as S9-T10 does.
+5. If part of this already exists when you start, keep it and add the missing parts and the tests.
 
 # Acceptance criteria
 
