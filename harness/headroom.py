@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
 
+from .home import harness_home
 from .limits import LimitsPaths, load_claude, load_codex, load_cursor
 
 
@@ -267,7 +268,7 @@ def headroom_snapshot(
     global _memory_cache_path, _memory_cached_at, _memory_snapshot
 
     now = now or time.time
-    cache_path = (cache_path or Path.home() / ".harness" / "headroom-cache.json").expanduser()
+    cache_path = (cache_path or harness_home() / "headroom-cache.json").expanduser()
 
     with _MEMORY_LOCK:
         current_time = now()
