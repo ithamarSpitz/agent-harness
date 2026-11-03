@@ -98,7 +98,8 @@ def test_all_out_names_every_provider():
 
     assert choice.provider is None
     assert all(provider in choice.reason for provider in ("codex", "cursor", "claude"))
-    assert "codex out until 14:00" in choice.reason
+    codex_reset_local = (NOW + timedelta(hours=2)).astimezone().strftime("%H:%M")
+    assert f"codex out until {codex_reset_local}" in choice.reason
     assert "cursor out until" in choice.reason
 
 

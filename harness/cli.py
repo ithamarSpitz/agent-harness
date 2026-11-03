@@ -22,7 +22,7 @@ from .board_loop import (
 from .capacity import CapacityManager
 from .config import HarnessConfig
 from .context import ContextResolver
-from .doctor import Doctor
+from .doctor import Doctor, DoctorCheck
 from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
@@ -33,7 +33,9 @@ from .plan_change import PlanChangeManager, _relative_brief_path
 from .quota import KeepAwake, QuotaManager
 from .roadmap import Roadmap, RoadmapError
 from .codex_runner import CodexAgentRunner
-from .provider_runner import ProviderAgentRunner
+from .claude_runner import ClaudeAgentRunner
+from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
+from .process_utils import prepare_external_argv, split_command
 from .runner import CursorAgentRunner
 from .scheduler import Scheduler
 from .state import StateStore
@@ -91,7 +93,13 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
         worktree_root=worktrees.worktree_root,
     )
     codex_runner = CodexAgentRunner(config, runtime_root / "logs", context, usage)
-    runner = ProviderAgentRunner(config, state, codex_runner, cursor_runner, usage)
+    claude_runner = (
+        ClaudeAgentRunner(config, runtime_root / "logs", context, usage)
+        if config.claude.enabled else None
+    )
+    runner = ProviderAgentRunner(
+        config, state, codex_runner, cursor_runner, usage, claude_runner
+    )
     verifier = Verifier(config, runtime_root / "logs", worktrees)
     scheduler = Scheduler(
         root,
@@ -278,6 +286,29 @@ def cmd_validate(runtime: Runtime, sprint_id: str | None = None) -> int:
 
 def cmd_doctor(runtime: Runtime, *, full: bool) -> int:
     checks = Doctor(runtime.root, runtime.config, runtime.worktrees).run(full=full)
+    if runtime.config.claude.enabled:
+        parts = split_command(runtime.config.claude.command)
+        try:
+            proc = subprocess.run(
+                prepare_external_argv([*parts, "--version"]),
+                cwd=runtime.root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=15,
+            )
+            detail = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+            checks.append(DoctorCheck(
+                "claude-cli/login", proc.returncode == 0,
+                detail[:300] or "claude --version returned no output",
+                required=not (runtime.config.codex.enabled or runtime.config.cursor.enabled),
+            ))
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            checks.append(DoctorCheck(
+                "claude-cli/login", False, str(exc),
+                required=not (runtime.config.codex.enabled or runtime.config.cursor.enabled),
+            ))
     print(Doctor.render(checks))
     if full:
         report = runtime.validator.validate()
@@ -618,6 +649,7 @@ def cmd_retry(state: StateStore, task_id: str) -> int:
     runtime.last_error = "Manual retry requested"
     runtime.review_feedback = None
     _reset_implementation_budget(runtime)
+    clear_task_quota_disables(state, task_id)
     state.save()
     print(f"{task_id} reset for a fresh retry budget (attempt, provider_attempts, stall_counts)")
     return 0
@@ -632,6 +664,7 @@ def cmd_unblock(state: StateStore, task_id: str) -> int:
     runtime.last_error = "Manually unblocked"
     runtime.review_feedback = None
     _reset_implementation_budget(runtime)
+    clear_task_quota_disables(state, task_id)
     state.save()
     print(f"{task_id} unblocked with a fresh retry budget (attempt, provider_attempts, stall_counts)")
     return 0
@@ -672,6 +705,7 @@ def cmd_reset_task(runtime: Runtime, task_id: str) -> int:
     elif task_runtime.branch:
         runtime.worktrees.delete_branch(task_runtime.branch)
         cleaned = True
+    clear_task_quota_disables(runtime.state, task_id)
     runtime.state.reset_task(task_id)
     runtime.failures.resolve_task(task.sprint, task_id)
     if cleaned:
@@ -740,6 +774,7 @@ def cmd_run_task(
         task_runtime.review_feedback = None
         task_runtime.commit = None
         _reset_implementation_budget(task_runtime)
+        clear_task_quota_disables(runtime.state, task_id)
         runtime.state.save()
 
     base_commit = task_runtime.base_ref or subprocess.run(
