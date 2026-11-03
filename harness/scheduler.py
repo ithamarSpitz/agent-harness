@@ -32,14 +32,13 @@ from .models import (
     TaskStatus,
 )
 from .agent_runner import AgentResult
-from .process_utils import stop_process_tree
 from .proc_tree import PeakSampler
 from .provider_runner import ProviderAgentRunner
 from .release import ReleaseRunner, sprint_is_complete
 from .roadmap import Roadmap
 from .state import StateStore
 from .task_queue import TaskQueueManager
-from .verifier import Verifier, _CommandOutcome, _SUBPROCESS_RUN
+from .verifier import Verifier
 
 _WAITING_EVENT_STATUSES = frozenset(
     {
@@ -116,15 +115,6 @@ class Scheduler:
             sampler_factory is not None or isinstance(runner, ProviderAgentRunner)
         )
         self._memory_estimate_lock = threading.Lock()
-        # Concurrent CHECKING phases share one Verifier; route each thread's
-        # verification Popen PIDs through a thread-local hook (same isolation
-        # idea as the former _PopenObserver, without replacing subprocess.Popen).
-        self._verify_hook_local = threading.local()
-        self._verify_hook_lock = threading.Lock()
-        self._verify_hook_users = 0
-        self._verify_hook_original: Callable[..., _CommandOutcome] | None = None
-        self._verify_hook_installed: Callable[..., _CommandOutcome] | None = None
-        self._verify_hook_had_instance = False
         self._runtime_root = verifier.log_dir.parent
         self.task_queue = TaskQueueManager(repo_root, self._runtime_root, state)
         self._merge_in_progress: tuple[str, int] | None = None
@@ -175,174 +165,6 @@ class Scheduler:
                         observed_peaks.append(peak)
                 except Exception as exc:
                     LOGGER.warning("Memory peak sampler could not stop: %s", exc)
-
-    def _run_timed_verification_command(
-        self,
-        command: str,
-        workspace: Path,
-        env: dict[str, str],
-        timeout_seconds: float,
-        on_process_start: ProcessStartHook,
-        original: Callable[..., _CommandOutcome],
-    ) -> _CommandOutcome:
-        """Run one verification command via scheduler-owned Popen and report its PID.
-
-        Mirrors ``Verifier._run_timed_command`` so verification peaks stay in the
-        learned estimate without a process-wide ``subprocess.Popen`` wrapper.
-        """
-        if subprocess.run is not _SUBPROCESS_RUN:
-            return original(command, workspace, env, timeout_seconds)
-
-        timeout_minutes = float(timeout_seconds) / 60.0
-        output_chunks: list[str] = []
-        output_lock = threading.Lock()
-        proc: subprocess.Popen[str] = subprocess.Popen(
-            command,
-            cwd=workspace,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=(os.name != "nt"),
-            creationflags=(
-                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-            ),
-        )
-        try:
-            on_process_start(proc.pid)
-        except Exception as exc:
-            LOGGER.warning(
-                "Memory peak sampler could not observe verification process %s: %s",
-                proc.pid,
-                exc,
-            )
-
-        def read_output() -> None:
-            assert proc.stdout is not None
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                with output_lock:
-                    output_chunks.append(chunk)
-
-        reader = threading.Thread(
-            target=read_output, name="verification-stdout", daemon=True
-        )
-        reader.start()
-
-        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
-        timed_out = False
-        while proc.poll() is None:
-            if time.monotonic() >= deadline:
-                timed_out = True
-                stop_process_tree(proc)
-                break
-            try:
-                proc.wait(timeout=0.1)
-            except subprocess.TimeoutExpired:
-                pass
-
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            stop_process_tree(proc)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        reader.join(timeout=2)
-
-        with output_lock:
-            output = "".join(output_chunks)
-        returncode = (
-            -1 if timed_out else int(proc.returncode if proc.returncode is not None else -1)
-        )
-        return _CommandOutcome(returncode, output, timed_out, timeout_minutes)
-
-    def _dispatch_timed_verification_command(
-        self,
-        command: str,
-        workspace: Path,
-        command_env: dict[str, str],
-        timeout_seconds: float,
-    ) -> _CommandOutcome:
-        """Shared Verifier._run_timed_command stand-in; uses this thread's hook."""
-        original = self._verify_hook_original
-        assert original is not None
-        hook = getattr(self._verify_hook_local, "on_process_start", None)
-        if hook is None:
-            return original(command, workspace, command_env, timeout_seconds)
-        return self._run_timed_verification_command(
-            command,
-            workspace,
-            command_env,
-            timeout_seconds,
-            hook,
-            original,
-        )
-
-    def _verify_with_process_hook(
-        self,
-        task: TaskSpec,
-        worktree: Path,
-        base_ref: str,
-        task_env: dict[str, str],
-        on_process_start: ProcessStartHook | None,
-    ):
-        """Run task verification, reporting each command PID to the sampler hook.
-
-        Concurrent tasks share one Verifier. Install a refcounted dispatcher once
-        and bind ``on_process_start`` on a thread-local so overlapping CHECKING
-        phases cannot steal or restore each other's hooked method.
-        """
-        if on_process_start is None:
-            return self.verifier.verify_task(task, worktree, base_ref, env=task_env)
-
-        verifier = self.verifier
-        with self._verify_hook_lock:
-            if self._verify_hook_users == 0:
-                # Capture the exact bound-method object we install so restore
-                # can use identity (re-fetching the attribute builds a new one).
-                installed = self._dispatch_timed_verification_command
-                self._verify_hook_had_instance = "_run_timed_command" in verifier.__dict__
-                self._verify_hook_original = verifier.__dict__.get("_run_timed_command")
-                if self._verify_hook_original is None:
-                    # Class method: bind once for the dispatcher fallback path.
-                    self._verify_hook_original = verifier._run_timed_command
-                self._verify_hook_installed = installed
-                setattr(verifier, "_run_timed_command", installed)
-            self._verify_hook_users += 1
-
-        previous = getattr(self._verify_hook_local, "on_process_start", None)
-        self._verify_hook_local.on_process_start = on_process_start
-        try:
-            return verifier.verify_task(task, worktree, base_ref, env=task_env)
-        finally:
-            if previous is None:
-                try:
-                    del self._verify_hook_local.on_process_start
-                except AttributeError:
-                    pass
-            else:
-                self._verify_hook_local.on_process_start = previous
-            with self._verify_hook_lock:
-                self._verify_hook_users -= 1
-                if self._verify_hook_users == 0:
-                    if verifier.__dict__.get("_run_timed_command") is self._verify_hook_installed:
-                        if self._verify_hook_had_instance:
-                            assert self._verify_hook_original is not None
-                            setattr(
-                                verifier, "_run_timed_command", self._verify_hook_original
-                            )
-                        else:
-                            delattr(verifier, "_run_timed_command")
-                    self._verify_hook_original = None
-                    self._verify_hook_installed = None
-                    self._verify_hook_had_instance = False
 
     def _remember_memory_peak(self, observed_peaks: list[float]) -> None:
         if not observed_peaks:
@@ -1007,8 +829,12 @@ class Scheduler:
             runtime.waiting_provider = None
             self.state.save()
             with self._process_sampler(observed_peaks) as on_process_start:
-                verification = self._verify_with_process_hook(
-                    task, worktree, base_ref, task_env, on_process_start
+                verification = self.verifier.verify_task(
+                    task,
+                    worktree,
+                    base_ref,
+                    env=task_env,
+                    on_process_start=on_process_start,
                 )
             if not verification.ok:
                 self._set_task_status(task, runtime, TaskStatus.RETRY)
