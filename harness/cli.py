@@ -149,6 +149,15 @@ def cmd_status(
     return 0
 
 
+def cmd_watch(runtime: Runtime, sprint_id: str | None) -> int:
+    with KeepAwake(runtime.config.execution.keep_awake_during_run):
+        return _cmd_watch_live(runtime, sprint_id)
+
+
+def _cmd_watch_live(runtime: Runtime, sprint_id: str | None) -> int:
+    return cmd_status(runtime.roadmap, runtime.state, sprint_id, runtime.root / ".harness")
+
+
 def cmd_add_task(
     runtime: Runtime,
     sprint_id: str,
@@ -622,9 +631,10 @@ def cmd_run_task(
         capture_output=True,
         check=True,
     ).stdout.strip()
-    outcome = runtime.scheduler._run_task(
-        task, base_commit, model_class_override=model_class
-    )  # intentional focused/debugging entrypoint
+    with KeepAwake(runtime.config.execution.keep_awake_during_run):
+        outcome = runtime.scheduler._run_task(
+            task, base_commit, model_class_override=model_class
+        )  # intentional focused/debugging entrypoint
     if outcome.ok:
         runtime.failures.resolve_task(task.sprint, task_id)
         print(f"{task_id} is PASSED in its worktree; run `harness resume {task.sprint}` to continue from this stage.")
@@ -953,6 +963,9 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status")
     s.add_argument("sprint", nargs="?")
 
+    watch = sub.add_parser("watch")
+    watch.add_argument("sprint", nargs="?")
+
     g = sub.add_parser("graph")
     g.add_argument("sprint")
 
@@ -1070,6 +1083,8 @@ def main(argv: list[str] | None = None) -> int:
         runtime = build_runtime(root, roadmap_path, config_path)
         if args.command == "status":
             return cmd_status(runtime.roadmap, runtime.state, args.sprint, runtime.root / ".harness")
+        if args.command == "watch":
+            return cmd_watch(runtime, args.sprint)
         if args.command == "add-task":
             return cmd_add_task(
                 runtime,
