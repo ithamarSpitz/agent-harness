@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from harness.impact import OUTSIDE_IMPACT_HEADER
 from harness.models import TaskSpec
 from harness.prompts import implement_prompt, review_prompt
 
@@ -41,6 +42,9 @@ def test_review_prompt_impact_without_code_map() -> None:
     assert "use `git grep`" in prompt
     assert OUTSIDE_DIFF_CHECK in prompt
     assert IMPACT_SECTION in prompt
+    assert OUTSIDE_IMPACT_HEADER in prompt
+    assert "none found" in prompt
+    assert prompt.index(OUTSIDE_IMPACT_HEADER) < prompt.index(IMPACT_HEADER)
     assert prompt.index(IMPACT_HEADER) < prompt.index("VERDICT: PASS")
     assert prompt.index("VERDICT: PASS") < prompt.index(IMPACT_SECTION)
     assert "graphify query" not in prompt
@@ -60,11 +64,13 @@ def test_review_prompt_impact_with_code_map_requires_graphify() -> None:
     assert IMPACT_LIST_STEP in prompt
     assert OUTSIDE_DIFF_CHECK in prompt
     assert IMPACT_SECTION in prompt
+    assert OUTSIDE_IMPACT_HEADER in prompt
     assert "use the code map (required for this step)" in prompt
     assert "graphify-out/AGENTS-graphify.md" in prompt
     assert "`graphify query`" in prompt
     assert "--budget 500" in prompt
     assert "use `git grep`" not in prompt
+    assert prompt.index(OUTSIDE_IMPACT_HEADER) < prompt.index(IMPACT_HEADER)
     assert prompt.index(IMPACT_HEADER) < prompt.index("VERDICT: PASS")
     assert prompt.index("VERDICT: PASS") < prompt.index(IMPACT_SECTION)
 
@@ -79,6 +85,18 @@ def test_review_prompt_impact_uses_code_map_command_token() -> None:
     )
     assert "`my-graphify query`" in prompt
     assert "use the code map (required for this step)" in prompt
+
+
+def test_review_prompt_lists_provided_outside_impact() -> None:
+    prompt = review_prompt(
+        _task(),
+        "abc123",
+        "ok",
+        outside_impact="caller.py:4 -> f",
+    )
+    assert OUTSIDE_IMPACT_HEADER in prompt
+    assert "caller.py:4 -> f" in prompt
+    assert prompt.index(OUTSIDE_IMPACT_HEADER) < prompt.index(IMPACT_HEADER)
 
 
 def test_implement_and_retry_prompts_unchanged_optional_code_map() -> None:
@@ -97,6 +115,7 @@ def test_implement_and_retry_prompts_unchanged_optional_code_map() -> None:
         assert IMPACT_HEADER not in prompt
         assert OUTSIDE_DIFF_CHECK not in prompt
         assert IMPACT_SECTION not in prompt
+        assert OUTSIDE_IMPACT_HEADER not in prompt
         assert "required for this step" not in prompt
 
     assert OPTIONAL_CODE_MAP in implement_map
