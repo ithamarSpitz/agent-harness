@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -258,6 +259,7 @@ class CursorAgentRunner:
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
         code_map: bool = False,
+        on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         pipe_prompt = cursor_prompt_via_stdin(self.config.cursor.command)
         command = [
@@ -318,6 +320,8 @@ class CursorAgentRunner:
                 start_new_session=(os.name != "nt"),
                 creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0),
             )
+            if on_process_start is not None:
+                on_process_start(proc.pid)
             if pipe_prompt:
                 assert proc.stdin is not None
                 try:
@@ -556,6 +560,7 @@ class CursorAgentRunner:
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
         code_map_offered: bool = False,
+        on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
@@ -577,6 +582,7 @@ class CursorAgentRunner:
             env=env,
             model_class_override=model_class_override,
             code_map=code_map_offered,
+            on_process_start=on_process_start,
         )
 
     def review(
@@ -589,6 +595,7 @@ class CursorAgentRunner:
         *,
         env: dict[str, str] | None = None,
         code_map_offered: bool = False,
+        on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         ui = self.config.ui_review if self.config.ui_review.enabled else None
         return self._invoke(
@@ -605,6 +612,7 @@ class CursorAgentRunner:
             mode="ask",
             env=env,
             code_map=code_map_offered,
+            on_process_start=on_process_start,
         )
     def plan_change(
         self,

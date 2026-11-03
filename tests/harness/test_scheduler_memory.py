@@ -135,6 +135,7 @@ class TrackingRunner:
                 event.set()
 
     def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
+        on_process_start = kwargs.get("on_process_start")
         with self.lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
@@ -146,6 +147,9 @@ class TrackingRunner:
         if release is not None:
             assert release.wait(timeout=10)
         time.sleep(0.05)
+        if on_process_start is not None:
+            # Fake in-process agent: report a stand-in PID so peak learning still runs.
+            on_process_start(os.getpid())
         (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
         with self.lock:
             self.active -= 1
@@ -413,12 +417,17 @@ def test_concurrent_calls_sample_their_own_subprocess_roots(tmp_path: Path):
             self.child_pids: list[int] = []
 
         def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
-            proc = subprocess.Popen(
+            real_popen = subprocess.Popen
+            on_process_start = kwargs.get("on_process_start")
+            proc = real_popen(
                 [sys.executable, "-c", "import time; time.sleep(0.2)"],
                 cwd=workspace,
             )
+            assert subprocess.Popen is real_popen
             with self.lock:
                 self.child_pids.append(proc.pid)
+            if on_process_start is not None:
+                on_process_start(proc.pid)
             assert proc.wait(timeout=5) == 0
             (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
             return AgentResult(True, "ok")
