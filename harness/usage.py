@@ -8,6 +8,30 @@ from pathlib import Path
 from typing import Any
 
 from .logging_utils import utc_now
+from .outcomes import append_outcome
+
+
+OUTCOME_KEYS = (
+    "project",
+    "sprint",
+    "task_id",
+    "model_class",
+    "provider",
+    "model",
+    "effort",
+    "phase",
+    "attempt",
+    "ok",
+    "verification_ok",
+    "review_verdict",
+    "finding_count",
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "duration_seconds",
+    "recorded_at",
+)
 
 
 def count_code_map_calls(commands: list[str], configured_command: str) -> int:
@@ -29,6 +53,9 @@ class UsageRecorder:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.project = (
+            path.parent.parent if path.parent.name == ".harness" else path.parent
+        ).resolve()
         self._lock = threading.RLock()
 
     def record(self, event: dict[str, Any]) -> None:
@@ -36,6 +63,9 @@ class UsageRecorder:
         with self._lock:
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload, sort_keys=True) + "\n")
+        outcome = {key: payload.get(key) for key in OUTCOME_KEYS}
+        outcome["project"] = str(self.project)
+        append_outcome(outcome)
 
     def events(self) -> list[dict[str, Any]]:
         if not self.path.exists():
