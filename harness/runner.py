@@ -531,6 +531,8 @@ class CursorAgentRunner:
                 "quota_exhausted": result.quota_exhausted,
                 "capacity_exhausted": result.capacity_exhausted,
                 "waiting_cause": result.waiting_cause,
+                "auth_failure": result.auth_failure,
+                "launch_failure": result.launch_failure,
                 "code_map": code_map,
                 "code_map_calls": code_map_calls,
                 "input_tokens": result.input_tokens,

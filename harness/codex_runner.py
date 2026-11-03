@@ -210,6 +210,7 @@ class CodexAgentRunner:
             "capacity_exhausted": result.capacity_exhausted,
             "waiting_cause": result.waiting_cause,
             "transient_error": result.transient_error, "auth_failure": result.auth_failure,
+            "launch_failure": result.launch_failure,
             "model_unavailable": result.model_unavailable, "input_tokens": result.input_tokens,
             "cached_input_tokens": result.cached_input_tokens, "output_tokens": result.output_tokens,
             "reasoning_output_tokens": result.reasoning_output_tokens,
@@ -259,9 +260,8 @@ class CodexAgentRunner:
             proc.stdin.write(prompt)
             proc.stdin.close()
         except OSError as exc:
-            # auth_failure triggers ProviderAgentRunner's same-call Cursor fallback
-            # (quota/auth path) without spending a Codex attempt; scheduler still
-            # treats launch_failure as a setup block when no alternate provider runs.
+            # launch_failure alone triggers ProviderAgentRunner same-call Cursor
+            # fallback with disable reason launch_failure (not auth_failure).
             result = AgentResult(
                 False,
                 "",
@@ -270,7 +270,6 @@ class CodexAgentRunner:
                 model=model,
                 provider="codex",
                 launch_failure=True,
-                auth_failure=True,
             )
             write_log(self.log_dir, log_name, str(exc))
             self._record_usage(task_id, phase, model, attempt, result, code_map)

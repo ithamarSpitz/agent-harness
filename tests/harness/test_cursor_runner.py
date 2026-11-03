@@ -34,6 +34,7 @@ def test_cursor_launch_failure_is_not_a_provider_wait(tmp_path: Path, monkeypatc
 
     assert not result.ok
     assert result.launch_failure
+    assert not result.auth_failure
     assert result.error == f"cursor could not start: {launch_error}"
     assert result.provider == "cursor"
     assert result.waiting_cause is None
@@ -44,6 +45,8 @@ def test_cursor_launch_failure_is_not_a_provider_wait(tmp_path: Path, monkeypatc
     event = usage.events()[0]
     assert event["waiting_cause"] is None
     assert not event["ok"]
+    assert event["launch_failure"] is True
+    assert event["auth_failure"] is False
 
 
 def _config(tmp_path: Path, command: str = "agent", *, output_format: str | None = None) -> HarnessConfig:
