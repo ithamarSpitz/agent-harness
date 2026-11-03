@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
+
+_REMOVE_RETRIES = 5
+_REMOVE_PAUSE_SECONDS = 0.2
 
 
 def _run(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -18,6 +25,29 @@ def _slug(value: str) -> str:
 
 class GitError(RuntimeError):
     pass
+
+
+def _rmtree_with_retries(
+    path: Path,
+    *,
+    attempts: int = _REMOVE_RETRIES,
+    pause_seconds: float = _REMOVE_PAUSE_SECONDS,
+) -> None:
+    """Delete a directory, retrying briefly when Windows holds a file handle."""
+    if not path.exists():
+        return
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            pass
+        if not path.exists():
+            return
+        if attempt + 1 < attempts:
+            time.sleep(pause_seconds)
+    raise GitError(
+        f"could not remove {path}: close programs using it and try again"
+    )
 
 
 class WorktreeManager:
@@ -198,7 +228,11 @@ class WorktreeManager:
                     continue
                 if child.resolve() in registered:
                     continue
-                shutil.rmtree(child, ignore_errors=True)
+                try:
+                    _rmtree_with_retries(child)
+                except GitError as exc:
+                    _log.warning("%s", exc)
+                    continue
                 removed.append(child)
             return removed
 
@@ -208,6 +242,6 @@ class WorktreeManager:
     def remove(self, worktree: Path, branch: str, *, delete_branch: bool = True) -> None:
         _run(["git", "worktree", "remove", "--force", str(worktree)], self.repo_root, check=False)
         if worktree.exists():
-            shutil.rmtree(worktree, ignore_errors=True)
+            _rmtree_with_retries(worktree)
         if delete_branch:
             _run(["git", "branch", "-D", branch], self.repo_root, check=False)

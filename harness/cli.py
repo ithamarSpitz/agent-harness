@@ -13,7 +13,7 @@ from .context import ContextResolver
 from .doctor import Doctor
 from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
-from .git_worktree import WorktreeManager
+from .git_worktree import GitError, WorktreeManager
 from .manifest import RunManifestManager
 from .models import TaskStatus
 from .plan_change import PlanChangeManager
@@ -517,13 +517,33 @@ def cmd_reset_task(runtime: Runtime, task_id: str) -> int:
             file=sys.stderr,
         )
         return 2
+    cleaned = False
     if task_runtime.worktree and task_runtime.branch:
-        runtime.worktrees.remove(Path(task_runtime.worktree), task_runtime.branch, delete_branch=True)
+        worktree = Path(task_runtime.worktree)
+        try:
+            runtime.worktrees.remove(worktree, task_runtime.branch, delete_branch=True)
+        except GitError:
+            print(
+                f"could not remove {worktree}: close programs using it and run reset-task again",
+                file=sys.stderr,
+            )
+            return 2
+        if worktree.exists():
+            print(
+                f"could not remove {worktree}: close programs using it and run reset-task again",
+                file=sys.stderr,
+            )
+            return 2
+        cleaned = True
     elif task_runtime.branch:
         runtime.worktrees.delete_branch(task_runtime.branch)
+        cleaned = True
     runtime.state.reset_task(task_id)
     runtime.failures.resolve_task(task.sprint, task_id)
-    print(f"{task_id} reset to PENDING; task-owned worktree/branch cleaned when present")
+    if cleaned:
+        print(f"{task_id} reset to PENDING; task-owned worktree/branch cleaned")
+    else:
+        print(f"{task_id} reset to PENDING; task-owned worktree/branch cleaned when present")
     return 0
 
 
@@ -734,7 +754,12 @@ def cmd_cleanup(runtime: Runtime, *, stale_worktrees: bool, completed: bool) -> 
         for task_id, task_runtime in runtime.state.all().items():
             if task_runtime.status != TaskStatus.DONE or not task_runtime.worktree or not task_runtime.branch:
                 continue
-            runtime.worktrees.remove(Path(task_runtime.worktree), task_runtime.branch, delete_branch=True)
+            worktree = Path(task_runtime.worktree)
+            try:
+                runtime.worktrees.remove(worktree, task_runtime.branch, delete_branch=True)
+            except GitError as exc:
+                print(f"WARNING: {exc}", file=sys.stderr)
+                continue
             task_runtime.worktree = None
             task_runtime.branch = None
             runtime.state.save()
@@ -890,7 +915,10 @@ def cmd_plan_change_apply(runtime: Runtime, request_id: str, affected: list[str]
             if proc.stdout:
                 patch_path.write_text(proc.stdout, encoding="utf-8")
         if task_rt.branch and worktree_path.exists():
-            runtime.worktrees.remove(worktree_path, task_rt.branch, delete_branch=True)
+            try:
+                runtime.worktrees.remove(worktree_path, task_rt.branch, delete_branch=True)
+            except GitError as exc:
+                print(f"WARNING: {exc}", file=sys.stderr)
         elif task_rt.branch:
             runtime.worktrees.delete_branch(task_rt.branch)
         task_rt.worktree = None
