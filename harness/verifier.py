@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +15,9 @@ from .git_worktree import WorktreeManager
 from .logging_utils import write_log
 from .models import TaskSpec
 from .process_utils import stop_process_tree
+
+LOGGER = logging.getLogger(__name__)
+ProcessStartHook = Callable[[int], None]
 
 # Identity of the real subprocess.run at import time. Unit tests that replace
 # subprocess.run (to assert encoding kwargs) are honoured via this check so
@@ -88,6 +93,7 @@ class Verifier:
         workspace: Path,
         env: dict[str, str],
         timeout_seconds: float,
+        on_process_start: ProcessStartHook | None = None,
     ) -> _CommandOutcome:
         """Run one shell command; on timeout kill the whole process tree.
 
@@ -149,6 +155,15 @@ class Verifier:
                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
             ),
         )
+        if on_process_start is not None:
+            try:
+                on_process_start(proc.pid)
+            except Exception as exc:
+                LOGGER.warning(
+                    "on_process_start callback failed for verification process %s: %s",
+                    proc.pid,
+                    exc,
+                )
 
         def read_output() -> None:
             assert proc.stdout is not None
@@ -209,7 +224,13 @@ class Verifier:
         )
 
     def verify_task(
-        self, task: TaskSpec, workspace: Path, base_ref: str, *, env: dict[str, str] | None = None
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        base_ref: str,
+        *,
+        env: dict[str, str] | None = None,
+        on_process_start: ProcessStartHook | None = None,
     ) -> VerificationResult:
         failures: list[str] = []
         changed = self.worktrees.changed_files(workspace, base_ref)
@@ -235,7 +256,13 @@ class Verifier:
         command_env = self._verification_env(env)
         timeout_seconds = self._verification_timeout_seconds()
         for command in commands:
-            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            outcome = self._run_timed_command(
+                command,
+                workspace,
+                command_env,
+                timeout_seconds,
+                on_process_start=on_process_start,
+            )
             command_outputs.append(self._render_command(command, outcome))
             if outcome.timed_out:
                 failures.append(_timeout_message(outcome.timeout_minutes, command))
@@ -251,7 +278,12 @@ class Verifier:
         return VerificationResult(not failures, summary, failures, changed)
 
     def verify_integrated_task(
-        self, task: TaskSpec, workspace: Path, *, env: dict[str, str] | None = None
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        *,
+        env: dict[str, str] | None = None,
+        on_process_start: ProcessStartHook | None = None,
     ) -> VerificationResult:
         """Re-run a DONE task's behavioral verification on the integrated checkout.
 
@@ -263,7 +295,13 @@ class Verifier:
         command_env = self._verification_env(env)
         timeout_seconds = self._verification_timeout_seconds()
         for command in [*self.config.verification.global_task_commands, *task.verification]:
-            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            outcome = self._run_timed_command(
+                command,
+                workspace,
+                command_env,
+                timeout_seconds,
+                on_process_start=on_process_start,
+            )
             outputs.append(self._render_command(command, outcome))
             if outcome.timed_out:
                 failures.append(_timeout_message(outcome.timeout_minutes, command))
@@ -281,6 +319,7 @@ class Verifier:
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         log_name: str,
+        on_process_start: ProcessStartHook | None = None,
     ) -> tuple[bool, str, str | None, int | str | None]:
         outputs: list[str] = []
         command_env = self._verification_env(env)
@@ -291,7 +330,11 @@ class Verifier:
         )
         for command in commands:
             outcome = self._run_timed_command(
-                command, workspace, command_env, effective_timeout
+                command,
+                workspace,
+                command_env,
+                effective_timeout,
+                on_process_start=on_process_start,
             )
             outputs.append(self._render_command(command, outcome))
             if outcome.timed_out:
@@ -307,14 +350,26 @@ class Verifier:
         return True, summary, None, None
 
     def verify_stage(
-        self, workspace: Path, commands: list[str], stage_name: str, *, env: dict[str, str] | None = None
+        self,
+        workspace: Path,
+        commands: list[str],
+        stage_name: str,
+        *,
+        env: dict[str, str] | None = None,
+        on_process_start: ProcessStartHook | None = None,
     ) -> VerificationResult:
         failures: list[str] = []
         outputs: list[str] = []
         command_env = self._verification_env(env)
         timeout_seconds = self._verification_timeout_seconds()
         for command in [*self.config.verification.stage_commands, *commands]:
-            outcome = self._run_timed_command(command, workspace, command_env, timeout_seconds)
+            outcome = self._run_timed_command(
+                command,
+                workspace,
+                command_env,
+                timeout_seconds,
+                on_process_start=on_process_start,
+            )
             outputs.append(self._render_command(command, outcome))
             if outcome.timed_out:
                 failures.append(_timeout_message(outcome.timeout_minutes, command))

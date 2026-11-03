@@ -158,63 +158,42 @@ def test_concurrent_agent_calls_sample_only_their_own_pid(tmp_path: Path):
 
 
 def test_concurrent_verification_hooks_stay_isolated(tmp_path: Path):
-    """Overlapping CHECKING must not steal or restore each other's Verifier hook."""
-    config, roadmap, state, worktrees, verifier, failures = init_repo(
+    """Two overlapping verify_task calls on one Verifier keep PIDs isolated."""
+    config, roadmap, _state, _worktrees, verifier, _failures = init_repo(
         tmp_path, ("A", "B"), max_parallel=2
     )
     hooks_seen: dict[str, list[int]] = {"A": [], "B": []}
     hooks_lock = threading.Lock()
-    entered = {"A": threading.Event(), "B": threading.Event()}
-    release = {"A": threading.Event(), "B": threading.Event()}
-
-    scheduler = _scheduler(
-        tmp_path,
-        state,
-        worktrees,
-        object(),  # unused — we call _verify_with_process_hook directly
-        verifier,
-        failures,
-        config=config,
-        sampler_factory=lambda _pid, _interval: FakeSampler(0.0),
-    )
+    barrier = threading.Barrier(2, timeout=5)
+    before_attrs = dict(verifier.__dict__)
 
     task_a = roadmap.sprint("s1").tasks["A"]
     task_b = roadmap.sprint("s1").tasks["B"]
-    # Verification needs a worktree-like cwd; the integration root is enough
-    # for the fake hook path (we replace verify_task below).
+    # Slow command so both threads hold the barrier while processes are live.
+    sleep_command = f'{sys.executable} -c "import time; time.sleep(0.3)"'
+    task_a.verification = [sleep_command]
+    task_b.verification = [sleep_command]
+    config.verification.global_task_commands = []
     worktree = tmp_path
 
     def make_hook(task_id: str):
         def on_process_start(pid: int) -> None:
             with hooks_lock:
                 hooks_seen[task_id].append(pid)
+            barrier.wait()
 
         return on_process_start
-
-    def fake_verify_task(task, workspace, base_ref, env=None):
-        # Drive the installed dispatcher the same way Verifier does.
-        entered[task.id].set()
-        for event in entered.values():
-            assert event.wait(timeout=5)
-        outcome = verifier._run_timed_command(
-            f'{sys.executable} -c "import time; time.sleep(0.2)"',
-            workspace,
-            env or {},
-            5.0,
-        )
-        release[task.id].set()
-        for event in release.values():
-            assert event.wait(timeout=5)
-        return outcome
-
-    verifier.verify_task = fake_verify_task  # type: ignore[method-assign]
 
     errors: list[BaseException] = []
 
     def run_one(task) -> None:
         try:
-            scheduler._verify_with_process_hook(
-                task, worktree, "HEAD", {}, make_hook(task.id)
+            verifier.verify_task(
+                task,
+                worktree,
+                "HEAD",
+                env={},
+                on_process_start=make_hook(task.id),
             )
         except BaseException as exc:  # noqa: BLE001 — collect for main thread
             errors.append(exc)
@@ -230,11 +209,9 @@ def test_concurrent_verification_hooks_stay_isolated(tmp_path: Path):
         assert not thread.is_alive()
 
     assert errors == []
+    # global_task_commands was cleared; each task has one sleep command.
     assert len(hooks_seen["A"]) == 1
     assert len(hooks_seen["B"]) == 1
     assert hooks_seen["A"][0] != hooks_seen["B"][0]
-    # After both exits, the shared Verifier method must be fully restored.
-    assert "_run_timed_command" not in verifier.__dict__
-    assert scheduler._verify_hook_users == 0
-    assert scheduler._verify_hook_original is None
-    assert scheduler._verify_hook_installed is None
+    # Shared Verifier must not gain or change instance attributes from the hooks.
+    assert dict(verifier.__dict__) == before_attrs
