@@ -1010,11 +1010,27 @@ class Scheduler:
                 runtime.base_ref = base_ref
                 self.state.save()
             else:
-                worktree = Path(runtime.worktree)
-                # An existing worktree is diffed against the commit it was created from. Using a newer
-                # stage base would report every later integration commit as a change by this task.
-                if runtime.base_ref:
-                    base_ref = runtime.base_ref
+                existing = Path(runtime.worktree)
+                # create() reuses only when this path is registered on the task branch;
+                # otherwise it replaces an unregistered folder with a fresh worktree.
+                prior_branch = self.worktrees._registered_branch(existing)
+                branch, worktree = self.worktrees.create(task.id, base_ref)
+                if prior_branch == branch:
+                    # An existing registered worktree is diffed against the commit it was
+                    # created from. Using a newer stage base would report every later
+                    # integration commit as a change by this task.
+                    if runtime.base_ref:
+                        base_ref = runtime.base_ref
+                else:
+                    created = True
+                    runtime.branch = branch
+                    runtime.worktree = str(worktree)
+                    runtime.base_ref = base_ref
+                    self.state.save()
+                    LOGGER.info(
+                        "worktree for %s was not registered; created a fresh one",
+                        task.id,
+                    )
 
             task_env = self.environment.task_env(task, worktree)
             if created:
