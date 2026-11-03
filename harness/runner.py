@@ -23,7 +23,7 @@ from .models import (
 from .prompts import implement_prompt, review_prompt
 from .process_utils import cursor_prompt_via_stdin, prepare_external_argv, stop_process_tree
 from .ui_review import cursor_mcp_auto_approve_argv, cursor_mcp_config_mentions_playwright
-from .usage import UsageRecorder, count_code_map_calls
+from .usage import UsageRecorder, count_code_map_calls, parse_review_outcome
 
 
 @dataclass(slots=True)
@@ -259,6 +259,7 @@ class CursorAgentRunner:
         env: dict[str, str] | None = None,
         model_class_override: str | None = None,
         code_map: bool = False,
+        sprint: str | None = None,
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         pipe_prompt = cursor_prompt_via_stdin(self.config.cursor.command)
@@ -340,7 +341,10 @@ class CursorAgentRunner:
                 provider="cursor",
                 launch_failure=True,
             )
-            self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
+            self._record_usage(
+                task_id, phase, effective_model_class, model, attempt, result, code_map,
+                sprint=sprint,
+            )
             return result
 
         def read_output() -> None:
@@ -419,7 +423,8 @@ class CursorAgentRunner:
                 resource_launch_failure=True,
             )
             self._record_usage(
-                task_id, phase, effective_model_class, model, attempt, result, code_map
+                task_id, phase, effective_model_class, model, attempt, result, code_map,
+                sprint=sprint,
             )
             return result
 
@@ -482,7 +487,8 @@ class CursorAgentRunner:
             output_tokens=usage["output_tokens"] or None,
         )
         self._record_usage(
-            task_id, phase, effective_model_class, model, attempt, result, code_map, code_map_calls
+            task_id, phase, effective_model_class, model, attempt, result, code_map, code_map_calls,
+            sprint=sprint,
         )
         return result
 
@@ -517,13 +523,16 @@ class CursorAgentRunner:
         result: AgentResult,
         code_map: bool = False,
         code_map_calls: int = 0,
+        *,
+        sprint: str | None = None,
     ) -> None:
         if self.usage is None:
             return
-        self.usage.record(
-            {
+        event = {
                 "provider": "cursor",
                 "task_id": task_id,
+                "sprint": sprint,
+                "effort": None,
                 "phase": phase,
                 "attempt": attempt,
                 "model_class": model_class,
@@ -544,7 +553,11 @@ class CursorAgentRunner:
                 "output_tokens": result.output_tokens,
                 "output_bytes": len(result.output.encode("utf-8", errors="replace")),
             }
-        )
+        if phase == "review":
+            event["review_verdict"], event["finding_count"] = parse_review_outcome(
+                result.ok, result.output
+            )
+        self.usage.record(event)
 
     def _context_paths(self, task: TaskSpec) -> list[str]:
         return self.context.display_paths(task) if self.context is not None else []
@@ -582,6 +595,7 @@ class CursorAgentRunner:
             env=env,
             model_class_override=model_class_override,
             code_map=code_map_offered,
+            sprint=task.sprint,
             on_process_start=on_process_start,
         )
 
@@ -612,6 +626,7 @@ class CursorAgentRunner:
             mode="ask",
             env=env,
             code_map=code_map_offered,
+            sprint=task.sprint,
             on_process_start=on_process_start,
         )
     def plan_change(
@@ -636,5 +651,6 @@ class CursorAgentRunner:
             log_name=f"{task.id}-plan-repair.log",
             mode="ask",
             env=env,
+            sprint=task.sprint,
         )
 

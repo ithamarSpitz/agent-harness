@@ -21,7 +21,7 @@ from .models import (
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 from .prompts import implement_prompt, plan_change_prompt, review_prompt
 from .runner import AgentResult, CursorAgentRunner
-from .usage import UsageRecorder, count_code_map_calls
+from .usage import UsageRecorder, count_code_map_calls, parse_review_outcome
 
 _BUNDLED_BROWSER_PLUGINS: tuple[str, ...] = (
     "chrome@openai-bundled",
@@ -200,11 +200,13 @@ class CodexAgentRunner:
     def _record_usage(
         self, task_id: str, phase: str, model: str, attempt: int | None,
         result: AgentResult, code_map: bool = False, code_map_calls: int = 0,
+        *, sprint: str | None = None, effort: str | None = None,
     ) -> None:
         if self.usage is None:
             return
-        self.usage.record({
+        event = {
             "provider": "codex", "task_id": task_id, "phase": phase, "attempt": attempt,
+            "sprint": sprint, "effort": effort,
             "model_class": "codex", "model": model, "duration_seconds": round(result.duration_seconds, 3),
             "ok": result.ok, "timed_out": result.timed_out, "stalled": result.stalled,
             "quota_exhausted": result.quota_exhausted, "quota_scope": result.quota_scope,
@@ -218,12 +220,18 @@ class CodexAgentRunner:
             "code_map": code_map,
             "code_map_calls": code_map_calls,
             "output_bytes": len(result.output.encode("utf-8", errors="replace")),
-        })
+        }
+        if phase == "review":
+            event["review_verdict"], event["finding_count"] = parse_review_outcome(
+                result.ok, result.output
+            )
+        self.usage.record(event)
 
     def _invoke(self, *, task_id: str, phase: str, prompt: str, workspace: Path, model: str,
                 timeout_minutes: int, log_name: str, attempt: int | None = None,
                 env: dict[str, str] | None = None, read_only: bool = False,
                 reasoning_effort: str | None = None, code_map: bool = False,
+                sprint: str | None = None,
                 on_process_start: Callable[[int], None] | None = None) -> AgentResult:
         sandbox_mode = self._effective_sandbox(read_only=read_only)
         effective_reasoning_effort = reasoning_effort or self.config.codex.reasoning_effort
@@ -276,7 +284,10 @@ class CodexAgentRunner:
                 launch_failure=True,
             )
             write_log(self.log_dir, log_name, str(exc))
-            self._record_usage(task_id, phase, model, attempt, result, code_map)
+            self._record_usage(
+                task_id, phase, model, attempt, result, code_map,
+                sprint=sprint, effort=effective_reasoning_effort,
+            )
             return result
 
         def read(stream, target):
@@ -346,7 +357,10 @@ class CodexAgentRunner:
                 transient_error=True,
                 resource_launch_failure=True,
             )
-            self._record_usage(task_id, phase, model, attempt, result, code_map)
+            self._record_usage(
+                task_id, phase, model, attempt, result, code_map,
+                sprint=sprint, effort=effective_reasoning_effort,
+            )
             return result
 
         final_message, event_diagnostics, usage, code_map_calls = self._parse_events(
@@ -387,7 +401,10 @@ class CodexAgentRunner:
             input_tokens=usage["input_tokens"] or None, cached_input_tokens=usage["cached_input_tokens"] or None,
             output_tokens=usage["output_tokens"] or None, reasoning_output_tokens=usage["reasoning_output_tokens"] or None,
         )
-        self._record_usage(task_id, phase, model, attempt, result, code_map, code_map_calls)
+        self._record_usage(
+            task_id, phase, model, attempt, result, code_map, code_map_calls,
+            sprint=sprint, effort=effective_reasoning_effort,
+        )
         return result
 
     def _context_paths(self, task: TaskSpec) -> list[str]:
@@ -410,7 +427,8 @@ class CodexAgentRunner:
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-attempt-{attempt}-codex.log",
             attempt=attempt, env=env, read_only=False, reasoning_effort=reasoning_effort,
-            code_map=code_map_offered, on_process_start=on_process_start,
+            code_map=code_map_offered, sprint=task.sprint,
+            on_process_start=on_process_start,
         )
 
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
@@ -426,7 +444,7 @@ class CodexAgentRunner:
             ), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-review-codex.log",
             env=env, read_only=not self.config.ui_review.enabled, code_map=code_map_offered,
-            on_process_start=on_process_start,
+            sprint=task.sprint, on_process_start=on_process_start,
         )
 
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
@@ -435,5 +453,5 @@ class CodexAgentRunner:
             task_id=task.id, phase="plan_repair",
             prompt=plan_change_prompt(task, failure_summary, self._context_paths(task)), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-plan-repair-codex.log",
-            env=env, read_only=True,
+            env=env, read_only=True, sprint=task.sprint,
         )

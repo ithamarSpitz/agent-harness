@@ -105,9 +105,25 @@ sprints:
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert manifest["status"] == "COMPLETED"
-    usage_lines = (tmp_path / ".harness/usage.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(usage_lines) == 2
-    assert all("code_map" in json.loads(line) for line in usage_lines)
+    usage_events = [
+        json.loads(line)
+        for line in (tmp_path / ".harness/usage.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    call_events = [event for event in usage_events if event.get("phase") != "verification"]
+    verification_events = [event for event in usage_events if event.get("phase") == "verification"]
+    assert len(call_events) == 2
+    assert len(verification_events) == 1
+    assert all("code_map" in event for event in call_events)
+    by_phase = {event["phase"]: event for event in call_events}
+    assert by_phase["implement"]["sprint"] == "s1"
+    assert by_phase["implement"]["effort"] is None
+    assert by_phase["review"]["sprint"] == "s1"
+    assert by_phase["review"]["effort"] is None
+    assert by_phase["review"]["review_verdict"] == "PASS"
+    assert by_phase["review"]["finding_count"] == 0
+    assert verification_events[0]["verification_ok"] is True
+    assert verification_events[0]["sprint"] == "s1"
+    assert verification_events[0]["phase"] == "verification"
 
 
 def test_cli_focused_expensive_retry_then_resume(tmp_path: Path):

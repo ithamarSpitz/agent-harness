@@ -34,6 +34,30 @@ OUTCOME_KEYS = (
 )
 
 
+def parse_review_outcome(ok: bool, output: str) -> tuple[str, int]:
+    """Return the scheduler verdict and top-level FAIL finding count."""
+    verdict = "PASS" if ok and any(
+        line.strip() == "VERDICT: PASS" for line in output.splitlines()
+    ) else "FAIL"
+    if verdict == "PASS":
+        return verdict, 0
+
+    finding_count = 0
+    seen_verdict = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("VERDICT:"):
+            seen_verdict = True
+            continue
+        if not seen_verdict or not stripped:
+            continue
+        # Findings end at required post-verdict sections (IMPACT / UI_CHECK).
+        if stripped.startswith("IMPACT:") or stripped.startswith("UI_CHECK:"):
+            break
+        finding_count += 1
+    return verdict, finding_count
+
+
 def count_code_map_calls(commands: list[str], configured_command: str) -> int:
     """Count executed shell commands containing the configured command as a word."""
     command = configured_command.strip()

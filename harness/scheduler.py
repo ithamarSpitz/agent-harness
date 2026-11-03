@@ -39,7 +39,7 @@ from .release import ReleaseRunner, sprint_is_complete
 from .roadmap import Roadmap
 from .state import StateStore
 from .task_queue import TaskQueueManager
-from .usage import UsageRecorder
+from .usage import UsageRecorder, parse_review_outcome
 from .verifier import Verifier
 
 _WAITING_EVENT_STATUSES = frozenset(
@@ -118,6 +118,12 @@ class Scheduler:
         )
         self._memory_estimate_lock = threading.Lock()
         self._runtime_root = verifier.log_dir.parent
+        runner_usage = getattr(runner, "usage", None)
+        self.usage = (
+            runner_usage
+            if isinstance(runner_usage, UsageRecorder)
+            else UsageRecorder(self._runtime_root / "usage.jsonl")
+        )
         self.task_queue = TaskQueueManager(repo_root, self._runtime_root, state)
         self._merge_in_progress: tuple[str, int] | None = None
         self._memory_fallback_logged = False
@@ -218,20 +224,6 @@ class Scheduler:
             self._append_event(task.sprint, f"{task.id} {status.value} ({label})")
         else:
             self._append_event(task.sprint, f"{task.id} {status.value}")
-
-    @staticmethod
-    def _review_finding_count(output: str) -> int:
-        count = 0
-        seen_verdict = False
-        for line in output.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("VERDICT:"):
-                seen_verdict = True
-                continue
-            if not seen_verdict or not stripped or stripped.startswith("UI_CHECK:"):
-                continue
-            count += 1
-        return count
 
     def _stop_request_path(self) -> Path:
         return self._runtime_root / "stop-request"
@@ -612,17 +604,31 @@ class Scheduler:
             return
 
     def _usage_events_for_task(self, task_id: str) -> list[dict[str, Any]]:
-        usage = getattr(self.runner, "usage", None)
-        if usage is None:
-            path = self._runtime_root / "usage.jsonl"
-            if not path.exists():
-                return []
-            usage = UsageRecorder(path)
         return [
             event
-            for event in usage.events()
-            if event.get("task_id") == task_id and event.get("event_type") != "provider_switch"
+            for event in self.usage.events()
+            if event.get("task_id") == task_id
+            and event.get("event_type") != "provider_switch"
+            and event.get("phase") != "verification"
         ]
+
+    def _record_verification_usage(
+        self, task: TaskSpec, attempt: int, ok: bool, duration_seconds: float,
+    ) -> None:
+        self.usage.record(
+            {
+                "provider": "harness",
+                "model": "verification",
+                "sprint": task.sprint,
+                "task_id": task.id,
+                "model_class": task.model_class,
+                "phase": "verification",
+                "attempt": attempt,
+                "ok": ok,
+                "verification_ok": ok,
+                "duration_seconds": round(duration_seconds, 3),
+            }
+        )
 
     @staticmethod
     def _is_launch_failure(result: AgentResult) -> bool:
@@ -906,6 +912,7 @@ class Scheduler:
             runtime.waiting_phase = None
             runtime.waiting_provider = None
             self.state.save()
+            verification_started = self._clock()
             with self._process_sampler(observed_peaks) as on_process_start:
                 verification = self.verifier.verify_task(
                     task,
@@ -914,6 +921,10 @@ class Scheduler:
                     env=task_env,
                     on_process_start=on_process_start,
                 )
+            self._record_verification_usage(
+                task, runtime.attempt, verification.ok,
+                self._clock() - verification_started,
+            )
             if not verification.ok:
                 self._set_task_status(task, runtime, TaskStatus.RETRY)
                 runtime.last_error = verification.summary
@@ -962,11 +973,8 @@ class Scheduler:
             )
             if paused is not None:
                 return paused
-            verdict_pass = review.ok and any(
-                line.strip() == "VERDICT: PASS" for line in review.output.splitlines()
-            )
-            findings = self._review_finding_count(review.output or "")
-            verdict_label = "PASS" if verdict_pass else "FAIL"
+            verdict_label, findings = parse_review_outcome(review.ok, review.output or "")
+            verdict_pass = verdict_label == "PASS"
             self._append_event(
                 task.sprint,
                 f"{task.id} review {verdict_label} ({findings} findings)",
