@@ -111,6 +111,8 @@ class CodexConfig:
     network_patterns: list[str] = field(default_factory=lambda: [
         "connection failed", "connection lost", "connection reset", "network error",
         "transport error", "websocket",
+        "econnrefused", "econnreset", "etimedout", "enotfound", "eai_again",
+        "getaddrinfo", "[unavailable]", "nghttp2", "stream closed",
     ])
     provider_error_patterns: list[str] = field(default_factory=lambda: [
         "service unavailable", "internal server error", "timed out", "timeout",
@@ -221,6 +223,8 @@ class CapacityConfig:
     network_patterns: list[str] = field(default_factory=lambda: [
         "connection failed", "connection lost", "connection reset", "network error",
         "transport error", "websocket",
+        "econnrefused", "econnreset", "etimedout", "enotfound", "eai_again",
+        "getaddrinfo", "[unavailable]", "nghttp2", "stream closed",
     ])
     provider_error_patterns: list[str] = field(default_factory=lambda: [
         "service unavailable", "internal server error", "temporary failure",
