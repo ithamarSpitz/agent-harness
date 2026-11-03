@@ -1,4 +1,4 @@
-"""Console command registry and read-only command handlers."""
+"""Console command registry and command handlers."""
 
 from __future__ import annotations
 
@@ -15,11 +15,15 @@ from typing import Any, Callable
 from .board import snapshot_from_state
 from .codex_runner import CodexAgentRunner
 from .limits import run_limits
-from .models import TaskSpec
+from .models import TaskSpec, TaskStatus
 from .runner import CursorAgentRunner
 
 Handler = Callable[["ConsoleContext", list[str]], list[str]]
 GitDiffStat = Callable[[Path, str], list[str]]
+
+
+class QuitSignal(Exception):
+    """Raised by the quit command; callers should leave the console."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +299,98 @@ def cmd_usage(context: ConsoleContext, args: list[str]) -> list[str]:
     return context.call_cli(run_limits)
 
 
+def _cancelled() -> list[str]:
+    return ["Cancelled."]
+
+
+def _parse_add_args(args: list[str]) -> tuple[str, str] | list[str]:
+    """Return (brief, stage) or usage/error lines."""
+    command = COMMAND_BY_NAME["add"]
+    if not args:
+        return _usage(command)
+    brief = args[0]
+    stage = "auto"
+    index = 1
+    while index < len(args):
+        token = args[index]
+        if token == "--stage":
+            if index + 1 >= len(args):
+                return ["Missing value for --stage (expected auto, current, or next)."]
+            stage = args[index + 1]
+            if stage not in {"auto", "current", "next"}:
+                return [f"Invalid --stage value {stage!r}; expected auto, current, or next."]
+            index += 2
+            continue
+        return _usage(command)
+    return brief, stage
+
+
+def cmd_add(context: ConsoleContext, args: list[str]) -> list[str]:
+    from .cli import cmd_add_task
+
+    parsed = _parse_add_args(args)
+    if isinstance(parsed, list):
+        return parsed
+    brief, stage = parsed
+    root = Path(context.runtime.root)
+    path = Path(brief)
+    brief_path = path.resolve() if path.is_absolute() else (root / path).resolve()
+    prompt = f"Add task {brief_path.as_posix()} (stage={stage})? [y/N]"
+    if not context.confirm(prompt):
+        return _cancelled()
+    return context.call_cli(
+        cmd_add_task,
+        context.runtime,
+        context.sprint_id,
+        brief_path,
+        stage_choice=stage,
+    )
+
+
+def cmd_retry(context: ConsoleContext, args: list[str]) -> list[str]:
+    from .cli import cmd_rerun_blocker
+
+    if len(args) != 1:
+        return _usage(COMMAND_BY_NAME["retry"])
+    task_id = args[0]
+    if _resolve_known_task(context, task_id) is None:
+        return _unknown_task(task_id)
+    runtime = context.runtime.state.get(task_id)
+    status = runtime.status
+    if status != TaskStatus.BLOCKED:
+        return [f"{task_id} is {status.value}, not BLOCKED; cannot retry."]
+    if not context.confirm(f"Retry blocked task {task_id}? [y/N]"):
+        return _cancelled()
+    return context.call_cli(
+        cmd_rerun_blocker,
+        context.runtime,
+        context.sprint_id,
+        None,
+        task_id,
+    )
+
+
+def cmd_stop(context: ConsoleContext, args: list[str]) -> list[str]:
+    if args:
+        return _usage(COMMAND_BY_NAME["stop"])
+    if not context.confirm(f"Stop sprint {context.sprint_id}? [y/N]"):
+        return _cancelled()
+    now = context.now or datetime.now(timezone.utc)
+    harness_dir = Path(context.runtime.root) / ".harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    path = harness_dir / "stop-request"
+    payload = {"sprint": context.sprint_id, "time": now.isoformat()}
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return [f"Stop requested for {context.sprint_id}."]
+
+
+def cmd_quit(context: ConsoleContext, args: list[str]) -> list[str]:
+    del context
+    if args:
+        return _usage(COMMAND_BY_NAME["quit"])
+    raise QuitSignal()
+
+
 COMMANDS: list[Command] = [
     Command("help", "", "List console commands", False, cmd_help),
     Command("status", "", "Board already shows status", False, cmd_status),
@@ -303,6 +399,16 @@ COMMANDS: list[Command] = [
     Command("log", "<id>", "Show last agent message from latest call", False, cmd_log),
     Command("diff", "<id>", "Show git diff --stat for the task worktree", False, cmd_diff),
     Command("usage", "", "Show provider usage limits (harness limits)", False, cmd_usage),
+    Command(
+        "add",
+        "<brief> [--stage auto|current|next]",
+        "Queue a task brief (harness add-task)",
+        True,
+        cmd_add,
+    ),
+    Command("retry", "<id>", "Rerun a blocked task (harness rerun-blocker)", True, cmd_retry),
+    Command("stop", "", "Request the run to stop after current work", True, cmd_stop),
+    Command("quit", "", "Leave the console", False, cmd_quit),
 ]
 
 COMMAND_BY_NAME: dict[str, Command] = {command.name: command for command in COMMANDS}
