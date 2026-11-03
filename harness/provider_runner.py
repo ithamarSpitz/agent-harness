@@ -138,6 +138,41 @@ class ProviderAgentRunner:
     def _phase_disable_key(task: TaskSpec, provider: str, phase: str) -> str:
         return f"{task.sprint}.{task.id}.provider.{provider}.disabled.{phase}"
 
+    @staticmethod
+    def _is_temporary_disable_reason(reason: object) -> bool:
+        return isinstance(reason, str) and reason.startswith("quota")
+
+    def _temporary_disable_entries(self, task: TaskSpec) -> list[tuple[str, str, str]]:
+        """Return (meta_key, provider, reason) for quota-* disables on this task."""
+        prefix = f"{task.sprint}.{task.id}.provider."
+        entries: list[tuple[str, str, str]] = []
+        for key, value in self.state.meta().items():
+            if not key.startswith(prefix) or not self._is_temporary_disable_reason(value):
+                continue
+            rest = key[len(prefix) :]
+            parts = rest.split(".")
+            # codex.disabled | cursor.disabled | codex.disabled.implement | ...
+            if len(parts) < 2 or parts[1] != "disabled":
+                continue
+            entries.append((key, parts[0], str(value)))
+        return entries
+
+    def _clear_temporary_disables(self, task: TaskSpec) -> None:
+        for key, provider, reason in self._temporary_disable_entries(task):
+            self.state.set_meta(key, None)
+            print(f"{provider} re-enabled for {task.id} (was: {reason})", flush=True)
+
+    def _maybe_clear_temporary_disables_on_quota_wait_exit(self, task: TaskSpec) -> None:
+        """Clear quota-* provider disables when leaving WAITING_QUOTA (resume/probe)."""
+        runtime = self.state.get(task.id)
+        if runtime.status == TaskStatus.WAITING_QUOTA:
+            self._clear_temporary_disables(task)
+            return
+        # Review resume may flip status to REVIEWING/CHECKING before the provider
+        # call while leaving the quota pause message in last_error.
+        if runtime.last_error and "usage quota exhausted" in runtime.last_error.casefold():
+            self._clear_temporary_disables(task)
+
     def _codex_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
         return (
             self.config.codex.enabled
@@ -159,6 +194,7 @@ class ProviderAgentRunner:
         )
 
     def _preferred_provider(self, task: TaskSpec, phase: str) -> str:
+        self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
         for provider in self.config.providers.priority:
             normalized = provider.strip().casefold()
             if normalized == "codex" and self._codex_enabled_for(task, phase):
