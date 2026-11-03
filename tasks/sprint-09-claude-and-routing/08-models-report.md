@@ -32,6 +32,10 @@ A command shows, across all projects, how well each model and effort does, so th
 3. A short "suggestions" list under the table, only when there are at least 10 tasks for that model: for example `sonnet/medium: 3 of 14 first attempts passed; 11 were fixed by sonnet/high or opus. Consider starting with sonnet/high.` Suggestions are text only; nothing is changed automatically.
 4. Works with old records that miss fields (counted as unknown, not errors).
 
+# Note (Nov 2026)
+
+The shared log also holds one `event_type: "task_final"` line per finished task (S9-T7) with a different shape. Per-call statistics use only call records (no `event_type`, or one that is not `task_final`); `task_final` lines are used for the per-task pass/attempt numbers, and unknown event types are skipped, never a crash. Test with a log mixing both.
+
 # Acceptance criteria
 
 1. A fixed sample log produces the expected table and suggestion lines.
