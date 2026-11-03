@@ -223,7 +223,12 @@ class CursorAgentRunner:
                     commands.append(command)
 
         if result_text is not None:
-            answer = result_text
+            # Cursor concatenates assistant texts into `result` with no separator.
+            # Re-join on newlines when they match so line-based verdicts stay intact.
+            if assistant_messages and "".join(assistant_messages) == result_text:
+                answer = "\n".join(assistant_messages)
+            else:
+                answer = result_text
         elif assistant_messages:
             answer = assistant_messages[-1]
         else:
