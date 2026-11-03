@@ -5,10 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from harness.cli import cmd_add_task, cmd_rerun_blocker
 from harness.console_commands import (
     COMMANDS,
     COMMAND_BY_NAME,
     ConsoleContext,
+    QuitSignal,
     capture_cli,
     run_command,
 )
@@ -62,6 +66,7 @@ def _fake_runtime(tmp_path: Path, *, sprint: SprintSpec | None = None) -> Simple
 def _context(
     runtime: SimpleNamespace,
     *,
+    confirm=None,
     call_cli=None,
     now: datetime | None = None,
     git_diff_stat=None,
@@ -69,7 +74,7 @@ def _context(
     return ConsoleContext(
         runtime=runtime,
         sprint_id="S8",
-        confirm=lambda _prompt: False,
+        confirm=confirm or (lambda _prompt: False),
         call_cli=call_cli or capture_cli,
         now=now or datetime(2026, 11, 2, 12, 12, tzinfo=timezone.utc),
         git_diff_stat=git_diff_stat,
@@ -80,12 +85,28 @@ def test_help_lists_every_registered_command(tmp_path: Path):
     runtime = _fake_runtime(tmp_path)
     lines = run_command("help", _context(runtime))
     names = [command.name for command in COMMANDS]
-    assert names == ["help", "status", "task", "why", "log", "diff", "usage"]
+    assert names == [
+        "help",
+        "status",
+        "task",
+        "why",
+        "log",
+        "diff",
+        "usage",
+        "add",
+        "retry",
+        "stop",
+        "quit",
+    ]
     assert len(lines) == len(COMMANDS)
     for command, line in zip(COMMANDS, lines, strict=True):
         assert line.startswith(command.name)
         assert command.help in line
     assert set(COMMAND_BY_NAME) == set(names)
+    assert COMMAND_BY_NAME["add"].changes_state is True
+    assert COMMAND_BY_NAME["retry"].changes_state is True
+    assert COMMAND_BY_NAME["stop"].changes_state is True
+    assert COMMAND_BY_NAME["quit"].changes_state is False
 
 
 def test_status_is_empty_and_unknown_command_points_to_help(tmp_path: Path):
@@ -264,3 +285,101 @@ def test_read_only_commands_leave_state_json_byte_identical(tmp_path: Path):
     assert state_path.read_bytes() == before
     # Ensure we did not replace TaskRuntime with a different object shape via get().
     assert isinstance(runtime.state.get("S8-T2"), TaskRuntime)
+
+
+def test_change_commands_need_confirm_and_call_cli(tmp_path: Path):
+    runtime = _fake_runtime(tmp_path)
+    blocked = runtime.state.get("S8-T1")
+    blocked.status = TaskStatus.BLOCKED
+    runtime.state.save()
+    state_before = Path(runtime.state.path).read_bytes()
+    stop_path = tmp_path / ".harness" / "stop-request"
+    brief = tmp_path / "tasks" / "new.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text("# new\n", encoding="utf-8")
+
+    cli_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def fake_call_cli(func, *args, **kwargs):
+        cli_calls.append((func, args, kwargs))
+        return [f"called:{func.__name__}"]
+
+    denied = _context(runtime, confirm=lambda _p: False, call_cli=fake_call_cli)
+    assert run_command(f"add {brief.as_posix()}", denied) == ["Cancelled."]
+    assert run_command("add tasks/new.md --stage next", denied) == ["Cancelled."]
+    assert run_command("retry S8-T1", denied) == ["Cancelled."]
+    assert run_command("stop", denied) == ["Cancelled."]
+    assert cli_calls == []
+    assert not stop_path.exists()
+    assert Path(runtime.state.path).read_bytes() == state_before
+
+    prompts: list[str] = []
+
+    def accept(prompt: str) -> bool:
+        prompts.append(prompt)
+        return True
+
+    accepted = _context(runtime, confirm=accept, call_cli=fake_call_cli)
+    assert run_command(f"add {brief.as_posix()} --stage current", accepted) == [
+        "called:cmd_add_task"
+    ]
+    assert cli_calls[-1][0] is cmd_add_task
+    assert cli_calls[-1][1] == (runtime, "S8", brief.resolve())
+    assert cli_calls[-1][2] == {"stage_choice": "current"}
+
+    assert run_command("retry S8-T1", accepted) == ["called:cmd_rerun_blocker"]
+    assert cli_calls[-1][0] is cmd_rerun_blocker
+    assert cli_calls[-1][1] == (runtime, "S8", None, "S8-T1")
+    assert cli_calls[-1][2] == {}
+
+    assert run_command("stop", accepted) == ["Stop requested for S8."]
+    assert stop_path.is_file()
+    payload = json.loads(stop_path.read_text(encoding="utf-8"))
+    assert payload == {
+        "sprint": "S8",
+        "time": "2026-11-02T12:12:00+00:00",
+    }
+    assert any("stage=current" in prompt for prompt in prompts)
+    assert any("S8-T1" in prompt for prompt in prompts)
+
+
+def test_retry_rejects_non_blocked_without_changes(tmp_path: Path):
+    runtime = _fake_runtime(tmp_path)
+    running = runtime.state.get("S8-T2")
+    running.status = TaskStatus.IMPLEMENTING
+    runtime.state.save()
+    state_before = Path(runtime.state.path).read_bytes()
+    cli_calls: list[object] = []
+
+    def fake_call_cli(func, *args, **kwargs):
+        cli_calls.append(func)
+        return ["should not run"]
+
+    ctx = _context(runtime, confirm=lambda _p: True, call_cli=fake_call_cli)
+    assert run_command("retry S8-T2", ctx) == [
+        "S8-T2 is IMPLEMENTING, not BLOCKED; cannot retry."
+    ]
+    assert run_command("retry missing", ctx) == ["Unknown task: missing"]
+    assert cli_calls == []
+    assert Path(runtime.state.path).read_bytes() == state_before
+
+
+def test_quit_raises_without_confirm_or_side_effects(tmp_path: Path):
+    runtime = _fake_runtime(tmp_path)
+    runtime.state.get("S8-T1").status = TaskStatus.BLOCKED
+    runtime.state.save()
+    state_before = Path(runtime.state.path).read_bytes()
+    confirms: list[str] = []
+    cli_calls: list[object] = []
+
+    ctx = _context(
+        runtime,
+        confirm=lambda prompt: confirms.append(prompt) or True,
+        call_cli=lambda func, *a, **k: cli_calls.append(func) or ["x"],
+    )
+    with pytest.raises(QuitSignal):
+        run_command("quit", ctx)
+    assert confirms == []
+    assert cli_calls == []
+    assert not (tmp_path / ".harness" / "stop-request").exists()
+    assert Path(runtime.state.path).read_bytes() == state_before
