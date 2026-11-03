@@ -19,6 +19,7 @@ depends_on:
   - S9-T25
   - S9-T26
   - S9-T27
+  - S9-T28
   - S9-T7
   - S9-T9
   - S9-T11

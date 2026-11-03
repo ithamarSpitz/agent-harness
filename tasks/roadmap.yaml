@@ -566,6 +566,11 @@ sprints:
         depends_on:
         - S9-T9
         - S9-T23
+      S9-T28:
+        file: tasks/sprint-09-claude-and-routing/28-wmi-hang-guard.md
+        stage: 5
+        depends_on:
+        - S9-T9
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
         stage: 6
@@ -583,6 +588,7 @@ sprints:
         - S9-T25
         - S9-T26
         - S9-T27
+        - S9-T28
         - S9-T7
         - S9-T9
         - S9-T11
