@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -18,6 +19,7 @@ from .agent_ledger import LedgerStore
 from .code_map import CodeMapBuilder
 from .config import HarnessConfig
 from .environment import EnvironmentManager
+from .events import append_event
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .logging_utils import utc_now, write_log
@@ -36,6 +38,16 @@ from .release import ReleaseRunner, sprint_is_complete
 from .roadmap import Roadmap
 from .task_queue import TaskQueueManager
 from .verifier import Verifier
+
+_WAITING_EVENT_STATUSES = frozenset(
+    {
+        TaskStatus.WAITING_QUOTA,
+        TaskStatus.WAITING_NETWORK,
+        TaskStatus.WAITING_PROVIDER_BUSY,
+        TaskStatus.WAITING_PROVIDER_ERROR,
+        TaskStatus.WAITING_TIMEOUT,
+    }
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -236,6 +248,81 @@ class Scheduler:
 
     def _set_ready_waiting(self, ready_tasks: int) -> None:
         self._ledger.set_waiting(self.repo_root, os.getpid(), ready_tasks)
+
+    def _append_event(self, sprint_id: str, text: str) -> None:
+        append_event(self.repo_root, sprint_id, text)
+
+    def _set_task_status(
+        self,
+        task: TaskSpec,
+        runtime,
+        status: TaskStatus,
+        *,
+        provider: str | None = None,
+    ) -> None:
+        runtime.status = status
+        if status in _WAITING_EVENT_STATUSES:
+            label = provider or runtime.waiting_provider or "unknown"
+            self._append_event(task.sprint, f"{task.id} {status.value} ({label})")
+        else:
+            self._append_event(task.sprint, f"{task.id} {status.value}")
+
+    @staticmethod
+    def _review_finding_count(output: str) -> int:
+        count = 0
+        seen_verdict = False
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("VERDICT:"):
+                seen_verdict = True
+                continue
+            if not seen_verdict or not stripped or stripped.startswith("UI_CHECK:"):
+                continue
+            count += 1
+        return count
+
+    def _stop_request_path(self) -> Path:
+        return self._runtime_root / "stop-request"
+
+    def _stop_request_for_sprint(self, sprint_id: str) -> bool:
+        path = self._stop_request_path()
+        if not path.is_file():
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        return payload.get("sprint") == sprint_id
+
+    def _record_stop_pause(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec]) -> None:
+        task_ids = sorted(
+            task.id
+            for task in tasks
+            if self.state.get(task.id).status not in {TaskStatus.PASSED, TaskStatus.DONE}
+        )
+        self.state.set_meta(f"{sprint.id}.run_status", TaskStatus.PENDING.value)
+        self.state.save()
+        self.failures.record(
+            FailureRecord(
+                sprint=sprint.id,
+                kind="STOP_REQUEST",
+                stage=stage,
+                task_ids=task_ids,
+                message=(
+                    "Stop requested. Running agents finished; remaining work was preserved. "
+                    "Resume when ready."
+                ),
+                suggested_command=f"harness resume {sprint.id}",
+            )
+        )
+        self._append_event(sprint.id, "stop requested")
+        self._stop_request_path().unlink(missing_ok=True)
+        print(
+            f"Stop requested for {sprint.id}; paused with resumable state. "
+            f"Continue with: harness resume {sprint.id}"
+        )
 
     def _submit_admitted_task(
         self,
@@ -479,7 +566,7 @@ class Scheduler:
 
     def _block_task(self, task: TaskSpec, error: str, worktree: Path | None = None) -> TaskOutcome:
         runtime = self.state.get(task.id)
-        runtime.status = TaskStatus.BLOCKED
+        self._set_task_status(task, runtime, TaskStatus.BLOCKED)
         runtime.finished_at = utc_now()
         runtime.last_error = error
         self.state.save()
@@ -528,7 +615,7 @@ class Scheduler:
         # leaves a FailureStore entry for `harness failure`.
         message = f"{error} — check the program with harness setup-machine"
         runtime = self.state.get(task.id)
-        runtime.status = TaskStatus.BLOCKED
+        self._set_task_status(task, runtime, TaskStatus.BLOCKED)
         runtime.finished_at = utc_now()
         runtime.last_error = message
         runtime.waiting_phase = None
@@ -558,7 +645,7 @@ class Scheduler:
             return self._block_task(task, error, worktree)
         # Back on the stage queue; capacity_paused retries after the interval (S8-T6 refines timing).
         # Keep waiting_phase so a review-time resource exit resumes review, not a new implement.
-        runtime.status = TaskStatus.PENDING
+        self._set_task_status(task, runtime, TaskStatus.PENDING)
         runtime.waiting_phase = phase
         runtime.waiting_provider = None
         runtime.last_error = error
@@ -579,9 +666,9 @@ class Scheduler:
         runtime = self.state.get(task.id)
         if decrement_attempt and runtime.attempt > 0:
             runtime.attempt -= 1
-        runtime.status = TaskStatus.WAITING_QUOTA
         runtime.waiting_phase = phase
         runtime.waiting_provider = provider
+        self._set_task_status(task, runtime, TaskStatus.WAITING_QUOTA, provider=provider)
         runtime.last_error = f"{provider} usage quota exhausted during {phase}"
         self.state.save()
         if self.config.quota.teardown_environment_while_waiting:
@@ -624,9 +711,11 @@ class Scheduler:
         cause = result.waiting_cause or ("timeout" if result.timed_out or result.stalled else (
             "provider_busy" if result.capacity_exhausted else "provider_error"
         ))
-        runtime.status = self._waiting_status(cause)
         runtime.waiting_phase = phase
         runtime.waiting_provider = result.provider
+        self._set_task_status(
+            task, runtime, self._waiting_status(cause), provider=result.provider
+        )
         runtime.last_error = f"{result.provider} {self._waiting_label(runtime.status)} during {phase}"
         self.state.save()
         if self.config.capacity.teardown_environment_while_waiting:
@@ -763,7 +852,7 @@ class Scheduler:
             verification_summary = "Task verification passed before the reviewer wait."
             review_required = True
         else:
-            runtime.status = TaskStatus.CHECKING
+            self._set_task_status(task, runtime, TaskStatus.CHECKING)
             runtime.waiting_phase = None
             runtime.waiting_provider = None
             self.state.save()
@@ -772,7 +861,7 @@ class Scheduler:
                 observed_peaks,
             )
             if not verification.ok:
-                runtime.status = TaskStatus.RETRY
+                self._set_task_status(task, runtime, TaskStatus.RETRY)
                 runtime.last_error = verification.summary
                 self.state.save()
                 return None
@@ -781,7 +870,7 @@ class Scheduler:
             review_required = task.review or self.verifier.requires_review(verification.changed_files)
 
         if review_required:
-            runtime.status = TaskStatus.REVIEWING
+            self._set_task_status(task, runtime, TaskStatus.REVIEWING)
             self.state.save()
             review = self._sample_call(
                 lambda: self.runner.review(
@@ -824,9 +913,15 @@ class Scheduler:
             verdict_pass = review.ok and any(
                 line.strip() == "VERDICT: PASS" for line in review.output.splitlines()
             )
+            findings = self._review_finding_count(review.output or "")
+            verdict_label = "PASS" if verdict_pass else "FAIL"
+            self._append_event(
+                task.sprint,
+                f"{task.id} review {verdict_label} ({findings} findings)",
+            )
             if not verdict_pass:
                 feedback = review.output or review.error or "Reviewer failed without feedback"
-                runtime.status = TaskStatus.RETRY
+                self._set_task_status(task, runtime, TaskStatus.RETRY)
                 runtime.review_feedback = feedback
                 runtime.last_error = feedback
                 self.state.save()
@@ -835,12 +930,12 @@ class Scheduler:
         try:
             runtime.commit = self.worktrees.commit_all(worktree, task.id)
         except Exception as exc:
-            runtime.status = TaskStatus.RETRY
+            self._set_task_status(task, runtime, TaskStatus.RETRY)
             runtime.last_error = f"Commit failed: {exc}"
             self.state.save()
             return None
 
-        runtime.status = TaskStatus.PASSED
+        self._set_task_status(task, runtime, TaskStatus.PASSED)
         runtime.last_error = None
         runtime.review_feedback = None
         runtime.waiting_phase = None
@@ -943,7 +1038,7 @@ class Scheduler:
             or self.runner.has_implementation_budget(task, model_class_override=model_class_override)
         ):
             runtime.attempt += 1
-            runtime.status = TaskStatus.IMPLEMENTING
+            self._set_task_status(task, runtime, TaskStatus.IMPLEMENTING)
             runtime.waiting_phase = None
             runtime.waiting_provider = None
             runtime.started_at = runtime.started_at or utc_now()
@@ -993,7 +1088,7 @@ class Scheduler:
                 return paused
             if not result.ok:
                 previous_failure = result.error or "Agent execution failed"
-                runtime.status = TaskStatus.RETRY
+                self._set_task_status(task, runtime, TaskStatus.RETRY)
                 runtime.last_error = previous_failure
                 self.state.save()
                 continue
@@ -1017,11 +1112,17 @@ class Scheduler:
 
     def _integrate_stage(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec], checkpoint: str) -> bool:
         self._merge_in_progress = (sprint.id, stage)
+        self._append_event(sprint.id, f"stage {stage} merge started")
         for task in tasks:
-            self.state.get(task.id).status = TaskStatus.MERGING
+            self._set_task_status(task, self.state.get(task.id), TaskStatus.MERGING)
         self.state.save()
         try:
-            return self._integrate_stage_inner(sprint, stage, tasks, checkpoint)
+            ok = self._integrate_stage_inner(sprint, stage, tasks, checkpoint)
+            self._append_event(
+                sprint.id,
+                f"stage {stage} merged" if ok else f"stage {stage} merge failed",
+            )
+            return ok
         finally:
             self._merge_in_progress = None
 
@@ -1055,7 +1156,7 @@ class Scheduler:
                     error += f" ROLLBACK FAILED: {rollback_error}"
                 self._record_stage_failure(sprint, stage, tasks, error)
                 for task in tasks:
-                    self.state.get(task.id).status = TaskStatus.PASSED
+                    self._set_task_status(task, self.state.get(task.id), TaskStatus.PASSED)
                 self.state.save()
                 return False
         except Exception as exc:
@@ -1065,14 +1166,14 @@ class Scheduler:
                 error += f" ROLLBACK FAILED: {rollback_error}"
             self._record_stage_failure(sprint, stage, tasks, error)
             for task in tasks:
-                self.state.get(task.id).status = TaskStatus.PASSED
+                self._set_task_status(task, self.state.get(task.id), TaskStatus.PASSED)
             self.state.save()
             return False
 
         finished_at = utc_now()
         for task in tasks:
             runtime = self.state.get(task.id)
-            runtime.status = TaskStatus.DONE
+            self._set_task_status(task, runtime, TaskStatus.DONE)
             runtime.finished_at = finished_at
         self.state.save()
 
@@ -1138,9 +1239,13 @@ class Scheduler:
             self.task_queue.record_added_tasks_to_repo(sprint, self.roadmap_path)
         self.state.set_meta(f"{sprint.id}.run_status", "COMPLETED")
         self.failures.clear(sprint.id)
+        before_release = self.state.get_meta(f"{sprint.id}.release.status")
         ReleaseRunner(self.config, self.repo_root, self.verifier).maybe_run_after_sprint_complete(
             self.state, sprint.id, dry_run=dry_run
         )
+        after_release = self.state.get_meta(f"{sprint.id}.release.status")
+        if after_release is not None and after_release != before_release:
+            self._append_event(sprint.id, f"release {after_release}")
 
     def _open_stages(self, sprint: SprintSpec, *, skip: set[int] | None = None) -> list[int]:
         skip = skip or set()
@@ -1162,7 +1267,7 @@ class Scheduler:
         if self.roadmap is None:
             return []
         stage_tasks = [task for task in sprint.tasks.values() if task.stage == current_stage]
-        return self.task_queue.process_pending(
+        added = self.task_queue.process_pending(
             sprint,
             self.roadmap,
             current_stage=current_stage,
@@ -1170,6 +1275,9 @@ class Scheduler:
             merge_in_progress=merge_in_progress,
             scheduler=self,
         )
+        for task in added:
+            self._append_event(sprint.id, f"added {task.id}")
+        return added
 
     def run_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> bool:
         poll_seconds = max(1, self.config.execution.watchdog_poll_seconds)
@@ -1258,6 +1366,7 @@ class Scheduler:
                 outcomes: list[TaskOutcome] = []
                 capacity_retries: dict[str, tuple[TaskSpec, float, TaskOutcome]] = {}
                 retry_seconds = max(1.0, self.config.capacity.retry_interval_minutes * 60.0)
+                stop_requested = False
 
                 def collect_completed(
                     completed: set[concurrent.futures.Future],
@@ -1275,6 +1384,10 @@ class Scheduler:
                             outcomes.append(outcome)
 
                 def try_start_one(task: TaskSpec) -> bool:
+                    nonlocal stop_requested
+                    if self._stop_request_for_sprint(sprint.id):
+                        stop_requested = True
+                        return False
                     if len(futures) >= max_workers:
                         return False
                     admission = self._admission_decision()
@@ -1299,13 +1412,29 @@ class Scheduler:
                     self._set_ready_waiting(ready)
 
                 while futures or pending or capacity_retries:
+                    if self._stop_request_for_sprint(sprint.id):
+                        stop_requested = True
+
                     # Harvest completions before scheduling retries. A future may have
                     # completed just after the previous FIRST_COMPLETED wait returned;
                     # it must not count as an active sibling that keeps retries in-stage.
                     already_completed = {future for future in futures if future.done()}
                     if already_completed:
                         collect_completed(already_completed)
-                        poll_queue(pending, unfinished)
+                        if not stop_requested:
+                            poll_queue(pending, unfinished)
+
+                    if stop_requested:
+                        if not futures:
+                            break
+                        done, _ = concurrent.futures.wait(
+                            futures.keys(),
+                            timeout=poll_seconds,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        if done:
+                            collect_completed(done)
+                        continue
 
                     # With no active sibling, every unresolved task is capacity-paused.
                     # Return to the CLI wait loop instead of sleeping inside the stage.
@@ -1323,6 +1452,8 @@ class Scheduler:
                         if not try_start_one(task):
                             break
                         capacity_retries.pop(task_id)
+                    if stop_requested:
+                        continue
 
                     # Keep the backlog here, so due retries get the first free slot
                     # instead of sitting behind siblings in the executor's FIFO queue.
@@ -1331,6 +1462,8 @@ class Scheduler:
                         if not try_start_one(task):
                             break
                         pending.pop(0)
+                    if stop_requested:
+                        continue
 
                     update_waiting_record()
 
@@ -1355,6 +1488,12 @@ class Scheduler:
                     poll_queue(pending, unfinished)
 
             self._set_ready_waiting(0)
+
+            if stop_requested:
+                # Always consume the stop after in-flight agents drain, even when
+                # every started task finished PASSED and nothing remains to start.
+                self._record_stop_pause(sprint, stage, unfinished)
+                return False
 
             failed = [
                 outcome
