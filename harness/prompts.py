@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .config import UIReviewConfig
 from .models import TaskSpec
 from .process_utils import split_command
+
+_BRIEF_HEADING = "Task brief (current version)"
+_BRIEF_FOLLOW_INSTRUCTION = (
+    "This embedded brief is the current version. If the copy in your worktree differs, "
+    "follow the embedded one and do not edit the worktree copy."
+)
 
 
 def _context_block(context_paths: list[str]) -> str:
@@ -45,6 +53,54 @@ A UI problem you saw is a FAIL finding.
 """
 
 
+def _read_current_brief(task: TaskSpec) -> str | None:
+    """Read the brief from task.file (absolute under the project root after S8-T36)."""
+    try:
+        return Path(task.file).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _embedded_brief_block(text: str) -> str:
+    return f"""{_BRIEF_HEADING}
+
+{_BRIEF_FOLLOW_INSTRUCTION}
+
+---
+{text}
+---"""
+
+
+def _brief_for_implement(task: TaskSpec) -> str:
+    text = _read_current_brief(task)
+    if text is None:
+        return (
+            f"First read AGENTS.md, then read the task brief at {task.file.as_posix()}.\n"
+            f"The current brief could not be read from {task.file.as_posix()}; "
+            f"use the path above (fallback)."
+        )
+    return (
+        "First read AGENTS.md, then follow the embedded task brief below "
+        "(do not rely on a worktree copy).\n\n"
+        f"{_embedded_brief_block(text)}"
+    )
+
+
+def _brief_read_list_item(task: TaskSpec) -> str:
+    """Bullet for review/plan-change prompts: embedded brief or path fallback."""
+    text = _read_current_brief(task)
+    if text is None:
+        return (
+            f"- {task.file.as_posix()}\n"
+            f"The current brief could not be read from {task.file.as_posix()}; "
+            f"use the path above (fallback)."
+        )
+    return (
+        "- the embedded task brief below (current version; ignore a differing worktree copy)\n\n"
+        f"{_embedded_brief_block(text)}"
+    )
+
+
 def implement_prompt(
     task: TaskSpec,
     previous_failure: str | None = None,
@@ -66,7 +122,7 @@ Inspect the current working tree, fix only the failure, and do not broaden scope
 """
     return f"""You are executing task {task.id}.
 
-First read AGENTS.md, then read the task brief at {task.file.as_posix()}.
+{_brief_for_implement(task)}
 {_context_block(context_paths or [])}
 
 Follow the task scope exactly. Read only the declared/referenced context first; expand context only if a real dependency requires it.{_code_map_section(code_map_offered, code_map_command)}
@@ -97,7 +153,7 @@ def review_prompt(
 
 Read:
 - AGENTS.md
-- {task.file.as_posix()}
+{_brief_read_list_item(task)}
 {chr(10).join(f'- {path}' for path in (context_paths or []))}{_code_map_section(code_map_offered, code_map_command)}
 
 Review the current working tree diff against base ref `{base_ref}`.
@@ -133,7 +189,7 @@ def plan_change_prompt(
 Read:
 - AGENTS.md
 - ARCHITECTURE.md
-- {task.file.as_posix()}
+{_brief_read_list_item(task)}
 {chr(10).join(f'- {path}' for path in (context_paths or []))}
 
 The task exhausted its normal implementation path. Failure evidence:
