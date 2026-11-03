@@ -42,6 +42,7 @@ from .validation import ProjectValidator
 from .init_project import run_init
 from .limits import run_limits
 from .machine_setup import run_setup_machine
+from .outcomes_report import render_models_report
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
 from .self_host import ensure_frozen_copy, run_resume_with_frozen_copy
 from .task_queue import TaskQueueError, TaskQueueManager
@@ -932,6 +933,17 @@ def cmd_usage(runtime: Runtime) -> int:
     return 0
 
 
+def cmd_models_report(
+    *,
+    project: str | None = None,
+    since: str | None = None,
+) -> int:
+    project_path = Path(project).resolve() if project else None
+    text = render_models_report(project=project_path, since=since)
+    print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
 def cmd_quota(runtime: Runtime, action: str, value: str | None = None) -> int:
     if action == "status":
         status = runtime.quota.status()
@@ -1179,6 +1191,20 @@ def parser() -> argparse.ArgumentParser:
     at.add_argument("sprint")
     at.add_argument("brief")
     at.add_argument("--stage", default="auto", choices=["auto", "current", "next"])
+
+    models = sub.add_parser("models")
+    models_sub = models.add_subparsers(dest="models_action", required=True)
+    models_report = models_sub.add_parser("report")
+    models_report.add_argument(
+        "--project",
+        default=None,
+        help="Limit to one project root path",
+    )
+    models_report.add_argument(
+        "--since",
+        default=None,
+        help="Include records on or after YYYY-MM-DD",
+    )
     return p
 
 
@@ -1196,6 +1222,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_limits(as_json=args.json)
     if args.command == "setup-machine":
         return run_setup_machine()
+    if args.command == "models":
+        if args.models_action == "report":
+            return cmd_models_report(
+                project=getattr(args, "project", None),
+                since=getattr(args, "since", None),
+            )
+        print(f"Unknown models action: {args.models_action}", file=sys.stderr)
+        return 2
     roadmap_path = (root / args.roadmap).resolve()
     config_path = (root / args.config).resolve()
     try:
