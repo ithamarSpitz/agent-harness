@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -164,9 +166,15 @@ def _scheduler(
     failures: FailureStore,
     *,
     free_memory_gb,
+    sampler_factory=None,
 ) -> Scheduler:
     # Keep the ledger under gitignored .harness/ so stage merges stay clean.
     ledger_folder = root / ".harness" / "test-ledger"
+    if sampler_factory is None:
+        def noop_sampler_factory(_pid, _interval):
+            return FakeSampler(0.0)
+
+        sampler_factory = noop_sampler_factory
     return Scheduler(
         root,
         config,
@@ -177,7 +185,34 @@ def _scheduler(
         failures=failures,
         free_memory_gb=free_memory_gb,
         ledger=LedgerStore(ledger_folder, process_alive=lambda _pid: True),
+        sampler_factory=sampler_factory,
     )
+
+
+class FakeSampler:
+    def __init__(self, peak: float, *, raises: bool = False) -> None:
+        self.peak = peak
+        self.raises = raises
+
+    def start(self) -> None:
+        if self.raises:
+            raise RuntimeError("sampling unavailable")
+
+    def stop(self) -> float:
+        if self.raises:
+            raise RuntimeError("sampling unavailable")
+        return self.peak
+
+
+def sampler_factory(*peaks: float, raises: bool = False):
+    remaining = list(peaks)
+
+    def create(_pid: int, interval: float):
+        assert interval == 1
+        peak = remaining.pop(0) if remaining else 0.0
+        return FakeSampler(peak, raises=raises)
+
+    return create
 
 
 def test_plenty_of_memory_reaches_max_parallel(tmp_path: Path):
@@ -316,3 +351,95 @@ def test_current_memory_estimate_uses_config(tmp_path: Path):
         free_memory_gb=lambda: 50.0,
     )
     assert scheduler.current_memory_estimate() == 2.25
+
+
+def test_higher_peak_is_persisted_and_used_by_next_scheduler(tmp_path: Path):
+    config, roadmap, state, worktrees, verifier, failures = init_repo(
+        tmp_path, ("A",), memory_per_agent_gb=1.5
+    )
+    scheduler = _scheduler(
+        tmp_path, config, state, worktrees, TrackingRunner(), verifier, failures,
+        free_memory_gb=lambda: 50.0,
+        sampler_factory=sampler_factory(3.25, 2.0),
+    )
+
+    assert scheduler.run_sprint(roadmap.sprint("s1"))
+    assert state.get_meta("resources.memory_per_agent_gb") == 3.25
+
+    reloaded_state = StateStore(tmp_path / ".harness/state.json")
+    next_scheduler = _scheduler(
+        tmp_path, config, reloaded_state, worktrees, TrackingRunner(), verifier, failures,
+        free_memory_gb=lambda: 50.0,
+    )
+    assert next_scheduler.current_memory_estimate() == 3.25
+
+
+def test_lower_peak_does_not_lower_stored_estimate(tmp_path: Path):
+    config, roadmap, state, worktrees, verifier, failures = init_repo(
+        tmp_path, ("A",), memory_per_agent_gb=1.5
+    )
+    state.set_meta("resources.memory_per_agent_gb", 4.0)
+    scheduler = _scheduler(
+        tmp_path, config, state, worktrees, TrackingRunner(), verifier, failures,
+        free_memory_gb=lambda: 50.0,
+        sampler_factory=sampler_factory(2.0, 1.0),
+    )
+
+    assert scheduler.run_sprint(roadmap.sprint("s1"))
+    assert state.get_meta("resources.memory_per_agent_gb") == 4.0
+
+
+def test_sampler_failure_does_not_change_task_outcome(tmp_path: Path):
+    config, roadmap, state, worktrees, verifier, failures = init_repo(tmp_path, ("A",))
+    scheduler = _scheduler(
+        tmp_path, config, state, worktrees, TrackingRunner(), verifier, failures,
+        free_memory_gb=lambda: 50.0,
+        sampler_factory=sampler_factory(raises=True),
+    )
+
+    assert scheduler.run_sprint(roadmap.sprint("s1"))
+    assert state.get("A").status == TaskStatus.DONE
+    assert state.get_meta("resources.memory_per_agent_gb") is None
+
+
+def test_concurrent_calls_sample_their_own_subprocess_roots(tmp_path: Path):
+    config, roadmap, state, worktrees, verifier, failures = init_repo(
+        tmp_path, ("A", "B"), max_parallel=2
+    )
+
+    class SubprocessRunner(TrackingRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_pids: list[int] = []
+
+        def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(0.2)"],
+                cwd=workspace,
+            )
+            with self.lock:
+                self.child_pids.append(proc.pid)
+            assert proc.wait(timeout=5) == 0
+            (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
+            return AgentResult(True, "ok")
+
+    roots: list[int] = []
+    roots_lock = threading.Lock()
+
+    def recording_factory(pid: int, interval: float):
+        assert interval == 1
+        with roots_lock:
+            roots.append(pid)
+        return FakeSampler(0.0)
+
+    runner = SubprocessRunner()
+    scheduler = _scheduler(
+        tmp_path, config, state, worktrees, runner, verifier, failures,
+        free_memory_gb=lambda: 50.0,
+        sampler_factory=recording_factory,
+    )
+
+    assert scheduler.run_sprint(roadmap.sprint("s1"))
+    assert len(set(runner.child_pids)) == 2
+    assert set(runner.child_pids) <= set(roots)
+    assert os.getpid() not in roots
