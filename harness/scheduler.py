@@ -1405,6 +1405,9 @@ class Scheduler:
                 capacity_retries: dict[str, tuple[TaskSpec, float, TaskOutcome]] = {}
                 retry_seconds = max(1.0, self.config.capacity.retry_interval_minutes * 60.0)
                 stop_requested = False
+                # Print/log each admission wait reason once until a task starts
+                # or the reason text changes (exact match).
+                last_memory_wait_reason: str | None = None
 
                 def collect_completed(
                     completed: set[concurrent.futures.Future],
@@ -1422,7 +1425,7 @@ class Scheduler:
                             outcomes.append(outcome)
 
                 def try_start_one(task: TaskSpec) -> bool:
-                    nonlocal stop_requested
+                    nonlocal stop_requested, last_memory_wait_reason
                     if self._stop_request_for_sprint(sprint.id):
                         stop_requested = True
                         return False
@@ -1431,12 +1434,16 @@ class Scheduler:
                     admission = self._admission_decision()
                     if admission is None:
                         self._submit_admitted_task(pool, task, current_commit, futures)
+                        last_memory_wait_reason = None
                         return True
                     if not admission.allowed:
-                        LOGGER.info("Admission wait: %s", admission.reason)
-                        print(f"Waiting (memory): {admission.reason}")
+                        if admission.reason != last_memory_wait_reason:
+                            LOGGER.info("Admission wait: %s", admission.reason)
+                            print(f"Waiting (memory): {admission.reason}")
+                            last_memory_wait_reason = admission.reason
                         return False
                     self._submit_admitted_task(pool, task, current_commit, futures)
+                    last_memory_wait_reason = None
                     return True
 
                 def update_waiting_record() -> None:
