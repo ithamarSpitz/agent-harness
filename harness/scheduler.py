@@ -15,7 +15,12 @@ from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .logging_utils import utc_now, write_log
-from .models import SprintSpec, TaskSpec, TaskStatus
+from .models import (
+    RESOURCE_LAUNCH_FAILURE_LIMIT,
+    SprintSpec,
+    TaskSpec,
+    TaskStatus,
+)
 from .agent_runner import AgentResult
 from .provider_runner import ProviderAgentRunner
 from .state import StateStore
@@ -40,6 +45,7 @@ class TaskOutcome:
     error: str | None = None
     quota_paused: bool = False
     capacity_paused: bool = False
+    resource_paused: bool = False
     waiting_status: TaskStatus | None = None
     provider: str | None = None
 
@@ -225,10 +231,29 @@ class Scheduler:
 
     def _record_capacity_pause(self, sprint: SprintSpec, stage: int, outcomes: list[TaskOutcome]) -> None:
         task_ids = sorted(outcome.task_id for outcome in outcomes)
-        first_status = outcomes[0].waiting_status or TaskStatus.WAITING_PROVIDER_ERROR
-        self.state.set_meta(f"{sprint.id}.run_status", first_status.value)
-        causes = ", ".join(sorted({self._waiting_label(outcome.waiting_status) for outcome in outcomes}))
         providers = ", ".join(sorted({outcome.provider or "unknown" for outcome in outcomes}))
+        # Resource launch requeues reuse the capacity-wait loop for later retry, but they are
+        # a machine-resource problem — never stamp WAITING_PROVIDER_ERROR (S8-T14 Decision 5).
+        if outcomes and all(outcome.resource_paused for outcome in outcomes):
+            self.state.set_meta(f"{sprint.id}.run_status", TaskStatus.PENDING.value)
+            causes = "out of resources"
+            headline = "Agent launch is waiting"
+        else:
+            status_source = next(
+                (outcome for outcome in outcomes if not outcome.resource_paused),
+                outcomes[0],
+            )
+            first_status = status_source.waiting_status or TaskStatus.WAITING_PROVIDER_ERROR
+            self.state.set_meta(f"{sprint.id}.run_status", first_status.value)
+            causes = ", ".join(
+                sorted({
+                    self._waiting_label(
+                        outcome.waiting_status, resource_paused=outcome.resource_paused
+                    )
+                    for outcome in outcomes
+                })
+            )
+            headline = "Agent call is waiting"
         self.failures.record(
             FailureRecord(
                 sprint=sprint.id,
@@ -236,7 +261,7 @@ class Scheduler:
                 stage=stage,
                 task_ids=task_ids,
                 message=(
-                    f"Agent call is waiting ({causes}; {providers}). Task state/worktrees were preserved and "
+                    f"{headline} ({causes}; {providers}). Task state/worktrees were preserved and "
                     "the pause did not consume retry budget."
                 ),
                 suggested_command=f"harness resume {sprint.id}",
@@ -288,6 +313,90 @@ class Scheduler:
         self._record_task_failure(task, error)
         return TaskOutcome(task.id, False, error)
 
+    @staticmethod
+    def _is_launch_failure(result: AgentResult) -> bool:
+        return bool(getattr(result, "launch_failure", False))
+
+    @staticmethod
+    def _is_resource_launch_failure(result: AgentResult) -> bool:
+        return bool(getattr(result, "resource_launch_failure", False))
+
+    def _launch_fallback_available(self, task: TaskSpec, failed_provider: str) -> bool:
+        sprint_task = f"{task.sprint}.{task.id}"
+        if failed_provider == "codex":
+            return (
+                self.config.cursor.enabled
+                and not bool(self.state.get_meta(f"{sprint_task}.provider.cursor.disabled"))
+            )
+        if failed_provider == "cursor":
+            return (
+                self.config.codex.enabled
+                and not bool(self.state.get_meta(f"{sprint_task}.provider.codex.disabled"))
+            )
+        return False
+
+    def _disable_provider_for_launch_failure(self, task: TaskSpec, provider: str) -> None:
+        if provider == "codex":
+            key = f"{task.sprint}.{task.id}.provider.codex.disabled"
+        elif provider == "cursor":
+            key = f"{task.sprint}.{task.id}.provider.cursor.disabled"
+        else:
+            return
+        self.state.set_meta(key, "launch_failure")
+
+    def _block_launch_failure(
+        self, task: TaskSpec, error: str, worktree: Path | None = None
+    ) -> TaskOutcome:
+        # Keep the setup-machine hint on the first line: `_record_task_failures`
+        # stores only `splitlines()[0]` of each outcome error. Also record here so
+        # `harness run-task` (which does not call `_record_task_failures`) still
+        # leaves a FailureStore entry for `harness failure`.
+        message = f"{error} — check the program with harness setup-machine"
+        runtime = self.state.get(task.id)
+        runtime.status = TaskStatus.BLOCKED
+        runtime.finished_at = utc_now()
+        runtime.last_error = message
+        runtime.waiting_phase = None
+        runtime.waiting_provider = None
+        self.state.save()
+        if worktree is not None:
+            self.environment.teardown_task(task, worktree, blocked=True)
+        self._record_task_failure(task, message)
+        return TaskOutcome(task.id, False, message)
+
+    def _requeue_resource_launch_failure(
+        self,
+        task: TaskSpec,
+        worktree: Path,
+        result: AgentResult,
+        *,
+        phase: str,
+        decrement_attempt: bool,
+    ) -> TaskOutcome:
+        runtime = self.state.get(task.id)
+        if decrement_attempt and runtime.attempt > 0:
+            runtime.attempt -= 1
+        runtime.resource_launch_failures += 1
+        error = result.error or f"{result.provider} could not start: the computer is out of resources"
+        if runtime.resource_launch_failures >= RESOURCE_LAUNCH_FAILURE_LIMIT:
+            self.state.save()
+            return self._block_task(task, error, worktree)
+        # Back on the stage queue; capacity_paused retries after the interval (S8-T6 refines timing).
+        # Keep waiting_phase so a review-time resource exit resumes review, not a new implement.
+        runtime.status = TaskStatus.PENDING
+        runtime.waiting_phase = phase
+        runtime.waiting_provider = None
+        runtime.last_error = error
+        self.state.save()
+        return TaskOutcome(
+            task.id,
+            False,
+            error,
+            capacity_paused=True,
+            resource_paused=True,
+            provider=result.provider,
+        )
+
     def _pause_for_quota(
         self, task: TaskSpec, worktree: Path, *, phase: str, decrement_attempt: bool,
         provider: str,
@@ -318,7 +427,9 @@ class Scheduler:
         }.get(cause or "provider_error", TaskStatus.WAITING_PROVIDER_ERROR)
 
     @staticmethod
-    def _waiting_label(status: TaskStatus | None) -> str:
+    def _waiting_label(status: TaskStatus | None, *, resource_paused: bool = False) -> str:
+        if resource_paused:
+            return "out of resources"
         if status is None:
             return "provider error"
         return {
@@ -497,6 +608,29 @@ class Scheduler:
                 task, worktree, base_ref, verification_summary, timeout,
                 env=task_env, code_map_offered=code_map_offered,
             )
+            if self._is_resource_launch_failure(review):
+                return self._requeue_resource_launch_failure(
+                    task, worktree, review, phase="review", decrement_attempt=False
+                )
+            if self._is_launch_failure(review):
+                error = review.error or f"{review.provider} could not start"
+                if self._launch_fallback_available(task, review.provider):
+                    self._disable_provider_for_launch_failure(task, review.provider)
+                    # Re-enter review on the alternate provider without another implement call.
+                    review = self.runner.review(
+                        task, worktree, base_ref, verification_summary, timeout,
+                        env=task_env, code_map_offered=code_map_offered,
+                    )
+                    if self._is_launch_failure(review) or self._is_resource_launch_failure(review):
+                        if self._is_resource_launch_failure(review):
+                            return self._requeue_resource_launch_failure(
+                                task, worktree, review, phase="review", decrement_attempt=False
+                            )
+                        return self._block_launch_failure(
+                            task, review.error or error, worktree
+                        )
+                else:
+                    return self._block_launch_failure(task, error, worktree)
             paused = self._handle_agent_wait(
                 task, worktree, review, phase="review", decrement_attempt=False
             )
@@ -586,7 +720,11 @@ class Scheduler:
             TaskStatus.WAITING_PROVIDER_BUSY, TaskStatus.WAITING_PROVIDER_ERROR,
             TaskStatus.WAITING_TIMEOUT,
         }
-        if runtime.status in waiting_statuses and runtime.waiting_phase == "review":
+        # PENDING + waiting_phase=review is the resource-launch requeue (not a provider wait).
+        resume_review = runtime.waiting_phase == "review" and (
+            runtime.status in waiting_statuses or runtime.status == TaskStatus.PENDING
+        )
+        if resume_review:
             resumed = self._verify_review_commit(
                 task, runtime, worktree, base_ref, timeout, task_env, code_map_offered,
                 resume_review=True,
@@ -621,6 +759,25 @@ class Scheduler:
                 model_class_override=attempt_model_class,
                 code_map_offered=code_map_offered,
             )
+            if self._is_resource_launch_failure(result):
+                return self._requeue_resource_launch_failure(
+                    task, worktree, result, phase="implement", decrement_attempt=True
+                )
+            if self._is_launch_failure(result):
+                error = result.error or f"{result.provider} could not start"
+                if self._launch_fallback_available(task, result.provider):
+                    self._disable_provider_for_launch_failure(task, result.provider)
+                    if runtime.attempt > 0:
+                        runtime.attempt -= 1
+                    runtime.last_error = error
+                    self.state.save()
+                    previous_failure = error
+                    continue
+                if runtime.attempt > 0:
+                    runtime.attempt -= 1
+                self.state.save()
+                return self._block_launch_failure(task, error, worktree)
+            runtime.resource_launch_failures = 0
             paused = self._handle_agent_wait(
                 task, worktree, result, phase="implement", decrement_attempt=True
             )
@@ -966,7 +1123,9 @@ class Scheduler:
                 groups: dict[tuple[str, str], list[str]] = {}
                 for paused in capacity_paused:
                     key = (
-                        self._waiting_label(paused.waiting_status),
+                        self._waiting_label(
+                            paused.waiting_status, resource_paused=paused.resource_paused
+                        ),
                         paused.provider or "unknown",
                     )
                     groups.setdefault(key, []).append(paused.task_id)

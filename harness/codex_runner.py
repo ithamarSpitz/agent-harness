@@ -11,10 +11,15 @@ from pathlib import Path
 from .config import HarnessConfig
 from .context import ContextResolver
 from .logging_utils import write_log
-from .models import TaskSpec
+from .models import (
+    TaskSpec,
+    WINDOWS_RESOURCE_EXIT_CODES,
+    provider_could_not_start,
+    resource_could_not_start,
+)
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 from .prompts import implement_prompt, plan_change_prompt, review_prompt
-from .agent_runner import AgentResult
+from .runner import AgentResult
 from .usage import UsageRecorder, count_code_map_calls
 
 _BUNDLED_BROWSER_PLUGINS: tuple[str, ...] = (
@@ -254,10 +259,19 @@ class CodexAgentRunner:
             proc.stdin.write(prompt)
             proc.stdin.close()
         except OSError as exc:
-            result = AgentResult(False, "", f"Could not start Codex CLI: {exc}",
-                                 duration_seconds=time.monotonic() - started, model=model,
-                                 transient_error=True, waiting_cause="provider_error",
-                                 provider="codex")
+            # auth_failure triggers ProviderAgentRunner's same-call Cursor fallback
+            # (quota/auth path) without spending a Codex attempt; scheduler still
+            # treats launch_failure as a setup block when no alternate provider runs.
+            result = AgentResult(
+                False,
+                "",
+                provider_could_not_start("codex", str(exc)),
+                duration_seconds=time.monotonic() - started,
+                model=model,
+                provider="codex",
+                launch_failure=True,
+                auth_failure=True,
+            )
             write_log(self.log_dir, log_name, str(exc))
             self._record_usage(task_id, phase, model, attempt, result, code_map)
             return result
@@ -305,6 +319,25 @@ class CodexAgentRunner:
         with lock:
             raw_stdout = "".join(stdout_lines)
             raw_stderr = "".join(stderr_lines)
+        log_body = raw_stdout + (("\n--- STDERR ---\n" + raw_stderr) if raw_stderr else "")
+        write_log(self.log_dir, log_name, log_body)
+
+        if return_code is not None and int(return_code) in WINDOWS_RESOURCE_EXIT_CODES:
+            # transient_error: ProviderAgentRunner must not consume a provider attempt;
+            # the scheduler requeues on resource_launch_failure before any wait handling.
+            result = AgentResult(
+                False,
+                "",
+                resource_could_not_start("codex", int(return_code)),
+                duration_seconds=duration,
+                model=model,
+                provider="codex",
+                transient_error=True,
+                resource_launch_failure=True,
+            )
+            self._record_usage(task_id, phase, model, attempt, result, code_map)
+            return result
+
         final_message, event_diagnostics, usage, code_map_calls = self._parse_events(
             raw_stdout, self.config.code_map.command
         )
@@ -313,8 +346,6 @@ class CodexAgentRunner:
             diagnostics = (diagnostics + f"\nCodex timed out after {timeout_minutes} minutes").strip()
         if stalled:
             diagnostics = (diagnostics + f"\nCodex stalled after {self.config.execution.stall_timeout_minutes:g} minutes of silence").strip()
-        log_body = raw_stdout + (("\n--- STDERR ---\n" + raw_stderr) if raw_stderr else "")
-        write_log(self.log_dir, log_name, log_body)
 
         kind = self._classify(diagnostics, timed_out=(timed_out or stalled))
         if return_code != 0 and kind is None:
