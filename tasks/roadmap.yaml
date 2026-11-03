@@ -257,6 +257,7 @@ sprints:
         - S8-T45
         - S8-T46
         - S8-T47
+        - S8-T48
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -405,3 +406,8 @@ sprints:
         stage: 3
         depends_on:
         - S8-T14
+      S8-T48:
+        file: tasks/sprint-08-memory-board-console/48-memory-wait-message-once.md
+        stage: 8
+        depends_on:
+        - S8-T41
