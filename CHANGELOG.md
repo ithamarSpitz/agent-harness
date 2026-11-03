@@ -2,6 +2,15 @@
 
 Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](README.md) is the short operator guide.
 
+## Sprint S8 — Memory-aware scheduling, live board and console, safer execution
+
+- Live ANSI board for `run`/`resume`, attach-only `harness watch`, persistent event feed, `--no-board`, and an interactive console for inspection, task queueing, retry, and drain-and-pause stop requests.
+- Machine-wide agent ledger, free-memory admission with fair sharing between projects, learned per-agent memory peaks, and parallel-limit fallback when memory cannot be read.
+- In-stage capacity retries, reset-aware quota sleeps, distinct transient wait causes, launch/resource failure handling, verification process-tree timeouts, and corrected Cursor stream-json review verdicts.
+- Current briefs embedded in agent prompts, absolute internal brief paths with relative operator output, stronger worktree validation/cleanup, and Git-excluded code-map caches.
+- Playwright UI checks for implementers and reviewers on both providers with scoped process/port cleanup after calls.
+- Optional self-host restarts on newly integrated code and an atomic semantic-version bump at this repository's release start.
+
 ## Sprint S7 — Add tasks to a running sprint, agent activity records, SPEC and README
 
 - `harness add-task` queues briefs during a run; successful sprints record added tasks in Git.
