@@ -12,13 +12,39 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator, TypeVar
 
 
 LOGGER = logging.getLogger(__name__)
 LOCK_TIMEOUT_SECONDS = 10.0
+# Brief Windows file-sharing / antivirus windows after another process's os.replace.
+_SHARING_RETRY_SECONDS = 2.0
+_SHARING_RETRY_SLEEP_SECONDS = 0.05
+_WINDOWS_SHARING_WINERRORS = frozenset({5, 32, 33})
 
 ProcessAlive = Callable[[int], bool]
+_T = TypeVar("_T")
+
+
+def _is_transient_sharing_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError):
+        winerror = getattr(exc, "winerror", None)
+        if winerror in _WINDOWS_SHARING_WINERRORS:
+            return True
+    return False
+
+
+def _call_with_sharing_retries(operation: Callable[[], _T]) -> _T:
+    deadline = time.monotonic() + _SHARING_RETRY_SECONDS
+    while True:
+        try:
+            return operation()
+        except OSError as exc:
+            if not _is_transient_sharing_error(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(_SHARING_RETRY_SLEEP_SECONDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +238,9 @@ class LedgerStore:
         if not self.path.exists():
             return Ledger(agents={}, waiting={})
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            # Transient sharing errors raise after retries so _change does not clobber the file.
+            text = _call_with_sharing_retries(lambda: self.path.read_text(encoding="utf-8"))
+            raw = json.loads(text)
             if not isinstance(raw, dict):
                 raise ValueError("root must be an object")
             raw_agents = raw.get("agents", {})
@@ -228,7 +256,7 @@ class LedgerStore:
                 for record_id, record in raw_waiting.items()
             }
             return Ledger(agents=agents, waiting=waiting)
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             LOGGER.warning("Agent ledger %s is corrupt; replacing it with an empty ledger: %s", self.path, exc)
             return Ledger(agents={}, waiting={})
 
@@ -290,7 +318,7 @@ class LedgerStore:
                 temp_file.write("\n")
                 temp_file.flush()
                 os.fsync(temp_file.fileno())
-            os.replace(temp_path, self.path)
+            _call_with_sharing_retries(lambda: os.replace(temp_path, self.path))
         finally:
             temp_path.unlink(missing_ok=True)
 

@@ -54,6 +54,53 @@ def test_corrupt_file_is_replaced_and_warned(tmp_path, caplog):
     assert "corrupt" in caplog.text
 
 
+def test_register_retries_transient_replace_permission_errors(tmp_path, monkeypatch):
+    store = LedgerStore(tmp_path, process_alive=lambda _pid: True)
+    attempts = {"count": 0}
+    real_replace = os.replace
+
+    def flaky_replace(src, dst, *args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise PermissionError("simulated sharing violation")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    agent_id = store.register_agent(tmp_path, "retry-replace", 42, 0.25)
+    assert agent_id
+    assert attempts["count"] == 3
+    assert agent_id in store.snapshot().agents
+    raw = json.loads((tmp_path / "agents.json").read_text(encoding="utf-8"))
+    assert agent_id in raw["agents"]
+
+
+def test_persistent_read_permission_error_leaves_file_unchanged(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "agents.json"
+    original = (
+        '{"agents": {"keep-me": {"project": "C:/proj", "task_id": "S8-T52", '
+        '"harness_pid": 7, "estimate_gb": 0.5, "started_at": "2026-01-01T00:00:00+00:00"}}, '
+        '"waiting": {}}\n'
+    )
+    path.write_text(original, encoding="utf-8")
+    original_bytes = path.read_bytes()
+
+    real_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "agents.json":
+            raise PermissionError("simulated sharing violation")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    store = LedgerStore(tmp_path, process_alive=lambda _pid: True)
+    agent_id = store.register_agent(tmp_path, "should-not-land", 7, 0.5)
+    assert agent_id == ""
+    assert "unavailable" in caplog.text
+    assert path.read_bytes() == original_bytes
+
+
 def test_register_agent_returns_empty_when_unavailable(tmp_path, caplog):
     # Hold the lock in a sibling process so registration times out without raising.
     holder = (
