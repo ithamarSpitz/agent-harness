@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import threading
 import time
+import _thread
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, TextIO
+from typing import Any, Callable, Iterator, TextIO, Literal
 
 from .board import BoardEvent, BoardSnapshot, render_board, snapshot_from_state
+from .console_commands import ConsoleContext, QuitSignal, capture_cli, run_command
+from .console_input import KeyReader, LineEditor
+from .console_screen import PROMPT_PREFIX, compose
 from .events import events_path, read_events
 from .memory import free_memory_gb as default_free_memory_gb
 from .models import SprintSpec, TaskStatus
@@ -28,6 +34,8 @@ _AGENT_STATUSES = frozenset(
 _RESET = "\x1b[0m"
 _DEFAULT_INTERVAL = 2.0
 _POLL_INTERVAL = 0.2
+
+ConsoleMode = Literal["watch", "run"]
 
 
 def _aware_now() -> datetime:
@@ -146,6 +154,21 @@ def should_use_board(
     return bool(checker())
 
 
+def should_use_console(
+    stdout: TextIO | None = None,
+    stdin: TextIO | None = None,
+    *,
+    no_board: bool = False,
+    ansi_enabled: Callable[[], bool] | None = None,
+) -> bool:
+    """True when the live board can also host the interactive console prompt."""
+    if not should_use_board(stdout, no_board=no_board, ansi_enabled=ansi_enabled):
+        return False
+    source = sys.stdin if stdin is None else stdin
+    isatty = getattr(source, "isatty", None)
+    return bool(callable(isatty) and isatty())
+
+
 def colorize_board_lines(
     snapshot: BoardSnapshot,
     lines: list[str],
@@ -213,6 +236,10 @@ class BoardLoop:
         sleep: Callable[[float], None] | None = None,
         enable_ansi_fn: Callable[[], bool] | None = None,
         environment: dict[str, str] | None = None,
+        interactive: bool = False,
+        mode: ConsoleMode = "watch",
+        key_reader_factory: Callable[[], KeyReader] | None = None,
+        editor: LineEditor | None = None,
     ) -> None:
         self.runtime = runtime
         self.sprint_id = sprint_id
@@ -221,15 +248,23 @@ class BoardLoop:
         self.poll_interval = max(0.01, float(poll_interval))
         self.reload_from_disk = reload_from_disk
         self.stop_when_finished = stop_when_finished
+        self.interactive = bool(interactive)
+        self.mode: ConsoleMode = mode
         self._free_memory = free_memory or default_free_memory_gb
         self._now = now or _aware_now
         self._sleep = sleep or time.sleep
         self._enable_ansi = enable_ansi_fn or enable_ansi
         self._environment = environment
+        self._key_reader_factory = key_reader_factory
+        self._editor = editor if editor is not None else LineEditor()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._screen = Screen(self.stream)
         self._last_fingerprint: object | None = None
+        self._key_reader: KeyReader | None = None
+        self._key_buffer: deque[str] = deque()
+        self._output_lines: list[str] = []
+        self._confirming = False
 
     def stop(self) -> None:
         self._stop.set()
@@ -253,8 +288,131 @@ class BoardLoop:
 
     def close(self) -> None:
         self.stop()
+        # Restore TTY mode even if the board thread is stuck in a command
+        # and join times out — Decision 4 requires every exit path.
+        self._restore_key_reader()
         self.join(timeout=self.interval + 1.0)
         self._screen.close()
+
+    def _restore_key_reader(self) -> None:
+        reader = self._key_reader
+        if reader is None:
+            return
+        try:
+            reader.__exit__(None, None, None)
+        except Exception:
+            pass
+
+    def _make_key_reader(self) -> KeyReader:
+        if self._key_reader_factory is not None:
+            return self._key_reader_factory()
+        return KeyReader()
+
+    def _console_context(self) -> ConsoleContext:
+        return ConsoleContext(
+            runtime=self.runtime,
+            sprint_id=self.sprint_id,
+            confirm=self._confirm,
+            call_cli=capture_cli,
+            now=self._now(),
+        )
+
+    def _drain_keys(self) -> None:
+        """Pull newly available keys into the shared buffer."""
+        if self._key_reader is None:
+            return
+        self._key_buffer.extend(self._key_reader.poll())
+
+    def _confirm(self, prompt: str) -> bool:
+        """Ask y/N through the key reader; used by console change commands."""
+        if self._key_reader is None:
+            return False
+        previous = list(self._output_lines)
+        self._output_lines = previous + [prompt]
+        self._confirming = True
+        try:
+            try:
+                self.draw_once()
+            except Exception:
+                pass
+            while not self._stop.is_set():
+                self._drain_keys()
+                while self._key_buffer:
+                    key = self._key_buffer.popleft()
+                    if key in {"y", "Y"}:
+                        self._output_lines = previous
+                        return True
+                    if key in {"n", "N", "ENTER", "ESCAPE"}:
+                        self._output_lines = previous
+                        return False
+                    if key == "CTRL_C":
+                        # Same path as _poll_input: pause the run on the main
+                        # thread (mode=run) instead of killing only this board thread.
+                        self._handle_interrupt()
+                        return False
+                self._sleep(self.poll_interval)
+                try:
+                    self.draw_once()
+                except Exception:
+                    pass
+            return False
+        finally:
+            self._confirming = False
+
+    def _write_stop_request(self) -> list[str]:
+        now = self._now()
+        harness_dir = Path(self.runtime.root) / ".harness"
+        harness_dir.mkdir(parents=True, exist_ok=True)
+        path = harness_dir / "stop-request"
+        payload = {"sprint": self.sprint_id, "time": now.isoformat()}
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return [f"Stop requested for {self.sprint_id}."]
+
+    def _handle_quit(self) -> None:
+        if self.mode == "watch":
+            self.stop()
+            return
+        if self._confirm(f"Stop sprint {self.sprint_id}? [y/N]"):
+            self._output_lines = self._write_stop_request()
+
+    def _handle_line(self, line: str) -> None:
+        try:
+            output = run_command(line, self._console_context())
+        except QuitSignal:
+            self._handle_quit()
+            return
+        except Exception as exc:
+            self._output_lines = [f"Error: {exc}"]
+            return
+        self._output_lines = list(output)
+
+    def _handle_interrupt(self) -> None:
+        self.stop()
+        if self.mode == "watch":
+            raise KeyboardInterrupt
+        _thread.interrupt_main()
+
+    def _poll_input(self) -> bool:
+        """Feed available keys into the editor. Returns True if a redraw is needed."""
+        if not self.interactive or self._key_reader is None or self._confirming:
+            return False
+        self._drain_keys()
+        if not self._key_buffer:
+            return False
+        while self._key_buffer:
+            key = self._key_buffer.popleft()
+            try:
+                completed = self._editor.feed(key)
+            except KeyboardInterrupt:
+                self._handle_interrupt()
+                return True
+            if completed is not None:
+                # Confirm may consume leftover keys already in this buffer
+                # (e.g. quit+Enter+y in one poll / paste burst).
+                self._handle_line(completed)
+                if self._stop.is_set():
+                    break
+        return True
 
     def _merge_added(self, sprint: SprintSpec) -> None:
         scheduler = getattr(self.runtime, "scheduler", None)
@@ -341,12 +499,39 @@ class BoardLoop:
 
     def draw_once(self) -> BoardSnapshot:
         snapshot = self.build_snapshot()
-        self._screen.draw(self.render_lines(snapshot))
+        board_lines = self.render_lines(snapshot)
+        if self.interactive:
+            size = self._screen.size()
+            prompt_text = f"{PROMPT_PREFIX}{self._editor.text}"
+            cursor = len(PROMPT_PREFIX) + self._editor.cursor
+            lines = compose(
+                board_lines,
+                self._output_lines,
+                prompt_text,
+                cursor,
+                size.columns,
+                size.lines,
+            )
+            self._screen.draw(lines)
+        else:
+            self._screen.draw(board_lines)
         self._last_fingerprint = self._fingerprint(self._sprint())
         return snapshot
 
     def run_until_stopped(self) -> None:
         self._enable_ansi()
+        if self.interactive:
+            reader = self._make_key_reader()
+            with reader:
+                self._key_reader = reader
+                try:
+                    self._run_frames()
+                finally:
+                    self._key_reader = None
+            return
+        self._run_frames()
+
+    def _run_frames(self) -> None:
         next_forced = time.monotonic()
         while not self._stop.is_set():
             self._maybe_reload()
@@ -357,17 +542,22 @@ class BoardLoop:
                 except Exception:
                     pass
                 break
+            input_changed = self._poll_input()
+            if self._stop.is_set():
+                break
             fingerprint = self._fingerprint(sprint)
             now_mono = time.monotonic()
-            if (
+            board_tick = (
                 fingerprint != self._last_fingerprint
                 or now_mono >= next_forced
                 or self._last_fingerprint is None
-            ):
+            )
+            if input_changed or board_tick:
                 try:
                     self.draw_once()
                 except Exception:
                     # Drawing must never kill the run or watch loop.
                     pass
-                next_forced = time.monotonic() + self.interval
+                if board_tick:
+                    next_forced = time.monotonic() + self.interval
             self._sleep(min(self.poll_interval, self.interval))

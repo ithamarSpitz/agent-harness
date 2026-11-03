@@ -15,6 +15,7 @@ from .board_loop import (
     format_parallel_summary,
     memory_estimate_gb,
     should_use_board,
+    should_use_console,
     sprint_has_active_run,
     suppress_progress_stdout,
 )
@@ -188,12 +189,15 @@ def _cmd_watch_live(runtime: Runtime, sprint_id: str | None) -> int:
         return 2
     # Resolve once so a missing sprint fails before the loop.
     runtime.roadmap.sprint(resolved)
+    interactive = should_use_console(sys.stdout, sys.stdin)
     loop = BoardLoop(
         runtime,
         resolved,
         stream=sys.stdout,
         reload_from_disk=True,
         stop_when_finished=True,
+        interactive=interactive,
+        mode="watch",
     )
     try:
         loop.run_until_stopped()
@@ -491,6 +495,8 @@ def _cmd_run_live(
                 stream=real_stdout,
                 reload_from_disk=False,
                 stop_when_finished=False,
+                interactive=should_use_console(real_stdout, sys.stdin, no_board=no_board),
+                mode="run",
             )
             board.start_background()
 
