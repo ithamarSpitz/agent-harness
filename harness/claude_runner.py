@@ -131,6 +131,46 @@ class ClaudeAgentRunner:
         ]
 
     @staticmethod
+    def _playwright_mcp_payload(playwright_mcp_package: str) -> dict[str, object]:
+        return {
+            "mcpServers": {
+                "playwright": {
+                    "command": "npx",
+                    "args": ["-y", playwright_mcp_package],
+                }
+            }
+        }
+
+    @staticmethod
+    def _empty_mcp_payload() -> dict[str, object]:
+        return {"mcpServers": {}}
+
+    def _mcp_payload_for_phase(self, phase: str) -> dict[str, object] | None:
+        # Implementation (including retries) and review share Playwright when UI
+        # review is on; otherwise they get an empty config so --strict-mcp-config
+        # does not load the user's own MCP servers. Plan repair stays unchanged.
+        if phase not in {"implement", "review"}:
+            return None
+        if self.config.ui_review.enabled:
+            return self._playwright_mcp_payload(self.config.ui_review.playwright_mcp_package)
+        return self._empty_mcp_payload()
+
+    def _write_mcp_config(self, task_id: str, phase: str, payload: dict[str, object]) -> Path:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        path = self.log_dir / f"{task_id}-{phase}-claude-mcp.json"
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _remove_mcp_config(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
     def _parse_usage(reported: dict[str, object]) -> dict[str, int]:
         usage = {
             "input_tokens": 0,
@@ -345,6 +385,11 @@ class ClaudeAgentRunner:
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         command = self._command(model, effort)
+        mcp_path: Path | None = None
+        mcp_payload = self._mcp_payload_for_phase(phase)
+        if mcp_payload is not None:
+            mcp_path = self._write_mcp_config(task_id, phase, mcp_payload)
+            command += ["--mcp-config", str(mcp_path), "--strict-mcp-config"]
         started = time.monotonic()
         output_lines: list[str] = []
         output_lock = threading.Lock()
@@ -354,197 +399,200 @@ class ClaudeAgentRunner:
         error: str | None = None
         return_code: int | None = None
 
-        launch_command = prepare_external_argv(command)
         try:
-            proc = subprocess.Popen(
-                launch_command,
-                cwd=workspace,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-                env=env,
-                start_new_session=(os.name != "nt"),
-                creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-                ),
-            )
-            if on_process_start is not None:
-                on_process_start(proc.pid)
-            assert proc.stdin is not None
+            launch_command = prepare_external_argv(command)
             try:
-                proc.stdin.write(prompt)
-                proc.stdin.flush()
-            finally:
-                proc.stdin.close()
-        except OSError as exc:
-            output = str(exc)
-            write_log(self.log_dir, log_name, output)
-            result = AgentResult(
-                False,
-                output,
-                provider_could_not_start("claude", str(exc)),
-                model=model,
-                provider="claude",
-                launch_failure=True,
-            )
-            self._record_usage(task_id, phase, model, effort, attempt, result, code_map)
-            return result
-
-        def read_output() -> None:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                with output_lock:
-                    output_lines.append(line)
-                    last_output_at[0] = time.monotonic()
-
-        reader = threading.Thread(target=read_output, name=f"{task_id}-{phase}-stdout", daemon=True)
-        reader.start()
-
-        hard_timeout = max(1, timeout_minutes) * 60.0
-        stall_timeout = max(0.0, float(self.config.execution.stall_timeout_minutes)) * 60.0
-        poll = max(0.1, float(self.config.execution.watchdog_poll_seconds))
-        # Same activity rule as Cursor: CLI output or worktree file changes.
-        signature = CursorAgentRunner._workspace_signature(workspace)
-        last_repo_activity = started
-
-        while proc.poll() is None:
-            now = time.monotonic()
-            if now - started >= hard_timeout:
-                timed_out = True
-                error = f"Agent timed out after {timeout_minutes} minutes"
-                self._stop_process(proc)
-                break
-
-            new_signature = CursorAgentRunner._workspace_signature(workspace)
-            if new_signature != signature:
-                signature = new_signature
-                last_repo_activity = now
-
-            with output_lock:
-                output_activity = last_output_at[0]
-            last_activity = max(output_activity, last_repo_activity)
-            if stall_timeout > 0 and now - last_activity >= stall_timeout:
-                stalled = True
-                error = (
-                    f"Agent stalled: no CLI output or repository file activity for "
-                    f"{self.config.execution.stall_timeout_minutes:g} minutes"
+                proc = subprocess.Popen(
+                    launch_command,
+                    cwd=workspace,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                    env=env,
+                    start_new_session=(os.name != "nt"),
+                    creationflags=(
+                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+                    ),
                 )
-                self._stop_process(proc)
-                break
+                if on_process_start is not None:
+                    on_process_start(proc.pid)
+                assert proc.stdin is not None
+                try:
+                    proc.stdin.write(prompt)
+                    proc.stdin.flush()
+                finally:
+                    proc.stdin.close()
+            except OSError as exc:
+                output = str(exc)
+                write_log(self.log_dir, log_name, output)
+                result = AgentResult(
+                    False,
+                    output,
+                    provider_could_not_start("claude", str(exc)),
+                    model=model,
+                    provider="claude",
+                    launch_failure=True,
+                )
+                self._record_usage(task_id, phase, model, effort, attempt, result, code_map)
+                return result
+
+            def read_output() -> None:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    with output_lock:
+                        output_lines.append(line)
+                        last_output_at[0] = time.monotonic()
+
+            reader = threading.Thread(target=read_output, name=f"{task_id}-{phase}-stdout", daemon=True)
+            reader.start()
+
+            hard_timeout = max(1, timeout_minutes) * 60.0
+            stall_timeout = max(0.0, float(self.config.execution.stall_timeout_minutes)) * 60.0
+            poll = max(0.1, float(self.config.execution.watchdog_poll_seconds))
+            # Same activity rule as Cursor: CLI output or worktree file changes.
+            signature = CursorAgentRunner._workspace_signature(workspace)
+            last_repo_activity = started
+
+            while proc.poll() is None:
+                now = time.monotonic()
+                if now - started >= hard_timeout:
+                    timed_out = True
+                    error = f"Agent timed out after {timeout_minutes} minutes"
+                    self._stop_process(proc)
+                    break
+
+                new_signature = CursorAgentRunner._workspace_signature(workspace)
+                if new_signature != signature:
+                    signature = new_signature
+                    last_repo_activity = now
+
+                with output_lock:
+                    output_activity = last_output_at[0]
+                last_activity = max(output_activity, last_repo_activity)
+                if stall_timeout > 0 and now - last_activity >= stall_timeout:
+                    stalled = True
+                    error = (
+                        f"Agent stalled: no CLI output or repository file activity for "
+                        f"{self.config.execution.stall_timeout_minutes:g} minutes"
+                    )
+                    self._stop_process(proc)
+                    break
+                try:
+                    proc.wait(timeout=poll)
+                except subprocess.TimeoutExpired:
+                    pass
+
             try:
-                proc.wait(timeout=poll)
+                return_code = proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                self._stop_process(proc)
+                return_code = proc.poll()
+            reader.join(timeout=2)
 
-        try:
-            return_code = proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self._stop_process(proc)
-            return_code = proc.poll()
-        reader.join(timeout=2)
+            duration = time.monotonic() - started
+            with output_lock:
+                output = "".join(output_lines)
+            if error:
+                output = (output + "\n" + error).strip() + "\n"
+            write_log(self.log_dir, log_name, output)
 
-        duration = time.monotonic() - started
-        with output_lock:
-            output = "".join(output_lines)
-        if error:
-            output = (output + "\n" + error).strip() + "\n"
-        write_log(self.log_dir, log_name, output)
+            if return_code is not None and int(return_code) in WINDOWS_RESOURCE_EXIT_CODES:
+                resource_error = resource_could_not_start("claude", int(return_code))
+                result = AgentResult(
+                    False,
+                    output,
+                    resource_error,
+                    duration_seconds=duration,
+                    model=model,
+                    provider="claude",
+                    transient_error=True,
+                    resource_launch_failure=True,
+                )
+                self._record_usage(task_id, phase, model, effort, attempt, result, code_map)
+                return result
 
-        if return_code is not None and int(return_code) in WINDOWS_RESOURCE_EXIT_CODES:
-            resource_error = resource_could_not_start("claude", int(return_code))
+            final_output, diagnostics, usage, tool_calls, code_map_calls, reported_error = (
+                self._parse_output(output, self.config.code_map.command)
+            )
+            classification_text = "\n".join(part for part in (final_output, diagnostics) if part)
+            classify_failure = return_code != 0 or timed_out or stalled or reported_error
+            waiting_cause: str | None
+            if timed_out or stalled:
+                quota_exhausted = False
+                auth_failure = False
+                waiting_cause = "timeout"
+            else:
+                quota_exhausted = classify_failure and self._looks_like_quota_exhaustion(
+                    classification_text
+                )
+                auth_failure = (
+                    classify_failure
+                    and not quota_exhausted
+                    and self._looks_like_auth_failure(classification_text)
+                )
+                waiting_cause = (
+                    self._waiting_cause(classification_text)
+                    if classify_failure and not quota_exhausted and not auth_failure
+                    else None
+                )
+            capacity_exhausted = waiting_cause == "provider_busy"
+            ok = (
+                not timed_out
+                and not stalled
+                and return_code == 0
+                and not reported_error
+                and not quota_exhausted
+                and waiting_cause is None
+            )
+            if quota_exhausted:
+                error = "Claude usage quota exhausted"
+            elif auth_failure:
+                error = diagnostics or final_output or "Claude authentication unavailable"
+            elif capacity_exhausted:
+                error = "Claude provider capacity temporarily exhausted"
+            elif waiting_cause is not None:
+                error = f"Claude {waiting_cause.replace('_', ' ')} failure"
+            elif reported_error:
+                error = "Claude reported an error"
+            elif not ok and error is None:
+                error = f"Agent exit code {return_code}"
             result = AgentResult(
-                False,
-                output,
-                resource_error,
+                ok=ok,
+                output=final_output,
+                error=error,
+                timed_out=timed_out,
+                stalled=stalled,
                 duration_seconds=duration,
                 model=model,
+                quota_exhausted=quota_exhausted,
+                capacity_exhausted=capacity_exhausted,
+                transient_error=waiting_cause in {"network", "provider_error", "timeout"},
+                waiting_cause=waiting_cause,
+                auth_failure=auth_failure,
                 provider="claude",
-                transient_error=True,
-                resource_launch_failure=True,
+                input_tokens=usage["input_tokens"] or None,
+                cached_input_tokens=usage["cached_input_tokens"] or None,
+                output_tokens=usage["output_tokens"] or None,
             )
-            self._record_usage(task_id, phase, model, effort, attempt, result, code_map)
+            self._record_usage(
+                task_id,
+                phase,
+                model,
+                effort,
+                attempt,
+                result,
+                code_map,
+                code_map_calls,
+                tool_calls,
+                usage["cache_write_tokens"] or None,
+            )
             return result
-
-        final_output, diagnostics, usage, tool_calls, code_map_calls, reported_error = (
-            self._parse_output(output, self.config.code_map.command)
-        )
-        classification_text = "\n".join(part for part in (final_output, diagnostics) if part)
-        classify_failure = return_code != 0 or timed_out or stalled or reported_error
-        waiting_cause: str | None
-        if timed_out or stalled:
-            quota_exhausted = False
-            auth_failure = False
-            waiting_cause = "timeout"
-        else:
-            quota_exhausted = classify_failure and self._looks_like_quota_exhaustion(
-                classification_text
-            )
-            auth_failure = (
-                classify_failure
-                and not quota_exhausted
-                and self._looks_like_auth_failure(classification_text)
-            )
-            waiting_cause = (
-                self._waiting_cause(classification_text)
-                if classify_failure and not quota_exhausted and not auth_failure
-                else None
-            )
-        capacity_exhausted = waiting_cause == "provider_busy"
-        ok = (
-            not timed_out
-            and not stalled
-            and return_code == 0
-            and not reported_error
-            and not quota_exhausted
-            and waiting_cause is None
-        )
-        if quota_exhausted:
-            error = "Claude usage quota exhausted"
-        elif auth_failure:
-            error = diagnostics or final_output or "Claude authentication unavailable"
-        elif capacity_exhausted:
-            error = "Claude provider capacity temporarily exhausted"
-        elif waiting_cause is not None:
-            error = f"Claude {waiting_cause.replace('_', ' ')} failure"
-        elif reported_error:
-            error = "Claude reported an error"
-        elif not ok and error is None:
-            error = f"Agent exit code {return_code}"
-        result = AgentResult(
-            ok=ok,
-            output=final_output,
-            error=error,
-            timed_out=timed_out,
-            stalled=stalled,
-            duration_seconds=duration,
-            model=model,
-            quota_exhausted=quota_exhausted,
-            capacity_exhausted=capacity_exhausted,
-            transient_error=waiting_cause in {"network", "provider_error", "timeout"},
-            waiting_cause=waiting_cause,
-            auth_failure=auth_failure,
-            provider="claude",
-            input_tokens=usage["input_tokens"] or None,
-            cached_input_tokens=usage["cached_input_tokens"] or None,
-            output_tokens=usage["output_tokens"] or None,
-        )
-        self._record_usage(
-            task_id,
-            phase,
-            model,
-            effort,
-            attempt,
-            result,
-            code_map,
-            code_map_calls,
-            tool_calls,
-            usage["cache_write_tokens"] or None,
-        )
-        return result
+        finally:
+            self._remove_mcp_config(mcp_path)
 
     def _context_paths(self, task: TaskSpec) -> list[str]:
         return self.context.display_paths(task) if self.context is not None else []
