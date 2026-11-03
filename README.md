@@ -89,10 +89,11 @@ harness run SPRINT --dry-run
 harness doctor --full
 harness run SPRINT
 harness status SPRINT
+harness watch SPRINT
 harness resume SPRINT
 ```
 
-`--dry-run` prints the stage plan without calling agents. A real `run` requires a clean integration checkout.
+`--dry-run` prints the stage plan without calling agents. A real `run` requires a clean integration checkout. In an ANSI terminal, `run` and `resume` show the live board; pass `--no-board` for plain progress output.
 
 When a task is **BLOCKED**:
 
@@ -114,6 +115,25 @@ Successful sprints can run configured **release** commands (see [SPEC.md](SPEC.m
 
 Operator workflows and edge cases: [HARNESS-OPERATOR.md](HARNESS-OPERATOR.md).
 
+## Live board and console
+
+The board shows stage/task state, active provider and model, attempts, elapsed time, dependencies, recent events, free memory, and running/max agents. Attach without starting work using `harness watch [SPRINT]`; without an argument it discovers the active sprint. Watch exits when the run finishes.
+
+When terminal input and output are interactive, type commands at `harness>`:
+
+| Console command | Purpose |
+| --- | --- |
+| `help` / `status` | List commands / return to the board view. |
+| `task ID` / `why ID` | Inspect task details / latest failure. |
+| `log ID` / `diff ID` | Show the latest agent message / diff summary. |
+| `usage` | Show provider limits. |
+| `add BRIEF [--stage auto\|current\|next]` | Confirm and queue work. |
+| `retry ID` | Confirm and rerun a blocked task. |
+| `stop` | Confirm, finish running agents, then pause for `resume`. |
+| `quit` | Leave watch; during a run, confirm a safe stop. |
+
+State-changing commands ask for confirmation. Ctrl+C safely pauses a run and restores the terminal. Full board, event-feed, memory-admission, and console behavior is in [SPEC.md](SPEC.md).
+
 ## Commands
 
 Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
@@ -121,9 +141,10 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | Command | Purpose |
 |--------|---------|
 | `status [SPRINT]` | Sprint/task states and queue entries. |
+| `watch [SPRINT]` | Attach the live board/console to persisted run state. |
 | `graph SPRINT` | Stage and task DAG for a sprint. |
-| `run SPRINT [--dry-run]` | Execute a sprint (or print the plan only). |
-| `resume SPRINT` | Continue an in-progress or paused sprint. |
+| `run SPRINT [--dry-run] [--no-board]` | Execute a sprint (or print the plan only). |
+| `resume SPRINT [--no-board]` | Continue an in-progress or paused sprint. |
 | `release SPRINT` | Run configured release commands after success. |
 | `run-task TASK_ID [--model-class CLASS] [--fresh-budget]` | Run one task with optional fresh retry budget. |
 | `failure SPRINT` | Show failure report and suggested next command. |
