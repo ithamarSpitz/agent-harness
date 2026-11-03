@@ -234,7 +234,7 @@ sprints:
         depends_on: []
       S8-T13:
         file: tasks/sprint-08-memory-board-console/13-docs.md
-        stage: 9
+        stage: 10
         depends_on:
         - S8-T12
         - S8-T15
@@ -260,6 +260,7 @@ sprints:
         - S8-T48
         - S8-T49
         - S8-T50
+        - S8-T51
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -423,3 +424,10 @@ sprints:
         file: tasks/sprint-08-memory-board-console/50-proc-tree-test-timing.md
         stage: 5
         depends_on: []
+      S8-T51:
+        file: tasks/sprint-08-memory-board-console/51-explicit-agent-pid-hook.md
+        stage: 9
+        depends_on:
+        - S8-T8
+        - S8-T48
+        - S8-T49

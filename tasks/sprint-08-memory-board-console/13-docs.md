@@ -1,6 +1,6 @@
 ---
 id: S8-T13
-stage: 9
+stage: 10
 model_class: worker
 timeout_minutes: 40
 review: true
@@ -30,6 +30,7 @@ depends_on:
   - S8-T48
   - S8-T49
   - S8-T50
+  - S8-T51
 allowed_paths:
   - SPEC.md
   - README.md
