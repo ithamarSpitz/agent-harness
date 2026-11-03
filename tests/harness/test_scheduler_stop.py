@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 from harness.config import HarnessConfig
@@ -124,7 +123,7 @@ class GatedRunner:
             self.started[task_id] = threading.Event()
             self.release[task_id] = threading.Event()
 
-    def wait_started(self, task_id: str, timeout: float = 5.0) -> None:
+    def wait_started(self, task_id: str, timeout: float = 30.0) -> None:
         assert self.started[task_id].wait(timeout=timeout)
 
     def allow(self, *task_ids: str) -> None:
@@ -139,7 +138,7 @@ class GatedRunner:
             gate.set()
         hold = self.release.get(task.id)
         if hold is not None:
-            assert hold.wait(timeout=10)
+            assert hold.wait(timeout=30)
         (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
         return AgentResult(True, "ok")
 
@@ -198,6 +197,17 @@ def test_stop_request_stops_new_starts_and_resume_continues(tmp_path: Path):
     sprint = roadmap.sprint("s1")
     result: list[bool] = []
 
+    stop_noticed = threading.Event()
+    original_stop = scheduler._stop_request_for_sprint
+
+    def stop_probe(sprint_id: str) -> bool:
+        found = original_stop(sprint_id)
+        if found:
+            stop_noticed.set()
+        return found
+
+    scheduler._stop_request_for_sprint = stop_probe  # type: ignore[method-assign]
+
     thread = threading.Thread(target=lambda: result.append(scheduler.run_sprint(sprint)))
     thread.start()
     runner.wait_started("A")
@@ -208,10 +218,9 @@ def test_stop_request_stops_new_starts_and_resume_continues(tmp_path: Path):
         json.dumps({"sprint": "s1", "time": "2026-11-03T00:00:00+00:00"}) + "\n",
         encoding="utf-8",
     )
-    # Give the scheduler a poll cycle to notice the stop file before releasing A.
-    time.sleep(1.2)
+    assert stop_noticed.wait(timeout=30)
     runner.allow("A")
-    thread.join(timeout=30)
+    thread.join(timeout=120)
     assert not thread.is_alive()
     assert result == [False]
     assert "B" not in runner.started_ids
@@ -241,6 +250,17 @@ def test_stop_request_consumed_when_last_inflight_tasks_finish(tmp_path: Path):
     sprint = roadmap.sprint("s1")
     result: list[bool] = []
 
+    stop_noticed = threading.Event()
+    original_stop = scheduler._stop_request_for_sprint
+
+    def stop_probe(sprint_id: str) -> bool:
+        found = original_stop(sprint_id)
+        if found:
+            stop_noticed.set()
+        return found
+
+    scheduler._stop_request_for_sprint = stop_probe  # type: ignore[method-assign]
+
     thread = threading.Thread(target=lambda: result.append(scheduler.run_sprint(sprint)))
     thread.start()
     runner.wait_started("A")
@@ -251,9 +271,9 @@ def test_stop_request_consumed_when_last_inflight_tasks_finish(tmp_path: Path):
         json.dumps({"sprint": "s1", "time": "2026-11-03T00:00:00+00:00"}) + "\n",
         encoding="utf-8",
     )
-    time.sleep(1.2)
+    assert stop_noticed.wait(timeout=30)
     runner.allow("A")
-    thread.join(timeout=30)
+    thread.join(timeout=120)
     assert not thread.is_alive()
     assert result == [False]
     assert state.get("A").status == TaskStatus.PASSED

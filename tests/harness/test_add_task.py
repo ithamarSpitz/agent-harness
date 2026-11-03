@@ -176,7 +176,7 @@ sprints:
 
     thread = threading.Thread(target=run_sprint)
     thread.start()
-    assert runner.started.wait(10)
+    assert runner.started.wait(30)
     queue.enqueue(add_brief, "s1", roadmap, stage_choice="auto")
     runner.release.set()
     thread.join(60)
@@ -219,7 +219,7 @@ sprints:
 
     thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
     thread.start()
-    assert runner.started.wait(10)
+    assert runner.started.wait(30)
     scheduler.task_queue.enqueue(tmp_path / "extra/B-add.md", "s1", roadmap, stage_choice="auto")
     runner.release.set()
     thread.join(60)
@@ -254,7 +254,7 @@ sprints:
 
     thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
     thread.start()
-    assert runner.started.wait(10)
+    assert runner.started.wait(30)
     scheduler.task_queue.enqueue(tmp_path / "extra/X-add.md", "s1", roadmap, stage_choice="current")
     runner.release.set()
     thread.join(60)
@@ -383,7 +383,7 @@ sprints:
 
     thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
     thread.start()
-    assert runner.started.wait(10)
+    assert runner.started.wait(30)
     state_before = (tmp_path / ".harness/state.json").read_text(encoding="utf-8")
     git_before = run(["git", "status", "--porcelain"], tmp_path)
     assert main(

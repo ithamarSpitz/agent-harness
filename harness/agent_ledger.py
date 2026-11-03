@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, TypeVar
 
+from .home import harness_home
+
 
 LOGGER = logging.getLogger(__name__)
 LOCK_TIMEOUT_SECONDS = 10.0
@@ -118,7 +120,7 @@ class LedgerStore:
         process_alive: ProcessAlive | None = None,
         lock_timeout: float = LOCK_TIMEOUT_SECONDS,
     ) -> None:
-        self.folder = (folder or Path.home() / ".harness").expanduser()
+        self.folder = (folder or harness_home()).expanduser()
         self.path = self.folder / "agents.json"
         self.lock_path = self.folder / "agents.lock"
         self.process_alive = process_alive or _process_alive

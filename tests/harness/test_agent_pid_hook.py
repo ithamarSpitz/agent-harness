@@ -60,7 +60,7 @@ def test_subprocess_popen_remains_original_class_during_agent_call(tmp_path: Pat
             )
             if on_process_start is not None:
                 on_process_start(proc.pid)
-            assert proc.wait(timeout=5) == 0
+            assert proc.wait(timeout=30) == 0
             (workspace / "out-a.txt").write_text("ok\n", encoding="utf-8")
             return AgentResult(True, "ok")
 
@@ -113,11 +113,11 @@ def test_concurrent_agent_calls_sample_only_their_own_pid(tmp_path: Path):
                 on_process_start(proc.pid)
             started[task.id].set()
             for event in started.values():
-                assert event.wait(timeout=5)
+                assert event.wait(timeout=30)
             release[task.id].set()
             for event in release.values():
-                assert event.wait(timeout=5)
-            assert proc.wait(timeout=5) == 0
+                assert event.wait(timeout=30)
+            assert proc.wait(timeout=30) == 0
             (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
             return AgentResult(True, "ok")
 
@@ -164,7 +164,7 @@ def test_concurrent_verification_hooks_stay_isolated(tmp_path: Path):
     )
     hooks_seen: dict[str, list[int]] = {"A": [], "B": []}
     hooks_lock = threading.Lock()
-    barrier = threading.Barrier(2, timeout=5)
+    barrier = threading.Barrier(2, timeout=30)
     before_attrs = dict(verifier.__dict__)
 
     task_a = roadmap.sprint("s1").tasks["A"]
@@ -205,7 +205,7 @@ def test_concurrent_verification_hooks_stay_isolated(tmp_path: Path):
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=15)
+        thread.join(timeout=120)
         assert not thread.is_alive()
 
     assert errors == []

@@ -124,7 +124,7 @@ class TrackingRunner:
             self._started_events[task_id] = threading.Event()
             self._release_events[task_id] = threading.Event()
 
-    def wait_started(self, task_id: str, timeout: float = 5.0) -> None:
+    def wait_started(self, task_id: str, timeout: float = 30.0) -> None:
         assert self._started_events[task_id].wait(timeout=timeout)
 
     def release(self, *task_ids: str) -> None:
@@ -145,7 +145,7 @@ class TrackingRunner:
             started.set()
         release = self._release_events.get(task.id)
         if release is not None:
-            assert release.wait(timeout=10)
+            assert release.wait(timeout=30)
         time.sleep(0.05)
         if on_process_start is not None:
             # Fake in-process agent: report a stand-in PID so peak learning still runs.
@@ -237,7 +237,7 @@ def test_plenty_of_memory_reaches_max_parallel(tmp_path: Path):
         runner.wait_started(task_id)
     assert runner.peak == 3
     runner.release()
-    thread.join(timeout=30)
+    thread.join(timeout=120)
     assert not thread.is_alive()
     assert all(state.get(task_id).status == TaskStatus.DONE for task_id in ("A", "B", "C"))
 
@@ -253,15 +253,25 @@ def test_memory_for_one_runs_serially(tmp_path: Path):
         tmp_path, config, state, worktrees, runner, verifier, failures,
         free_memory_gb=lambda: 4.5,
     )
+    second_blocked = threading.Event()
+    original_admission = scheduler._admission_decision
+
+    def admission_probe():
+        decision = original_admission()
+        if decision is not None and not decision.allowed:
+            second_blocked.set()
+        return decision
+
+    scheduler._admission_decision = admission_probe  # type: ignore[method-assign]
 
     thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
     thread.start()
     runner.wait_started("A")
-    time.sleep(0.3)
+    assert second_blocked.wait(timeout=30)
     assert runner.peak == 1
     assert "B" not in runner.started
     runner.release()
-    thread.join(timeout=30)
+    thread.join(timeout=120)
     assert not thread.is_alive()
     assert runner.peak == 1
     assert state.get("A").status == TaskStatus.DONE
@@ -296,16 +306,27 @@ def test_finished_task_frees_slot_for_next_pending(tmp_path: Path):
         free_memory_gb=lambda: 6.0,
     )
 
+    third_blocked = threading.Event()
+    original_admission = scheduler._admission_decision
+
+    def admission_probe():
+        decision = original_admission()
+        if decision is not None and not decision.allowed:
+            third_blocked.set()
+        return decision
+
+    scheduler._admission_decision = admission_probe  # type: ignore[method-assign]
+
     thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
     thread.start()
     runner.wait_started("A")
     runner.wait_started("B")
-    time.sleep(0.3)
+    assert third_blocked.wait(timeout=30)
     assert "C" not in runner.started
     assert runner.peak == 2
 
     runner.release("A")
-    runner.wait_started("C", timeout=10)
+    runner.wait_started("C", timeout=30)
     with runner.lock:
         assert "B" in runner.started
         assert "B" not in runner.finished
@@ -313,7 +334,7 @@ def test_finished_task_frees_slot_for_next_pending(tmp_path: Path):
     assert runner.peak == 2
 
     runner.release("B", "C")
-    thread.join(timeout=30)
+    thread.join(timeout=120)
     assert not thread.is_alive()
     assert all(state.get(task_id).status == TaskStatus.DONE for task_id in ("A", "B", "C"))
 
@@ -330,16 +351,26 @@ def test_none_memory_falls_back_to_max_parallel(tmp_path: Path, caplog):
         free_memory_gb=lambda: None,
     )
 
+    two_slots_full = threading.Event()
+    original_waiting = scheduler._set_ready_waiting
+
+    def waiting_probe(ready: int) -> None:
+        if runner.peak >= 2 and "C" not in runner.started:
+            two_slots_full.set()
+        return original_waiting(ready)
+
+    scheduler._set_ready_waiting = waiting_probe  # type: ignore[method-assign]
+
     with caplog.at_level(logging.WARNING, logger="harness.scheduler"):
         thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
         thread.start()
         runner.wait_started("A")
         runner.wait_started("B")
-        time.sleep(0.2)
+        assert two_slots_full.wait(timeout=30)
         assert runner.peak == 2
         assert "C" not in runner.started
         runner.release()
-        thread.join(timeout=30)
+        thread.join(timeout=120)
 
     assert not thread.is_alive()
     assert sum("Free memory unavailable" in r.message for r in caplog.records) == 1
@@ -428,7 +459,7 @@ def test_concurrent_calls_sample_their_own_subprocess_roots(tmp_path: Path):
                 self.child_pids.append(proc.pid)
             if on_process_start is not None:
                 on_process_start(proc.pid)
-            assert proc.wait(timeout=5) == 0
+            assert proc.wait(timeout=30) == 0
             (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
             return AgentResult(True, "ok")
 

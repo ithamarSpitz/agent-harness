@@ -33,3 +33,20 @@ def isolate_graphify_command(tmp_path_factory: pytest.TempPathFactory) -> Iterat
             os.environ.pop("PATH", None)
         else:
             os.environ["PATH"] = original_path
+
+
+@pytest.fixture(autouse=True)
+def isolate_harness_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    """Point machine-wide ledger/outcomes at a fresh temp folder per test."""
+    home = tmp_path_factory.mktemp("harness-home")
+    monkeypatch.setenv("HARNESS_HOME", str(home))
+    yield home
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_free_memory(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep default Scheduler builds from reading this machine's free memory."""
+    monkeypatch.setattr("harness.scheduler.default_free_memory_gb", lambda: 64.0)
+    yield
