@@ -29,11 +29,12 @@ On Nov 2 2026 a Cursor review call ended after 4 seconds with `Error: [unavailab
 
 # Decisions (do not reopen)
 
-1. Add these to the default `network_patterns` of both the capacity config and the Codex config in `harness/config.py` (matching is case-insensitive as today): `econnrefused`, `econnreset`, `etimedout`, `enotfound`, `eai_again`, `getaddrinfo`, `[unavailable]`.
+1. Add these to the default `network_patterns` of both the capacity config and the Codex config in `harness/config.py` (matching is case-insensitive as today): `econnrefused`, `econnreset`, `etimedout`, `enotfound`, `eai_again`, `getaddrinfo`, `[unavailable]`, `retriableerror`, `nghttp2`, `stream closed`. (Also seen on Nov 3 2026: `RetriableError: [internal] Stream closed with error code NGHTTP2_REFUSED_STREAM` from Cursor, counted as a failed attempt.) Quota and busy checks keep running first, so a `RetriableError: [resource_exhausted]` stays a busy wait.
 2. Keep all existing defaults. Do not add bare `unavailable` (too broad; it would catch model-unavailable errors).
 
 # Acceptance criteria
 
 1. The Nov 2 message above is classified as a network wait for Cursor, and the same text is a network wait for Codex.
-2. `model unavailable` text is still classified as model unavailable, not network.
-3. Existing tests pass.
+2. The NGHTTP2 message above is a network wait for Cursor; `RetriableError: [resource_exhausted]` is still a busy wait.
+3. `model unavailable` text is still classified as model unavailable, not network.
+4. Existing tests pass.
