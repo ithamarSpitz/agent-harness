@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -265,3 +266,59 @@ def test_path_discovery_failure_returns_all_unknown(
 
     assert set(snapshot) == {"codex", "cursor", "claude"}
     assert all(not entry.known for entries in snapshot.values() for entry in entries)
+
+
+def test_default_cache_follows_harness_home(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Default cache lands under HARNESS_HOME, never under Path.home()/.harness."""
+    sentinel = tmp_path / "sentinel-home"
+    sentinel.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: sentinel))
+    harness_dir = Path(os.environ["HARNESS_HOME"])
+    assert harness_dir != sentinel / ".harness"
+
+    calls: list[str] = []
+    snapshot = headroom_snapshot(
+        paths=_paths(tmp_path),
+        now=lambda: 1_800_000_000.0,
+        codex_source=_source(
+            {
+                "primary": {"used_percent": 12, "resets_at": 1_800_000_100},
+                "secondary": {"used_percent": 34.5, "resets_at": 1_800_000_200},
+            },
+            calls,
+            "codex",
+        ),
+        cursor_source=_source(
+            {
+                "billing_cycle_end_ms": 1_800_000_300_000,
+                "auto_percent_used": 56,
+                "api_percent_used": 78,
+            },
+            calls,
+            "cursor",
+        ),
+        claude_source=_source(
+            {
+                "windows": {
+                    "five_hour": {
+                        "used_percentage": 21,
+                        "resets_at": 1_800_000_400,
+                    },
+                    "seven_day": {
+                        "used_percentage": 43,
+                        "resets_at": 1_800_000_500,
+                    },
+                }
+            },
+            calls,
+            "claude",
+        ),
+    )
+
+    cache_path = harness_dir / "headroom-cache.json"
+    assert cache_path.is_file()
+    assert all(entry.known for entries in snapshot.values() for entry in entries)
+    assert not (sentinel / ".harness").exists()
+    assert not (sentinel / ".harness" / "headroom-cache.json").exists()
