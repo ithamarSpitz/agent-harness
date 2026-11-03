@@ -40,7 +40,7 @@ On Nov 3 2026 S9-T1's verification failed 6 scheduler tests (`test_scheduler_sto
 
 # Decisions (do not reopen)
 
-1. New `harness/home.py`: `harness_home()` returns `Path(os.environ["HARNESS_HOME"])` when set, else `Path.home() / ".harness"`. `LedgerStore` (default folder) and `harness/outcomes.py` use it. No other behavior change.
+1. New `harness/home.py`: `harness_home()` returns `Path(os.environ["HARNESS_HOME"])` when set, else `Path.home() / ".harness"`. `LedgerStore` (default folder) and `harness/outcomes.py` use it. No other behavior change. Remove the `PYTEST_CURRENT_TEST` check S9-T6 put in `harness/outcomes.py` `_resolve_folder` (production code must not detect the test runner); the conftest `HARNESS_HOME` fixture replaces it.
 2. `tests/conftest.py` gets autouse fixtures: `HARNESS_HOME` points to a fresh temporary folder per test; `harness.scheduler.default_free_memory_gb` (the name the scheduler falls back to when `free_memory_gb` is not passed) returns 64.0. Tests that pass their own ledger, folder or `free_memory_gb` keep working unchanged.
 3. In `tests/harness/test_scheduler_stop.py`, `test_scheduler_memory.py`, `test_capacity_in_stage.py`, `test_memory_wait_message.py`, `test_add_task.py` and `test_agent_pid_hook.py` (every test file that runs a real `Scheduler` on threads), every wait for a task or event (`Event.wait`, `join`, polling loops) uses at least 30 seconds (they return as soon as the event fires, so passing runs are not slower). Fixed `sleep`s that a test relies on for ordering are replaced by waiting on an event. On Nov 3 2026 these tests failed 2 to 8 at a time during verification with 2 to 4 test suites running in parallel, and each passed alone.
 
