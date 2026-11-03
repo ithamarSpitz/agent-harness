@@ -46,6 +46,28 @@ def isolate_harness_home(
 
 
 @pytest.fixture(autouse=True)
+def isolate_live_provider_limits(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Keep default headroom reads away from this machine's provider usage."""
+    root = tmp_path_factory.mktemp("provider-homes")
+    codex_home = root / "codex"
+    claude_home = root / "claude"
+    cursor_home = root / "cursor"
+    codex_home.mkdir()
+    claude_home.mkdir()
+    cursor_home.mkdir()
+
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
+    monkeypatch.setattr(
+        "harness.limits.default_cursor_state_db",
+        lambda: cursor_home / "state.vscdb",
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_default_free_memory(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep default Scheduler builds from reading this machine's free memory."""
     monkeypatch.setattr("harness.scheduler.default_free_memory_gb", lambda: 64.0)
