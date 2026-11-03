@@ -158,6 +158,24 @@ OPEN_ISSUES
 """
 
 
+def _review_impact_step(code_map_offered: bool, command: str) -> str:
+    """Required pre-verdict impact check; code-map use is mandatory when offered."""
+    if code_map_offered:
+        parts = split_command(command)
+        cmd = parts[0] if parts else "graphify"
+        find_users = (
+            f"use the code map (required for this step): first read "
+            f"graphify-out/AGENTS-graphify.md, then run `{cmd} query` with "
+            f"`--budget 500` for callers and importers"
+        )
+    else:
+        find_users = "use `git grep`"
+    return f"""Before the verdict, complete this required impact check:
+1. List every changed function, class, config key, CLI command or output format.
+2. For each, find its users outside the diff ({find_users}) and check they still behave correctly with the change.
+"""
+
+
 def review_prompt(
     task: TaskSpec,
     base_ref: str,
@@ -182,6 +200,7 @@ Mechanical verification already reported:
 {verification_summary}
 ---
 
+{_review_impact_step(code_map_offered, code_map_command)}
 Check specifically for:
 - missed acceptance criteria
 - assignment/spec violations
@@ -189,12 +208,15 @@ Check specifically for:
 - correctness or idempotency/concurrency edge cases relevant to this task
 - tests that pass without actually proving the requested behavior
 - accidental scope expansion
+- effects on code outside the diff (callers, importers, config and CLI users)
 
 Your FIRST non-empty line must be exactly one of:
 VERDICT: PASS
 VERDICT: FAIL
 
 If FAIL, list concrete findings with file paths and why they matter. Do not propose unrelated refactors.
+
+After the VERDICT line, write a section starting with the line `IMPACT:` listing each changed item and the users you checked (or `none outside the diff`).
 {ui_section}"""
 
 
