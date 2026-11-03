@@ -42,6 +42,8 @@ Real implementation, retry and review calls go to the provider chosen by S9-T5, 
 - `choose_provider` (S9-T5, `harness/routing.py`) takes a nested per-provider dict snapshot, while `headroom_snapshot` (S9-T4, `harness/headroom.py`) returns its own shape. Convert in one small adapter (in `harness/provider_runner.py` or `harness/routing.py`), with a test that feeds a real `headroom_snapshot` result (fake providers) into `choose_provider`.
 - `_until_label` in `harness/routing.py` formats reset times in UTC. Show local time instead (`astimezone()` with no argument), since these reasons are shown to the user.
 
+- A quota disable (`<sprint>.<task>.provider.<p>.disabled = "quota:..."` in state meta) today is cleared only when the task leaves `WAITING_QUOTA`. On Nov 3 2026 Codex stayed disabled for S9-T16 and S9-T17 after its 5-hour window reset (0% used), because one was rerun with `run-task --fresh-budget` and the other was in `WAITING_TIMEOUT`, so Cursor Auto did the work while Codex sat idle. Fix: a quota disable is ignored once the headroom snapshot shows that provider with free capacity again (and cleared, with the existing `re-enabled` message), and `run-task --fresh-budget`, `reset-task`, `retry` and `unblock` clear quota disables too. Add tests for both.
+
 # Acceptance criteria
 
 1. Fake headroom favoring Claude → the implementation call goes to the fake Claude runner, with the reason logged.
