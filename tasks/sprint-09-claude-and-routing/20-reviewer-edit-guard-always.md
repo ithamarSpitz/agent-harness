@@ -36,12 +36,13 @@ On Nov 3 2026 the Cursor Auto reviewer of S9-T16 wrote three scratch files (`_gr
 
 1. Take the snapshot and run the changed-paths check on every review call (Codex, Cursor and Claude), independent of `ui_review`. Keep the existing failure text (`Reviewer changed files in the worktree` plus the list). Git-ignored files (`graphify-out/`, `.harness/`) are not counted, as today.
 2. Port-listener snapshots and process cleanup stay gated by `ui_review` as today.
-3. Find out from the installed Cursor CLI (`agent --help`) whether review calls can run in a mode that cannot write files, and whether the harness review command already uses it. Apply it if possible, otherwise list it in OPEN_ISSUES. State the evidence in your report.
+3. Pass the agent call's PID and start time (from the runners' PID hook) to `cleanup_ui_review_processes` (`agent_pid`, `agent_started_at`, added by S9-T19) for implementation and review calls, so leftover processes of that agent are found even when their command line does not name the worktree.
+4. Find out from the installed Cursor CLI (`agent --help`) whether review calls can run in a mode that cannot write files, and whether the harness review command already uses it. Apply it if possible, otherwise list it in OPEN_ISSUES. State the evidence in your report.
 
 # Acceptance criteria
 
 1. With `ui_review` disabled, a fake reviewer that creates an untracked file fails the review with that path listed; one that changes nothing passes.
-2. With `ui_review` enabled, behavior is unchanged (existing tests pass).
+2. With `ui_review` enabled, behavior is unchanged (existing tests pass), and the cleanup receives the agent PID and start time (fake runner).
 
 # Rules for every S9 task
 
