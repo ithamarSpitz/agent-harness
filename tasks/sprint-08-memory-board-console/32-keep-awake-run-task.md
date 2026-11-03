@@ -26,7 +26,7 @@ verification:
 
 # Background
 
-`cmd_run` wraps the live run in `KeepAwake(runtime.config.execution.keep_awake_during_run)` (`harness/cli.py`). `cmd_run_task` (used for `run-task`, including `--fresh-budget` recoveries that can take an hour) and `watch` do not, so the computer can go to sleep during them.
+`cmd_run` wraps the live run in `KeepAwake(runtime.config.execution.keep_awake_during_run)` (`harness/cli.py`). `cmd_run_task` (used for `run-task`, including `--fresh-budget` recoveries that can take an hour) does not, so the computer can go to sleep during it.
 
 # Decisions (do not reopen)
 
