@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from .admission import Admission, can_start
 from .agent_ledger import LedgerStore
@@ -32,12 +32,14 @@ from .models import (
     TaskStatus,
 )
 from .agent_runner import AgentResult
+from .outcomes import append_outcome
 from .proc_tree import PeakSampler
 from .provider_runner import ProviderAgentRunner
 from .release import ReleaseRunner, sprint_is_complete
 from .roadmap import Roadmap
 from .state import StateStore
 from .task_queue import TaskQueueManager
+from .usage import UsageRecorder
 from .verifier import Verifier
 
 _WAITING_EVENT_STATUSES = frozenset(
@@ -545,7 +547,82 @@ class Scheduler:
         if worktree is not None:
             self.environment.teardown_task(task, worktree, blocked=True)
         self._record_task_failure(task, error)
+        self._record_task_final_outcome(task, TaskStatus.BLOCKED)
         return TaskOutcome(task.id, False, error)
+
+    def _record_task_final_outcome(self, task: TaskSpec, final_status: TaskStatus) -> None:
+        """Append one task_final summary; never raises into the task path."""
+        try:
+            runtime = self.state.get(task.id)
+            events = self._usage_events_for_task(task.id)
+            implement_events = [event for event in events if event.get("phase") == "implement"]
+            attempts = [
+                {
+                    "provider": event.get("provider"),
+                    "model": event.get("model"),
+                    "effort": event.get("effort"),
+                }
+                for event in implement_events
+            ]
+            passing_attempt = None
+            if final_status == TaskStatus.DONE:
+                passing_event = next(
+                    (event for event in reversed(implement_events) if event.get("ok")),
+                    implement_events[-1] if implement_events else None,
+                )
+                if passing_event is not None:
+                    passing_attempt = {
+                        "provider": passing_event.get("provider"),
+                        "model": passing_event.get("model"),
+                        "effort": passing_event.get("effort"),
+                    }
+            total_tokens: int | None = None
+            total_duration: float | None = None
+            for event in events:
+                for key in (
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "output_tokens",
+                    "reasoning_output_tokens",
+                ):
+                    value = event.get(key)
+                    if value is not None:
+                        total_tokens = (total_tokens or 0) + int(value)
+                duration = event.get("duration_seconds")
+                if duration is not None:
+                    total_duration = (total_duration or 0.0) + float(duration)
+            append_outcome(
+                {
+                    "event_type": "task_final",
+                    "project": str(self.repo_root.resolve()),
+                    "sprint": task.sprint,
+                    "task_id": task.id,
+                    "model_class": task.model_class,
+                    "final_status": final_status.value,
+                    "implementation_attempts": runtime.attempt,
+                    "attempts": attempts,
+                    "passing_attempt": passing_attempt,
+                    "total_tokens": total_tokens,
+                    "total_duration_seconds": (
+                        None if total_duration is None else round(total_duration, 3)
+                    ),
+                }
+            )
+        except Exception:
+            return
+
+    def _usage_events_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        usage = getattr(self.runner, "usage", None)
+        if usage is None:
+            path = self._runtime_root / "usage.jsonl"
+            if not path.exists():
+                return []
+            usage = UsageRecorder(path)
+        return [
+            event
+            for event in usage.events()
+            if event.get("task_id") == task_id and event.get("event_type") != "provider_switch"
+        ]
 
     @staticmethod
     def _is_launch_failure(result: AgentResult) -> bool:
@@ -596,6 +673,7 @@ class Scheduler:
         if worktree is not None:
             self.environment.teardown_task(task, worktree, blocked=True)
         self._record_task_failure(task, message)
+        self._record_task_final_outcome(task, TaskStatus.BLOCKED)
         return TaskOutcome(task.id, False, message)
 
     def _requeue_resource_launch_failure(
@@ -1165,6 +1243,8 @@ class Scheduler:
             self._set_task_status(task, runtime, TaskStatus.DONE)
             runtime.finished_at = finished_at
         self.state.save()
+        for task in tasks:
+            self._record_task_final_outcome(task, TaskStatus.DONE)
 
         cleanup_warnings: list[str] = []
         cleaned_any = False
