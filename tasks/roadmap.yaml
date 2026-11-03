@@ -259,6 +259,7 @@ sprints:
         - S8-T47
         - S8-T48
         - S8-T49
+        - S8-T50
       S8-T16:
         file: tasks/sprint-08-memory-board-console/16-capacity-retry-in-stage.md
         stage: 1
@@ -418,3 +419,7 @@ sprints:
         depends_on:
         - S8-T27
         - S8-T44
+      S8-T50:
+        file: tasks/sprint-08-memory-board-console/50-proc-tree-test-timing.md
+        stage: 5
+        depends_on: []
