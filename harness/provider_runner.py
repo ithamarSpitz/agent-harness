@@ -7,9 +7,11 @@ from pathlib import Path
 
 from .codex_runner import CodexAgentRunner
 from .config import HarnessConfig
+from .impact import collect_outside_impact
 from .logging_utils import write_log
 from .models import TaskSpec, TaskRuntime, TaskStatus
 from .agent_runner import AgentResult
+from .prompts import outside_impact_for_review
 from .runner import CursorAgentRunner
 from .state import StateStore
 from .ui_review import (
@@ -464,6 +466,26 @@ class ProviderAgentRunner:
                       timeout_minutes: int, *, env: dict[str, str] | None = None,
                       code_map_offered: bool = False,
                       on_process_start: Callable[[int], None] | None = None) -> AgentResult:
+        impact_body = collect_outside_impact(workspace, base_ref)
+        with outside_impact_for_review(impact_body):
+            return self._review_with_providers(
+                task, workspace, base_ref, verification_summary, timeout_minutes,
+                env=env, code_map_offered=code_map_offered,
+                on_process_start=on_process_start,
+            )
+
+    def _review_with_providers(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        base_ref: str,
+        verification_summary: str,
+        timeout_minutes: int,
+        *,
+        env: dict[str, str] | None = None,
+        code_map_offered: bool = False,
+        on_process_start: Callable[[int], None] | None = None,
+    ) -> AgentResult:
         if self._preferred_provider(task, "review") == "codex":
             try:
                 available, _ = self.codex.availability()

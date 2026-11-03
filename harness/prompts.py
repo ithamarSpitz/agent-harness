@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import contextvars
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 
 from .config import UIReviewConfig
+from .impact import outside_impact_section
 from .models import TaskSpec
 from .process_utils import split_command
+
+_outside_impact_body: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "outside_impact_body", default=None
+)
+
+
+@contextmanager
+def outside_impact_for_review(body: str) -> Iterator[None]:
+    """Install outside-impact body for nested ``review_prompt`` calls."""
+    token = _outside_impact_body.set(body)
+    try:
+        yield
+    finally:
+        _outside_impact_body.reset(token)
+
+
+def _outside_impact_block(outside_impact: str | None) -> str:
+    body = outside_impact if outside_impact is not None else _outside_impact_body.get()
+    if body is None:
+        body = "none found"
+    return outside_impact_section(body)
 
 _BRIEF_HEADING = "Task brief (current version)"
 _BRIEF_FOLLOW_INSTRUCTION = (
@@ -184,8 +209,10 @@ def review_prompt(
     code_map_offered: bool = False,
     code_map_command: str = "graphify",
     ui_review: UIReviewConfig | None = None,
+    outside_impact: str | None = None,
 ) -> str:
     ui_section = _ui_review_section(ui_review) if ui_review is not None and ui_review.enabled else ""
+    impact_users = _outside_impact_block(outside_impact)
     return f"""Review task {task.id} as an independent reviewer. Do not modify files.
 
 Read:
@@ -199,6 +226,8 @@ Mechanical verification already reported:
 ---
 {verification_summary}
 ---
+
+{impact_users}
 
 {_review_impact_step(code_map_offered, code_map_command)}
 Check specifically for:
