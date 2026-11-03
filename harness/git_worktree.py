@@ -23,6 +23,34 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
 
 
+# Windows directory junction reparse tag (IO_REPARSE_TAG_MOUNT_POINT).
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+
+
+def _exact_path_key(path: Path | str) -> str:
+    """Normalize a path for equality without following symlinks or junctions."""
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+
+def _is_link_path(path: Path) -> bool:
+    """True when path is a symlink or a Windows directory junction."""
+    if os.path.islink(path):
+        return True
+    if os.name != "nt":
+        return False
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction):
+        try:
+            return bool(is_junction())
+        except OSError:
+            return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+
+
 class GitError(RuntimeError):
     pass
 
@@ -91,7 +119,8 @@ class WorktreeManager:
         with self._lock:
             branch = f"agent/{_slug(task_id)}"
             path = self.worktree_root / _slug(task_id)
-            if path.exists():
+            # lexists: include broken symlinks; never follow links for membership.
+            if os.path.lexists(path):
                 registered_branch = self._registered_branch(path)
                 if registered_branch == branch:
                     return branch, path
@@ -101,13 +130,26 @@ class WorktreeManager:
                         f"{registered_branch}, expected {branch}"
                     )
                 try:
-                    shutil.rmtree(path)
+                    if _is_link_path(path):
+                        # Remove the link only; never delete the link target.
+                        path.unlink()
+                        # Git may still list this path (e.g. dir replaced by a
+                        # link). Unregister before add, or add fails as "already
+                        # registered".
+                        _run(
+                            ["git", "worktree", "remove", "--force", str(path)],
+                            self.repo_root,
+                            check=False,
+                        )
+                        _run(["git", "worktree", "prune"], self.repo_root, check=False)
+                    else:
+                        shutil.rmtree(path)
                 except OSError as exc:
                     raise GitError(
                         f"Cannot replace invalid task worktree at {path}; "
                         "close programs using it and try again"
                     ) from exc
-                if path.exists():
+                if os.path.lexists(path):
                     raise GitError(
                         f"Cannot replace invalid task worktree at {path}; "
                         "close programs using it and try again"
@@ -125,12 +167,16 @@ class WorktreeManager:
             return branch, path
 
     def _registered_branch(self, path: Path) -> str | None:
+        # A symlink/junction at the task path is never a registered worktree.
+        if _is_link_path(path):
+            return None
+
         result = _run(["git", "worktree", "list", "--porcelain"], self.repo_root, check=False)
         if result.returncode != 0:
             return None
 
-        target = path.resolve()
-        worktree: Path | None = None
+        target = _exact_path_key(path)
+        worktree: str | None = None
         branch: str | None = None
         for line in [*result.stdout.splitlines(), ""]:
             if not line:
@@ -139,7 +185,7 @@ class WorktreeManager:
                 worktree = None
                 branch = None
             elif line.startswith("worktree "):
-                worktree = Path(line[len("worktree "):]).resolve()
+                worktree = _exact_path_key(line[len("worktree "):])
             elif line.startswith("branch refs/heads/"):
                 branch = line[len("branch refs/heads/"):]
         return None
@@ -212,21 +258,32 @@ class WorktreeManager:
             return paths
         for line in result.stdout.splitlines():
             if line.startswith("worktree "):
-                paths.add(Path(line[len("worktree "):]).resolve())
+                # Exact path only; do not follow symlinks/junctions for membership.
+                paths.add(Path(line[len("worktree "):]))
         return paths
 
     def cleanup_stale_worktree_dirs(self) -> list[Path]:
         """Prune Git metadata and remove only unregistered harness-owned directories."""
         with self._lock:
             _run(["git", "worktree", "prune"], self.repo_root, check=False)
-            registered = self.registered_worktrees()
+            registered = {_exact_path_key(p) for p in self.registered_worktrees()}
             removed: list[Path] = []
             if not self.worktree_root.exists():
                 return removed
             for child in self.worktree_root.iterdir():
+                # A symlink/junction is never a registered worktree; remove the
+                # link only so a target that is a real worktree stays intact.
+                if _is_link_path(child):
+                    try:
+                        child.unlink()
+                    except OSError as exc:
+                        _log.warning("could not remove %s: %s", child, exc)
+                        continue
+                    removed.append(child)
+                    continue
                 if not child.is_dir():
                     continue
-                if child.resolve() in registered:
+                if _exact_path_key(child) in registered:
                     continue
                 try:
                     _rmtree_with_retries(child)
