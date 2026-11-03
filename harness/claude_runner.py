@@ -24,6 +24,60 @@ from .usage import UsageRecorder, count_code_map_calls
 
 _SHELL_TOOL_NAMES = frozenset({"bash", "powershell", "shell"})
 
+# Keep Claude's CLI/API vocabulary provider-local. A future Claude config section
+# may extend these defaults without making Claude depend on Cursor's patterns.
+CLAUDE_QUOTA_PATTERNS = (
+    "usage limit",
+    "limit reached",
+    "rate_limit",
+    "rate limit",
+    "http 429",
+    "status code 429",
+    '"status_code": 429',
+    '"status_code":429',
+)
+CLAUDE_NETWORK_PATTERNS = (
+    "network error",
+    "connection error",
+    "connection failed",
+    "failed to connect",
+    "unable to connect",
+    "connection lost",
+    "connection reset",
+    "connection refused",
+    "socket hang up",
+    "transport error",
+    "econnrefused",
+    "econnreset",
+    "etimedout",
+    "enotfound",
+    "eai_again",
+    "getaddrinfo",
+)
+CLAUDE_BUSY_PATTERNS = (
+    "overloaded",
+    "http 529",
+    "status code 529",
+    '"status_code": 529',
+    '"status_code":529',
+)
+CLAUDE_PROVIDER_ERROR_PATTERNS = (
+    "api_error",
+    "api error: 5",
+    "5xx",
+    "internal server error",
+    "service unavailable",
+    "http 5",
+    "status code 5",
+    '"status_code": 5',
+    '"status_code":5',
+)
+CLAUDE_AUTH_PATTERNS = (
+    "not logged in",
+    "authentication",
+    "/login",
+)
+
 
 class ClaudeAgentRunner:
     """Non-interactive Claude Code provider adapter using stdin + stream-json."""
@@ -208,25 +262,25 @@ class ClaudeAgentRunner:
             reported_error,
         )
 
-    def _looks_like_quota_exhaustion(self, output: str) -> bool:
+    @staticmethod
+    def _looks_like_quota_exhaustion(output: str) -> bool:
         lowered = output.replace("’", "'").replace("‘", "'").casefold()
-        return any(
-            pattern.casefold() in lowered
-            for pattern in self.config.quota.exhaustion_patterns
-            if pattern
-        )
+        return any(pattern.casefold() in lowered for pattern in CLAUDE_QUOTA_PATTERNS)
 
     @staticmethod
-    def _matches_wait_patterns(output: str, patterns: list[str]) -> bool:
+    def _matches_patterns(output: str, patterns: tuple[str, ...]) -> bool:
         lowered = output.casefold()
-        return any(pattern.casefold() in lowered for pattern in patterns if pattern)
+        return any(pattern.casefold() in lowered for pattern in patterns)
+
+    def _looks_like_auth_failure(self, output: str) -> bool:
+        return self._matches_patterns(output, CLAUDE_AUTH_PATTERNS)
 
     def _waiting_cause(self, output: str) -> str | None:
-        if self._matches_wait_patterns(output, self.config.capacity.network_patterns):
+        if self._matches_patterns(output, CLAUDE_NETWORK_PATTERNS):
             return "network"
-        if self._matches_wait_patterns(output, self.config.capacity.busy_patterns):
+        if self._matches_patterns(output, CLAUDE_BUSY_PATTERNS):
             return "provider_busy"
-        if self._matches_wait_patterns(output, self.config.capacity.provider_error_patterns):
+        if self._matches_patterns(output, CLAUDE_PROVIDER_ERROR_PATTERNS):
             return "provider_error"
         return None
 
@@ -420,14 +474,25 @@ class ClaudeAgentRunner:
         )
         classification_text = "\n".join(part for part in (final_output, diagnostics) if part)
         classify_failure = return_code != 0 or timed_out or stalled or reported_error
-        quota_exhausted = classify_failure and self._looks_like_quota_exhaustion(classification_text)
-        waiting_cause = (
-            self._waiting_cause(classification_text)
-            if classify_failure and not quota_exhausted
-            else None
-        )
+        waiting_cause: str | None
         if timed_out or stalled:
+            quota_exhausted = False
+            auth_failure = False
             waiting_cause = "timeout"
+        else:
+            quota_exhausted = classify_failure and self._looks_like_quota_exhaustion(
+                classification_text
+            )
+            auth_failure = (
+                classify_failure
+                and not quota_exhausted
+                and self._looks_like_auth_failure(classification_text)
+            )
+            waiting_cause = (
+                self._waiting_cause(classification_text)
+                if classify_failure and not quota_exhausted and not auth_failure
+                else None
+            )
         capacity_exhausted = waiting_cause == "provider_busy"
         ok = (
             not timed_out
@@ -439,6 +504,8 @@ class ClaudeAgentRunner:
         )
         if quota_exhausted:
             error = "Claude usage quota exhausted"
+        elif auth_failure:
+            error = diagnostics or final_output or "Claude authentication unavailable"
         elif capacity_exhausted:
             error = "Claude provider capacity temporarily exhausted"
         elif waiting_cause is not None:
@@ -459,6 +526,7 @@ class ClaudeAgentRunner:
             capacity_exhausted=capacity_exhausted,
             transient_error=waiting_cause in {"network", "provider_error", "timeout"},
             waiting_cause=waiting_cause,
+            auth_failure=auth_failure,
             provider="claude",
             input_tokens=usage["input_tokens"] or None,
             cached_input_tokens=usage["cached_input_tokens"] or None,
