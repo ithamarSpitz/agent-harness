@@ -1,6 +1,6 @@
 ---
 id: S9-T20
-stage: 5
+stage: 6
 model_class: worker
 timeout_minutes: 40
 review: true

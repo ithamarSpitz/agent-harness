@@ -1,6 +1,6 @@
 ---
 id: S9-T13
-stage: 6
+stage: 7
 model_class: worker
 timeout_minutes: 40
 review: true
@@ -20,6 +20,7 @@ depends_on:
   - S9-T26
   - S9-T27
   - S9-T28
+  - S9-T29
   - S9-T7
   - S9-T9
   - S9-T11

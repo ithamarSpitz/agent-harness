@@ -1,6 +1,6 @@
 ---
 id: S9-T25
-stage: 5
+stage: 6
 model_class: worker
 timeout_minutes: 45
 review: true

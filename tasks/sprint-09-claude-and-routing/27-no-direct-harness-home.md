@@ -1,6 +1,6 @@
 ---
 id: S9-T27
-stage: 5
+stage: 6
 model_class: worker
 timeout_minutes: 25
 review: true
