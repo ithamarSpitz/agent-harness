@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .agent_runner import AgentResult
@@ -367,39 +368,98 @@ def _command_contains_worktree_path(command: str, worktree: Path) -> bool:
         start = index + 1
 
 
-def _collect_processes_for_worktree(worktree: Path, protected: set[int]) -> dict[int, str]:
+def _collect_processes_for_worktree(
+    worktree: Path,
+    protected: set[int],
+    lookup_failures: list[str] | None = None,
+    agent_pid: int | None = None,
+    agent_started_at: float | None = None,
+) -> dict[int, str]:
     needle = str(worktree.resolve())
     targets: dict[int, str] = {}
     if os.name == "nt":
-        escaped = needle.replace("'", "''")
         script = (
-            f"$needle = [regex]::Escape('{escaped}'); "
-            "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -and ($_.CommandLine -match $needle) -and "
-            "($_.CommandLine -notmatch 'Get-CimInstance Win32_Process') -and "
-            "($_.CommandLine -notmatch 'Get-NetTCPConnection') } | "
-            "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"
+            "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | "
+            "ForEach-Object { $created = if ($_.CreationDate) { "
+            "$_.CreationDate.ToUniversalTime().ToString('o') } else { '' }; "
+            "\"$($_.ProcessId)`t$($_.ParentProcessId)`t$created`t$($_.CommandLine)\" }"
         )
-        try:
-            proc = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", script],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return targets
-        for line in (proc.stdout or "").splitlines():
-            if "\t" not in line:
+        proc: subprocess.CompletedProcess[str] | None = None
+        failure = ""
+        for _attempt in range(2):
+            try:
+                candidate = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-Command", script],
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                    timeout=90,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                failure = type(exc).__name__
                 continue
-            pid_text, command = line.split("\t", 1)
-            if not pid_text.strip().isdigit():
+            if candidate.returncode != 0:
+                failure = f"exit code {candidate.returncode}"
+                continue
+            proc = candidate
+            break
+        if proc is not None and failure and lookup_failures is not None:
+            lookup_failures.append(f"worktree process lookup failed: {failure}; retry succeeded")
+        if proc is None:
+            if lookup_failures is not None:
+                lookup_failures.append(f"worktree process lookup failed after 2 attempts: {failure}")
+            return targets
+
+        processes: dict[int, tuple[int, float | None, str]] = {}
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            pid_text, parent_text, created_text, command = parts
+            if not pid_text.strip().isdigit() or not parent_text.strip().isdigit():
                 continue
             pid = int(pid_text.strip())
+            parent_pid = int(parent_text.strip())
             command = command.strip()
-            if pid in protected or not _command_contains_worktree_path(command, worktree):
+            try:
+                created_at = datetime.fromisoformat(created_text).timestamp()
+            except (ValueError, OverflowError, OSError):
+                created_at = None
+            processes[pid] = (parent_pid, created_at, command)
+
+        def descends_from_agent(pid: int) -> bool:
+            if (
+                agent_pid is None or agent_pid <= 1 or agent_pid == os.getpid()
+                or agent_pid in protected or agent_started_at is None
+            ):
+                return False
+            seen: set[int] = set()
+            current = pid
+            while current not in seen:
+                seen.add(current)
+                process = processes.get(current)
+                if process is None:
+                    return False
+                parent_pid, created_at, _command = process
+                if created_at is None or not created_at > agent_started_at:
+                    return False
+                if parent_pid == agent_pid:
+                    return True
+                if parent_pid <= 0:
+                    return False
+                current = parent_pid
+            return False
+
+        for pid, (_parent_pid, _created_at, command) in processes.items():
+            if pid in protected:
+                continue
+            if "Get-CimInstance Win32_Process" in command or "Get-NetTCPConnection" in command:
+                continue
+            if not (
+                _command_contains_worktree_path(command, worktree)
+                or descends_from_agent(pid)
+            ):
                 continue
             targets[pid] = command or needle
         return targets
@@ -505,11 +565,15 @@ def cleanup_ui_review_processes(
     log_dir: Path,
     task_id: str,
     ports_before: dict[int, str] | None = None,
+    agent_pid: int | None = None,
+    agent_started_at: float | None = None,
 ) -> None:
+    """Clean up UI processes; agent_started_at is the call's Unix wall-clock time."""
     if not config.enabled:
         return
     protected = _protected_process_ids()
     targets: dict[int, str] = {}
+    lookup_failures: list[str] = []
     current_ports = _collect_processes_for_ports(config.ports, protected)
     if ports_before is None:
         targets.update(current_ports)
@@ -517,10 +581,18 @@ def cleanup_ui_review_processes(
         for pid, command in current_ports.items():
             if pid not in ports_before:
                 targets[pid] = command
-    targets.update(_collect_processes_for_worktree(worktree, protected))
-    if not targets:
+    targets.update(
+        _collect_processes_for_worktree(
+            worktree,
+            protected,
+            lookup_failures,
+            agent_pid,
+            agent_started_at,
+        )
+    )
+    if not targets and not lookup_failures:
         return
-    lines: list[str] = []
+    lines = list(lookup_failures)
     for pid, command in sorted(targets.items()):
         if not _process_is_alive(pid):
             continue

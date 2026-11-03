@@ -108,10 +108,13 @@ if "FAKE_UI_DELETE_UNTRACKED" in prompt:
     if target.exists():
         target.unlink()
 if "FAKE_UI_SLEEP" in prompt:
-    subprocess.Popen(
+    child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(3600)", str(workspace.resolve())],
         cwd=workspace,
     )
+    pid_file = workspace / ".harness" / "ui-background.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(child.pid), encoding="utf-8")
 
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"VERDICT: PASS"}}))
 print(json.dumps({"type":"turn.completed","usage":{}}))
@@ -286,15 +289,67 @@ def test_provider_review_cleanup_stops_worktree_background_process(tmp_path: Pat
     codex = CodexAgentRunner(config, repo / ".harness/logs")
     cursor = CursorAgentRunner(config, repo / ".harness/logs", repo_root=repo, worktree_root=manager.worktree_root)
     router = ProviderAgentRunner(config, state, codex, cursor)
-    result = router.review(_task(tmp_path), worktree, "HEAD", "FAKE_UI_SLEEP", 1)
-    assert result.ok
-    protected = _protected_process_ids()
-    targets = _collect_processes_for_worktree(worktree, protected)
-    alive = [pid for pid in targets if _process_is_alive(pid)]
-    assert not alive
-    cleanup_log = repo / ".harness/logs/T1-ui-review-cleanup.log"
-    assert cleanup_log.is_file()
-    assert "stopped pid=" in cleanup_log.read_text(encoding="utf-8")
+    pid_file = worktree / ".harness/ui-background.pid"
+    background_pid: int | None = None
+    try:
+        result = router.review(_task(tmp_path), worktree, "HEAD", "FAKE_UI_SLEEP", 1)
+        assert result.ok
+        background_pid = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and _process_is_alive(background_pid):
+            time.sleep(0.1)
+        assert not _process_is_alive(background_pid)
+        cleanup_log = repo / ".harness/logs/T1-ui-review-cleanup.log"
+        assert cleanup_log.is_file()
+        assert f"stopped pid={background_pid}" in cleanup_log.read_text(encoding="utf-8")
+    finally:
+        if background_pid is None and pid_file.is_file():
+            background_pid = int(pid_file.read_text(encoding="utf-8"))
+        if background_pid is not None:
+            _stop_discovered_pid(background_pid, protected=set())
+
+
+@pytest.mark.parametrize("failure", ["TimeoutExpired", "OSError", "exit code 1"])
+@pytest.mark.parametrize("retry_succeeds", [False, True])
+def test_windows_worktree_lookup_timeout_is_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, retry_succeeds: bool,
+):
+    worktree = tmp_path / "worktrees" / "T1"
+    worktree.mkdir(parents=True)
+    log_dir = tmp_path / "logs"
+    calls = 0
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        assert _kwargs["timeout"] == 90
+        if retry_succeeds and calls == 2:
+            return subprocess.CompletedProcess([], 0, "")
+        if failure == "TimeoutExpired":
+            raise subprocess.TimeoutExpired("powershell.exe", 90)
+        if failure == "OSError":
+            raise OSError("fake lookup launch failure")
+        return subprocess.CompletedProcess([], 1, "")
+
+    monkeypatch.setattr("harness.ui_review.os.name", "nt")
+    monkeypatch.setattr("harness.ui_review._protected_process_ids", lambda: {os.getpid()})
+    monkeypatch.setattr("harness.ui_review._collect_processes_for_ports", lambda *_args: {})
+    monkeypatch.setattr("harness.ui_review.subprocess.run", fake_run)
+    config = UIReviewConfig(enabled=True, start_commands=["x"], url="http://localhost:1", ports=[])
+
+    cleanup_ui_review_processes(
+        config=config,
+        worktree=worktree,
+        log_dir=log_dir,
+        task_id="T1",
+    )
+
+    assert calls == 2
+    expected = (
+        f"worktree process lookup failed: {failure}; retry succeeded\n"
+        if retry_succeeds else f"worktree process lookup failed after 2 attempts: {failure}\n"
+    )
+    assert (log_dir / "T1-ui-review-cleanup.log").read_text(encoding="utf-8") == expected
 
 
 def test_validator_requires_start_commands_and_url_when_ui_review_enabled(tmp_path: Path):
@@ -636,8 +691,8 @@ def test_windows_worktree_discovery_ignores_sibling_prefix_ids(monkeypatch, tmp_
         class Result:
             returncode = 0
             stdout = (
-                f"111\tpython --cd {short_s} app.py\n"
-                f"222\tpython --cd {long_s} app.py\n"
+                f"111\t1\t2026-11-03T00:00:01+00:00\tpython --cd {short_s} app.py\n"
+                f"222\t1\t2026-11-03T00:00:01+00:00\tpython --cd {long_s} app.py\n"
             )
             stderr = ""
 
@@ -651,6 +706,57 @@ def test_windows_worktree_discovery_ignores_sibling_prefix_ids(monkeypatch, tmp_
     long_targets = _collect_processes_for_worktree(long, protected=set())
     assert 222 in long_targets
     assert 111 not in long_targets
+
+
+@pytest.mark.parametrize(
+    ("agent_pid", "started_at", "expected"),
+    [(100, 1000.0, [101, 102]), (None, None, []), (100, None, []), (999, 1000.0, [])],
+)
+def test_windows_cleanup_includes_exited_agent_descendants(
+    monkeypatch, tmp_path: Path, agent_pid, started_at, expected,
+):
+    worktree = tmp_path / "worktrees" / "S1-T1"
+    worktree.mkdir(parents=True)
+    # Agent 100 is absent; 999 is the harness and 200 belongs to another task.
+    rows = [
+        (101, 100, "1970-01-01T00:16:41+00:00"),
+        (102, 101, "1970-01-01T00:16:42+00:00"),
+        (201, 200, "1970-01-01T00:16:41+00:00"),
+        (202, 999, "1970-01-01T00:16:41+00:00"),
+        (301, 100, "1970-01-01T00:16:39+00:00"),  # stale parent PID
+        (302, 301, "1970-01-01T00:16:42+00:00"),  # stale intermediate
+        (401, 100, ""),  # unknown creation time
+        (501, 502, "1970-01-01T00:16:41+00:00"),  # cycle
+        (502, 501, "1970-01-01T00:16:41+00:00"),
+        (601, 100, "1970-01-01T00:16:40+00:00"),  # not after start
+    ]
+
+    def fake_run(argv, **kwargs):
+        assert "CreationDate" in argv[-1]
+        assert kwargs["timeout"] == 90
+        return subprocess.CompletedProcess(
+            argv, 0,
+            "".join(f"{pid}\t{parent}\t{created}\tpython -c sleep\n"
+                    for pid, parent, created in rows),
+        )
+
+    stopped: list[int] = []
+    monkeypatch.setattr("harness.ui_review.os.name", "nt")
+    monkeypatch.setattr("harness.ui_review.os.getpid", lambda: 999)
+    monkeypatch.setattr("harness.ui_review._protected_process_ids", lambda: set())
+    monkeypatch.setattr("harness.ui_review._collect_processes_for_ports", lambda *_args: {})
+    monkeypatch.setattr("harness.ui_review.subprocess.run", fake_run)
+    monkeypatch.setattr("harness.ui_review._process_is_alive", lambda _pid: True)
+    monkeypatch.setattr("harness.ui_review._stop_discovered_pid", lambda pid, _: stopped.append(pid))
+    cleanup_ui_review_processes(
+        config=UIReviewConfig(enabled=True),
+        worktree=worktree,
+        log_dir=tmp_path / "logs",
+        task_id="T1",
+        agent_pid=agent_pid,
+        agent_started_at=started_at,
+    )
+    assert stopped == expected
 
 
 def test_posix_worktree_discovery_skips_protected_parent_pid(monkeypatch, tmp_path: Path):
