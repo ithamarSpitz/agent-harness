@@ -1,7 +1,7 @@
 version: 5
 
 execution:
-  max_parallel_agents: 4
+  max_parallel_agents: 2  # back to 4 after S9-T17 (tests isolated from the machine) is released
   default_max_attempts: 3
   default_timeout_minutes: 35
   base_ref: null
