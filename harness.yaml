@@ -20,11 +20,12 @@ cursor:
   output_format: stream-json
   trust_harness_worktrees: true
   models:
-    # Auto implements while both Cursor pools are at 100% (until Nov 26 2026). Auto never reviews
-    # (user decision, Nov 3 2026); S9-T5 decision 7 makes this routing permanent.
+    # Auto implements while both Cursor pools are at 100% (until Nov 26 2026).
+    # S9 ONLY (user, Nov 3 2026): Auto reviews when Codex is out (Codex stays first); the operator
+    # verifies every Auto review. After S9 (Claude can review) set reviewer back to a non-Auto model.
     worker: auto
     hard_worker: auto
-    reviewer: cursor-grok-4.6-high
+    reviewer: auto
     escalation: claude-opus-5-thinking-high
 
 self_hosting:
