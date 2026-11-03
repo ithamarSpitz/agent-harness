@@ -14,6 +14,7 @@ allowed_paths:
   - harness/runner.py
   - harness/codex_runner.py
   - harness/provider_runner.py
+  - harness/verifier.py
   - tests/harness/test_agent_pid_hook.py
   - tests/harness/test_scheduler_memory.py
 context:
@@ -36,7 +37,7 @@ S8-T8 (Nov 2026) samples the peak memory of each agent call. Because the runners
 # Decisions (do not reopen)
 
 1. The Cursor and Codex runners accept an optional `on_process_start(pid)` callback (passed down through `ProviderAgentRunner` for implementation, retry and review calls) and call it right after creating the agent process.
-2. The scheduler passes a callback that starts the peak sampler for that PID; verification commands report their PID the same way from the scheduler's own `Popen` calls.
+2. The scheduler passes a callback that starts the peak sampler for that PID. Verification commands report their PID the same way: the `Verifier` methods the scheduler calls take an optional `on_process_start(pid)` argument and pass it down to `_run_timed_command`, which calls it right after its `Popen`. The scheduler passes its per-task callback as an argument; it never replaces or patches methods on the shared `Verifier` (tasks verify concurrently on one `Verifier`).
 3. Remove `_PopenObserver`, `_observed_popen` and the global `subprocess.Popen` replacement completely.
 4. Learned-estimate behavior from S8-T8 stays the same (max of observed peaks, never lowered automatically, sampler failures never fail a task).
 
@@ -44,4 +45,5 @@ S8-T8 (Nov 2026) samples the peak memory of each agent call. Because the runners
 
 1. After an agent call, `subprocess.Popen` is the original class at all times (assert identity during the call with a fake runner that checks it).
 2. Two concurrent fake agent calls each sample only their own PID.
-3. Existing S8-T8 tests pass (update them only where they relied on the global wrapper).
+3. Two tasks verifying at the same time each get only their own verification PIDs, and the shared `Verifier` has no attribute changed afterwards (test with two threads and a barrier).
+4. Existing S8-T8 tests pass (update them only where they relied on the global wrapper).
