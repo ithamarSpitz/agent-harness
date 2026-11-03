@@ -22,7 +22,7 @@ verification:
 <!-- run-task and watch keep the computer awake too -->
 # Goal
 
-`harness run-task` and `harness watch` keep the computer awake like `run` and `resume` already do.
+`harness run-task` keeps the computer awake like `run` and `resume` already do. (`harness watch` does not exist yet; S8-T11 creates it and wraps it in `KeepAwake`.)
 
 # Background
 
@@ -30,12 +30,12 @@ verification:
 
 # Decisions (do not reopen)
 
-1. Wrap the live part of `run-task` and `watch` in the same `KeepAwake(runtime.config.execution.keep_awake_during_run)`.
+1. Wrap the live part of `run-task` in the same `KeepAwake(runtime.config.execution.keep_awake_during_run)`.
 2. Dry runs and read-only commands (`status`, `limits`, `usage`) do not.
 
 # Acceptance criteria
 
-1. With a fake `KeepAwake`, `run-task` and `watch` enter and exit it once; `status` does not.
+1. With a fake `KeepAwake`, `run-task` enters and exits it once; `status` does not.
 2. `keep_awake_during_run: false` passes `False`.
 
 # Rules for every S8 task
