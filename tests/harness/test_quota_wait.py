@@ -83,3 +83,47 @@ def test_known_reset_sleep_capped_at_24_hours(tmp_path: Path) -> None:
     assert quota.next_wait_seconds(now=now) == 24 * 3600
     assert quota.last_wait_message is not None
     assert "cursor" in quota.last_wait_message
+
+
+def test_codex_latest_window_when_both_full(tmp_path: Path) -> None:
+    """Both Codex windows full: wait until weekly (usable again), capped at 24h."""
+    config = _write_config(tmp_path)
+    state = StateStore(tmp_path / ".harness/state.json")
+    now = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    short_reset = now + timedelta(hours=2)
+    weekly_reset = now + timedelta(days=3)
+
+    def limits_source(_now: datetime) -> list[QuotaResetInfo]:
+        return [
+            QuotaResetInfo(provider="codex", reset_at=short_reset),
+            QuotaResetInfo(provider="codex", reset_at=weekly_reset),
+        ]
+
+    quota = QuotaManager(config, state, limits_source=limits_source)
+    assert quota.next_wait_seconds(now=now) == 24 * 3600
+    assert quota.last_wait_message is not None
+    assert "codex" in quota.last_wait_message
+    assert weekly_reset.astimezone().strftime("%H:%M") in quota.last_wait_message
+    # Duration wording should reflect the weekly horizon, not the 5-hour window.
+    assert "in 3d" in quota.last_wait_message
+
+
+def test_earliest_provider_usable_again_across_providers(tmp_path: Path) -> None:
+    """Codex short window only + Cursor out later: wake at Codex usable-again."""
+    config = _write_config(tmp_path)
+    state = StateStore(tmp_path / ".harness/state.json")
+    now = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    codex_reset = now + timedelta(hours=2)
+    cursor_reset = now + timedelta(days=5)
+
+    def limits_source(_now: datetime) -> list[QuotaResetInfo]:
+        return [
+            QuotaResetInfo(provider="codex", reset_at=codex_reset),
+            QuotaResetInfo(provider="cursor", reset_at=cursor_reset),
+        ]
+
+    quota = QuotaManager(config, state, limits_source=limits_source)
+    assert quota.next_wait_seconds(now=now) == 2 * 3600 + 60
+    assert quota.last_wait_message is not None
+    assert "codex" in quota.last_wait_message
+    assert "cursor" not in quota.last_wait_message
