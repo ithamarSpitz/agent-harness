@@ -10,6 +10,7 @@ depends_on:
   - S9-T4
   - S9-T5
 allowed_paths:
+  - harness/routing.py
   - harness/provider_runner.py
   - harness/cli.py
   - tests/harness/test_provider_choice.py
@@ -35,6 +36,11 @@ Real implementation, retry and review calls go to the provider chosen by S9-T5, 
 4. Log the choice and its `reason` in the task log and in the usage record (`routing_reason`).
 5. With `claude.enabled: false` and no headroom data, the order is exactly today's (`providers.priority`), so existing projects behave the same.
 6. `harness doctor` reports whether the `claude` program is available and logged in when Claude is enabled (by running `claude --version`; never read credentials).
+
+# Notes from stage 1 (Nov 2026)
+
+- `choose_provider` (S9-T5, `harness/routing.py`) takes a nested per-provider dict snapshot, while `headroom_snapshot` (S9-T4, `harness/headroom.py`) returns its own shape. Convert in one small adapter (in `harness/provider_runner.py` or `harness/routing.py`), with a test that feeds a real `headroom_snapshot` result (fake providers) into `choose_provider`.
+- `_until_label` in `harness/routing.py` formats reset times in UTC. Show local time instead (`astimezone()` with no argument), since these reasons are shown to the user.
 
 # Acceptance criteria
 
