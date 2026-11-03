@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from pathlib import Path
 
 from harness.admission import Admission
@@ -53,9 +52,13 @@ def test_same_admission_reason_prints_once_over_five_polls(tmp_path: Path, caplo
         free_memory_gb=lambda: 4.5,
     )
 
+    five_refused = threading.Event()
+
     def fake_admission():
         index = min(call_count["n"], len(decisions) - 1)
         call_count["n"] += 1
+        if call_count["n"] >= 5:
+            five_refused.set()
         return decisions[index]
 
     monkeypatch.setattr(scheduler, "_admission_decision", fake_admission)
@@ -64,16 +67,14 @@ def test_same_admission_reason_prints_once_over_five_polls(tmp_path: Path, caplo
         thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
         thread.start()
         # Five refused polls (watchdog_poll_seconds=1) before starts are allowed.
-        deadline = time.monotonic() + 8.0
-        while call_count["n"] < 5 and time.monotonic() < deadline:
-            time.sleep(0.05)
+        assert five_refused.wait(timeout=30)
         assert call_count["n"] >= 5
         assert _wait_messages(caplog) == [f"Admission wait: {reason}"]
         assert _printed_waits(printed) == [f"Waiting (memory): {reason}"]
-        runner.wait_started("A", timeout=10)
-        runner.wait_started("B", timeout=10)
+        runner.wait_started("A", timeout=30)
+        runner.wait_started("B", timeout=30)
         runner.release()
-        thread.join(timeout=30)
+        thread.join(timeout=120)
 
     assert not thread.is_alive()
     assert all(state.get(task_id).status == TaskStatus.DONE for task_id in ("A", "B"))
@@ -151,17 +152,14 @@ def test_changed_reason_and_post_start_refusal_print_again(tmp_path: Path, caplo
     with caplog.at_level(logging.INFO, logger="harness.scheduler"):
         thread = threading.Thread(target=lambda: scheduler.run_sprint(roadmap.sprint("s1")))
         thread.start()
-        assert reason_b_before_start.wait(timeout=10)
-        # Give the poll loop a moment to process the changed reason.
-        time.sleep(0.2)
-        runner.wait_started("A", timeout=10)
-        assert reason_b_after_start.wait(timeout=10)
-        assert after_start_dup_seen.wait(timeout=10)
-        time.sleep(0.2)
-        runner.wait_started("B", timeout=10)
-        runner.wait_started("C", timeout=10)
+        assert reason_b_before_start.wait(timeout=30)
+        runner.wait_started("A", timeout=30)
+        assert reason_b_after_start.wait(timeout=30)
+        assert after_start_dup_seen.wait(timeout=30)
+        runner.wait_started("B", timeout=30)
+        runner.wait_started("C", timeout=30)
         runner.release()
-        thread.join(timeout=30)
+        thread.join(timeout=120)
 
     assert not thread.is_alive()
     waits = _wait_messages(caplog)

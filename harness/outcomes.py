@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
 
+from .home import harness_home
+
 
 LOGGER = logging.getLogger(__name__)
 _LOCK_TIMEOUT_SECONDS = 10.0
@@ -28,11 +30,7 @@ def set_outcomes_folder(folder: Path | None) -> None:
 def _resolve_folder() -> Path | None:
     if _folder_configured:
         return _folder_override
-    # Existing harness tests call UsageRecorder.record without knowing about the
-    # machine-wide log; never poison ~/.harness/outcomes.jsonl under pytest.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return None
-    return Path.home() / ".harness"
+    return harness_home()
 
 
 def append_outcome(record: dict[str, Any]) -> None:

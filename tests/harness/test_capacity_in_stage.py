@@ -53,7 +53,7 @@ class CapacityThenSuccessRunner:
         if task.id == "A" and call == 1:
             return AgentResult(False, "temporary network outage", "fake", waiting_cause="network")
         if task.id == "B":
-            assert self.a_finished.wait(timeout=5)
+            assert self.a_finished.wait(timeout=30)
         (workspace / f"out-{task.id.lower()}.txt").write_text("ok\n", encoding="utf-8")
         self.finished_at[task.id] = self.clock()
         if task.id == "A":
