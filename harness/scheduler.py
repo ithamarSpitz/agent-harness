@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import logging
+import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .admission import Admission, can_start
+from .agent_ledger import LedgerStore
 from .code_map import CodeMapBuilder
 from .config import HarnessConfig
 from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .logging_utils import utc_now, write_log
+from .memory import free_memory_gb as default_free_memory_gb
 from .models import (
     RESOURCE_LAUNCH_FAILURE_LIMIT,
     SprintSpec,
@@ -28,6 +34,10 @@ from .release import ReleaseRunner, sprint_is_complete
 from .roadmap import Roadmap
 from .task_queue import TaskQueueManager
 from .verifier import Verifier
+
+
+LOGGER = logging.getLogger(__name__)
+FreeMemoryReader = Callable[[], float | None]
 
 
 def _subprocess_text(value: str | bytes | None) -> str:
@@ -64,6 +74,8 @@ class Scheduler:
         roadmap: Roadmap | None = None,
         roadmap_path: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
+        free_memory_gb: FreeMemoryReader | None = None,
+        ledger: LedgerStore | None = None,
     ):
         self.repo_root = repo_root
         self.config = config
@@ -76,12 +88,64 @@ class Scheduler:
         self.roadmap = roadmap
         self.roadmap_path = roadmap_path
         self._clock = clock
+        self._free_memory_gb = free_memory_gb or default_free_memory_gb
+        self._ledger = ledger or LedgerStore()
         self._runtime_root = verifier.log_dir.parent
         self.task_queue = TaskQueueManager(repo_root, self._runtime_root, state)
         self._merge_in_progress: tuple[str, int] | None = None
+        self._memory_fallback_logged = False
         self.code_maps = CodeMapBuilder(
             config.code_map, verifier.log_dir.parent, verifier.log_dir, repo_root
         )
+
+    def current_memory_estimate(self) -> float:
+        """GB reserved for one new agent; S8-T8 may replace this with a learned value."""
+        return float(self.config.execution.memory_per_agent_gb)
+
+    def _admission_decision(self) -> Admission | None:
+        """Return can_start result, or None when free memory is unknown (parallel-limit only)."""
+        free_gb = self._free_memory_gb()
+        if free_gb is None:
+            if not self._memory_fallback_logged:
+                LOGGER.warning(
+                    "Free memory unavailable; using max_parallel_agents=%s only",
+                    self.config.execution.max_parallel_agents,
+                )
+                self._memory_fallback_logged = True
+            return None
+        return can_start(
+            project=str(self.repo_root.resolve()),
+            free_gb=free_gb,
+            estimate_gb=self.current_memory_estimate(),
+            min_free_gb=self.config.execution.min_free_memory_gb,
+            max_parallel_agents=max(1, self.config.execution.max_parallel_agents),
+            ledger=self._ledger.snapshot(),
+            now=datetime.now(timezone.utc),
+        )
+
+    def _set_ready_waiting(self, ready_tasks: int) -> None:
+        self._ledger.set_waiting(self.repo_root, os.getpid(), ready_tasks)
+
+    def _submit_admitted_task(
+        self,
+        pool: concurrent.futures.ThreadPoolExecutor,
+        task: TaskSpec,
+        current_commit: str,
+        futures: dict[concurrent.futures.Future, TaskSpec],
+    ) -> None:
+        estimate = self.current_memory_estimate()
+        agent_id = self._ledger.register_agent(
+            self.repo_root, task.id, os.getpid(), estimate
+        )
+
+        def run() -> TaskOutcome:
+            try:
+                return self._run_task(task, current_commit)
+            finally:
+                if agent_id:
+                    self._ledger.unregister_agent(agent_id)
+
+        futures[pool.submit(run)] = task
 
     @staticmethod
     def _scope_prefix(pattern: str) -> str:
@@ -965,6 +1029,20 @@ class Scheduler:
     def run_sprint(self, sprint: SprintSpec, *, dry_run: bool = False) -> bool:
         poll_seconds = max(1, self.config.execution.watchdog_poll_seconds)
         dry_run_seen: set[int] = set()
+        self._memory_fallback_logged = False
+        try:
+            return self._run_sprint_inner(sprint, dry_run=dry_run, poll_seconds=poll_seconds, dry_run_seen=dry_run_seen)
+        finally:
+            self._set_ready_waiting(0)
+
+    def _run_sprint_inner(
+        self,
+        sprint: SprintSpec,
+        *,
+        dry_run: bool,
+        poll_seconds: float,
+        dry_run_seen: set[int],
+    ) -> bool:
         while True:
             self.task_queue.merge_added_tasks_from_state(sprint)
             open_stages = self._open_stages(sprint, skip=dry_run_seen)
@@ -1051,6 +1129,30 @@ class Scheduler:
                         else:
                             outcomes.append(outcome)
 
+                def try_start_one(task: TaskSpec) -> bool:
+                    if len(futures) >= max_workers:
+                        return False
+                    admission = self._admission_decision()
+                    if admission is None:
+                        self._submit_admitted_task(pool, task, current_commit, futures)
+                        return True
+                    if not admission.allowed:
+                        LOGGER.info("Admission wait: %s", admission.reason)
+                        print(f"Waiting (memory): {admission.reason}")
+                        return False
+                    self._submit_admitted_task(pool, task, current_commit, futures)
+                    return True
+
+                def update_waiting_record() -> None:
+                    now = self._clock()
+                    ready = len(pending)
+                    ready += sum(
+                        1
+                        for _, retry_at, _ in capacity_retries.values()
+                        if retry_at <= now
+                    )
+                    self._set_ready_waiting(ready)
+
                 while futures or pending or capacity_retries:
                     # Harvest completions before scheduling retries. A future may have
                     # completed just after the previous FIRST_COMPLETED wait returned;
@@ -1072,23 +1174,30 @@ class Scheduler:
                         if retry_at <= now
                     ]
                     for task_id in due:
-                        if len(futures) >= max_workers:
+                        task, _, _ = capacity_retries[task_id]
+                        if not try_start_one(task):
                             break
-                        task, _, _ = capacity_retries.pop(task_id)
-                        future = pool.submit(self._run_task, task, current_commit)
-                        futures[future] = task
+                        capacity_retries.pop(task_id)
 
                     # Keep the backlog here, so due retries get the first free slot
                     # instead of sitting behind siblings in the executor's FIFO queue.
-                    while pending and len(futures) < max_workers:
-                        task = pending.pop(0)
-                        future = pool.submit(self._run_task, task, current_commit)
-                        futures[future] = task
+                    while pending:
+                        task = pending[0]
+                        if not try_start_one(task):
+                            break
+                        pending.pop(0)
+
+                    update_waiting_record()
 
                     wait_seconds = poll_seconds
                     if capacity_retries and len(futures) < max_workers:
                         next_retry_at = min(retry_at for _, retry_at, _ in capacity_retries.values())
                         wait_seconds = min(wait_seconds, max(0.0, next_retry_at - self._clock()))
+                    if not futures:
+                        # Memory/admission blocked every ready task; re-check on the poll interval.
+                        time.sleep(wait_seconds)
+                        poll_queue(pending, unfinished)
+                        continue
                     done, _ = concurrent.futures.wait(
                         futures.keys(),
                         timeout=wait_seconds,
@@ -1099,6 +1208,8 @@ class Scheduler:
                         continue
                     collect_completed(done)
                     poll_queue(pending, unfinished)
+
+            self._set_ready_waiting(0)
 
             failed = [
                 outcome
