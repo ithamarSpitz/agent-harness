@@ -85,15 +85,27 @@ def test_peak_sampler_tracks_maximum_and_stop_is_timely():
             step["value"] = index + 1
             return peaks[index]
 
-    interval = 0.05
+    # Long interval: stop() must return well before one full wait (5s), not after it.
+    interval = 5.0
+    stop_deadline = 2.0
     sampler = PeakSampler(1, interval, lister=fake_lister)
     sampler.start()
-    time.sleep(interval * 3)
+    deadline = time.monotonic() + 15.0
+    while True:
+        with lock:
+            calls = step["value"]
+        if calls >= 3:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"fake lister only called {calls} times before sample deadline"
+            )
+        time.sleep(0.01)
     started = time.monotonic()
     peak_gb = sampler.stop()
     elapsed = time.monotonic() - started
     assert peak_gb == 3_000_000_000 / (1024**3)
-    assert elapsed < interval * 1.5
+    assert elapsed < stop_deadline
 
 
 def test_peak_sampler_skips_lister_failures():
