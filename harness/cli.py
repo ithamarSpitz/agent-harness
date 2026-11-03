@@ -15,7 +15,7 @@ from .environment import EnvironmentManager
 from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .manifest import RunManifestManager
-from .models import TaskStatus
+from .models import TaskRuntime, TaskStatus
 from .plan_change import PlanChangeManager
 from .quota import KeepAwake, QuotaManager
 from .roadmap import Roadmap, RoadmapError
@@ -478,14 +478,21 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
         return 3
 
 
+def _reset_implementation_budget(task_runtime: TaskRuntime) -> None:
+    """Clear attempt and per-provider counters so the next run has a real implement budget."""
+    task_runtime.attempt = 0
+    task_runtime.provider_attempts = {}
+    task_runtime.stall_counts = {}
+
+
 def cmd_retry(state: StateStore, task_id: str) -> int:
     runtime = state.get(task_id)
     runtime.status = TaskStatus.RETRY
-    runtime.attempt = 0
     runtime.last_error = "Manual retry requested"
     runtime.review_feedback = None
+    _reset_implementation_budget(runtime)
     state.save()
-    print(f"{task_id} reset for a fresh retry budget")
+    print(f"{task_id} reset for a fresh retry budget (attempt, provider_attempts, stall_counts)")
     return 0
 
 
@@ -495,11 +502,11 @@ def cmd_unblock(state: StateStore, task_id: str) -> int:
         print(f"{task_id} is {runtime.status.value}, not BLOCKED", file=sys.stderr)
         return 2
     runtime.status = TaskStatus.RETRY
-    runtime.attempt = 0
     runtime.last_error = "Manually unblocked"
     runtime.review_feedback = None
+    _reset_implementation_budget(runtime)
     state.save()
-    print(f"{task_id} unblocked with a fresh retry budget")
+    print(f"{task_id} unblocked with a fresh retry budget (attempt, provider_attempts, stall_counts)")
     return 0
 
 
@@ -602,12 +609,10 @@ def cmd_run_task(
             print(f"Refusing focused rerun of DONE task {task_id}; it is already integrated.", file=sys.stderr)
             return 2
         task_runtime.status = TaskStatus.RETRY
-        task_runtime.attempt = 0
         task_runtime.last_error = task_runtime.last_error or "Focused rerun requested"
         task_runtime.review_feedback = None
         task_runtime.commit = None
-        task_runtime.provider_attempts = {}
-        task_runtime.stall_counts = {}
+        _reset_implementation_budget(task_runtime)
         runtime.state.save()
 
     base_commit = task_runtime.base_ref or subprocess.run(
