@@ -23,6 +23,9 @@ class ExecutionConfig:
     # both CLI output and repository file activity have been silent this long.
     stall_timeout_minutes: float = 12.0
     watchdog_poll_seconds: float = 10.0
+    # Per verification shell command (task, global, and stage). Kill the process
+    # tree on expiry so pytest-xdist workers cannot outlive the harness.
+    verification_timeout_minutes: float = 30.0
     # Keep Windows awake for the complete live run/resume lifecycle.
     keep_awake_during_run: bool = True
 
@@ -291,6 +294,10 @@ class HarnessConfig:
             raise ValueError("execution.min_free_memory_gb must be greater than zero")
         if config.memory_per_agent_gb <= 0:
             raise ValueError("execution.memory_per_agent_gb must be greater than zero")
+        if config.verification_timeout_minutes <= 0:
+            raise ValueError(
+                "execution.verification_timeout_minutes must be greater than zero"
+            )
         return config
 
     @classmethod
