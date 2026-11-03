@@ -546,9 +546,18 @@ sprints:
         stage: 3
         depends_on:
         - S9-T17
+      S9-T24:
+        file: tasks/sprint-09-claude-and-routing/24-brief-reload-and-agent-block.md
+        stage: 4
+        depends_on: []
+      S9-T25:
+        file: tasks/sprint-09-claude-and-routing/25-hold-and-release.md
+        stage: 5
+        depends_on:
+        - S9-T24
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
-        stage: 5
+        stage: 6
         depends_on:
         - S9-T14
         - S9-T16
@@ -559,6 +568,8 @@ sprints:
         - S9-T21
         - S9-T22
         - S9-T23
+        - S9-T24
+        - S9-T25
         - S9-T7
         - S9-T9
         - S9-T11
