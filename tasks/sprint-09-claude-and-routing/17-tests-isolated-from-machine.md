@@ -2,7 +2,7 @@
 id: S9-T17
 stage: 2
 model_class: worker
-timeout_minutes: 35
+timeout_minutes: 70
 review: true
 allow_protected: false
 depends_on:
@@ -49,7 +49,7 @@ On Nov 3 2026 S9-T1's verification failed 6 scheduler tests (`test_scheduler_sto
 1. A test proving that, with a fake "real" ledger full of agents in the user's home, a default-built `Scheduler` in the test suite still starts tasks.
 2. Running the suite leaves `~/.harness/agents.json` and `~/.harness/outcomes.jsonl` untouched (test with `Path.home` patched to a temporary folder and checking nothing is created there).
 3. `HARNESS_HOME` unset gives `~/.harness` exactly as before.
-4. Those scheduler test files pass 5 times in a row while two other `pytest -q tests/harness` runs are going (state the evidence in your report).
+4. Those scheduler test files pass 5 times in a row while one other `python -m pytest -q tests/harness -n 4` run is going (start it once in the background, run the 5 repeats, then wait for it and stop it; never leave it running). State the evidence in your report. Keep the whole check under 20 minutes.
 
 # Rules for every S9 task
 
