@@ -6,17 +6,31 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from .agent_runner import AgentResult
+from .agent_runner import AgentResult as _BaseAgentResult
 from .config import HarnessConfig
 from .context import ContextResolver
 from .logging_utils import write_log
-from .models import TaskSpec
+from .models import (
+    TaskSpec,
+    WINDOWS_RESOURCE_EXIT_CODES,
+    provider_could_not_start,
+    resource_could_not_start,
+)
 from .prompts import implement_prompt, review_prompt
 from .process_utils import cursor_prompt_via_stdin, prepare_external_argv, stop_process_tree
 from .ui_review import cursor_mcp_auto_approve_argv, cursor_mcp_config_mentions_playwright
 from .usage import UsageRecorder, count_code_map_calls
+
+
+@dataclass(slots=True)
+class AgentResult(_BaseAgentResult):
+    """Cursor/Codex result with launch-setup flags (S8-T14)."""
+
+    launch_failure: bool = False
+    resource_launch_failure: bool = False
 
 
 def _cursor_mcp_config_path() -> Path:
@@ -310,8 +324,12 @@ class CursorAgentRunner:
             output = str(exc)
             write_log(self.log_dir, log_name, output)
             result = AgentResult(
-                False, output, f"Could not start Cursor CLI: {exc}", model=model,
+                False,
+                output,
+                provider_could_not_start("cursor", str(exc)),
+                model=model,
                 provider="cursor",
+                launch_failure=True,
             )
             self._record_usage(task_id, phase, effective_model_class, model, attempt, result, code_map)
             return result
@@ -376,6 +394,25 @@ class CursorAgentRunner:
         if error:
             output = (output + "\n" + error).strip() + "\n"
         write_log(self.log_dir, log_name, output)
+
+        if return_code is not None and int(return_code) in WINDOWS_RESOURCE_EXIT_CODES:
+            resource_error = resource_could_not_start("cursor", int(return_code))
+            # transient_error: ProviderAgentRunner must not consume a provider attempt;
+            # the scheduler requeues on resource_launch_failure before any wait handling.
+            result = AgentResult(
+                False,
+                output,
+                resource_error,
+                duration_seconds=duration,
+                model=model,
+                provider="cursor",
+                transient_error=True,
+                resource_launch_failure=True,
+            )
+            self._record_usage(
+                task_id, phase, effective_model_class, model, attempt, result, code_map
+            )
+            return result
 
         if self.config.cursor.output_format == "stream-json":
             final_output, diagnostics, usage, code_map_calls, reported_error = self._parse_output(

@@ -5,6 +5,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+# Windows process start failures from exhausted resources (STATUS_DLL_INIT_FAILED / STATUS_NO_MEMORY).
+WINDOWS_RESOURCE_EXIT_CODES = frozenset({3221225794, 3221225495})
+RESOURCE_LAUNCH_FAILURE_LIMIT = 5
+
+
+def provider_could_not_start(provider: str, detail: str) -> str:
+    return f"{provider} could not start: {detail}"
+
+
+def resource_could_not_start(provider: str, exit_code: int) -> str:
+    return provider_could_not_start(
+        provider, f"the computer is out of resources (exit code {exit_code})"
+    )
+
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
@@ -81,6 +95,7 @@ class TaskRuntime:
     waiting_provider: str | None = None
     provider_attempts: dict[str, int] = field(default_factory=dict)
     stall_counts: dict[str, int] = field(default_factory=dict)
+    resource_launch_failures: int = 0
     added: bool = False
     brief_path: str | None = None
 
@@ -100,6 +115,7 @@ class TaskRuntime:
             "waiting_provider": self.waiting_provider,
             "provider_attempts": dict(self.provider_attempts),
             "stall_counts": dict(self.stall_counts),
+            "resource_launch_failures": self.resource_launch_failures,
             "added": self.added,
             "brief_path": self.brief_path,
         }
@@ -122,6 +138,7 @@ class TaskRuntime:
             waiting_provider=data.get("waiting_provider"),
             provider_attempts={str(k): int(v) for k, v in (data.get("provider_attempts") or {}).items()},
             stall_counts={str(k): int(v) for k, v in (data.get("stall_counts") or {}).items()},
+            resource_launch_failures=int(data.get("resource_launch_failures", 0)),
             added=bool(data.get("added", False)),
             brief_path=data.get("brief_path"),
         )

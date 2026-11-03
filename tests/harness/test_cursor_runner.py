@@ -33,7 +33,8 @@ def test_cursor_launch_failure_is_not_a_provider_wait(tmp_path: Path, monkeypatc
     )
 
     assert not result.ok
-    assert result.error == f"Could not start Cursor CLI: {launch_error}"
+    assert result.launch_failure
+    assert result.error == f"cursor could not start: {launch_error}"
     assert result.provider == "cursor"
     assert result.waiting_cause is None
     assert not result.transient_error
