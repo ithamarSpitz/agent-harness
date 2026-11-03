@@ -30,7 +30,7 @@ On Nov 3 2026 `test_provider_review_cleanup_stops_worktree_background_process` f
 
 # Decisions (do not reopen)
 
-1. On Windows, list processes first with the fast lister already in the harness (`harness/proc_tree.py`, which returns pid, parent pid and memory) and get command lines only for what is needed; keep the PowerShell CIM query as the fallback, with a 90 s timeout.
+1. On Windows, give the CIM query a 90 s timeout and retry it once after a failure or timeout. Also stop processes whose parent chain leads to the reviewer's own process (the harness knows its PID), so a process whose command line does not mention the worktree is still found.
 2. If the process lookup fails or times out, write one line to the task's `ui-review-cleanup.log` saying so (never raise, never fail the review).
 3. In the test, the fake reviewer writes the background process id to a file; the test asserts that exact process is stopped, and a `finally` always kills it so the test never leaks a process.
 
