@@ -21,9 +21,20 @@ def _hash_file(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _relative_brief_path(path: Path, root: Path | None = None) -> str:
+    """Return path relative to project root (posix); otherwise as-is."""
+    p = Path(path)
+    if root is None:
+        return p.as_posix()
+    try:
+        return p.resolve().relative_to(Path(root).resolve()).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
 def _task_signature(task, root: Path | None = None) -> dict[str, Any]:
     data = {
-        "file": task.file.as_posix(),
+        "file": _relative_brief_path(task.file, root),
         "sprint": task.sprint,
         "stage": task.stage,
         "depends_on": list(task.depends_on),

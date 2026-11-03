@@ -16,7 +16,7 @@ from .failure import FailureRecord, FailureStore
 from .git_worktree import GitError, WorktreeManager
 from .manifest import RunManifestManager
 from .models import TaskRuntime, TaskStatus
-from .plan_change import PlanChangeManager
+from .plan_change import PlanChangeManager, _relative_brief_path
 from .quota import KeepAwake, QuotaManager
 from .roadmap import Roadmap, RoadmapError
 from .codex_runner import CodexAgentRunner
@@ -737,7 +737,7 @@ def cmd_inspect(runtime: Runtime, task_id: str) -> int:
             "id": task.id,
             "sprint": task.sprint,
             "stage": task.stage,
-            "file": task.file.as_posix(),
+            "file": _relative_brief_path(task.file, runtime.root),
             "depends_on": task.depends_on,
             "model_class": task.model_class,
             "allowed_paths": task.allowed_paths,
