@@ -143,6 +143,6 @@ doctor:
 release:
   commands:
     - python scripts/bump_version.py
-    - git commit -m "release: bump version" -- harness/__init__.py
+    - 'git commit -m "release: bump version" -- harness/__init__.py'
     - git push origin HEAD
     - python -m pip install --user --no-deps --force-reinstall .
