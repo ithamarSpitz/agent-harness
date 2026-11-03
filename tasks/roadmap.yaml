@@ -522,6 +522,10 @@ sprints:
         depends_on:
         - S9-T6
         - S9-T7
+      S9-T19:
+        file: tasks/sprint-09-claude-and-routing/19-ui-cleanup-finds-processes.md
+        stage: 3
+        depends_on: []
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
         stage: 5
@@ -530,6 +534,7 @@ sprints:
         - S9-T16
         - S9-T17
         - S9-T18
+        - S9-T19
         - S9-T7
         - S9-T9
         - S9-T11
