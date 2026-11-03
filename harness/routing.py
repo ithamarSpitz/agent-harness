@@ -108,6 +108,31 @@ def _provider_snapshot(snapshot: object, provider: str) -> object | None:
     return _value(snapshot, provider)
 
 
+def adapt_headroom_snapshot(snapshot: object) -> dict[str, dict[str, object]]:
+    """Convert ``headroom_snapshot`` output into this module's window shape."""
+
+    if not isinstance(snapshot, Mapping):
+        return {}
+    adapted: dict[str, dict[str, object]] = {}
+    for provider, raw_entries in snapshot.items():
+        if not isinstance(raw_entries, Sequence) or isinstance(raw_entries, (str, bytes)):
+            continue
+        windows: dict[str, object] = {}
+        for entry in raw_entries:
+            window = _value(entry, "window")
+            used = _value(entry, "used_percent")
+            if not isinstance(window, str):
+                continue
+            windows[window] = {
+                "used_percent": used
+                if bool(_value(entry, "known")) and _number(used) is not None
+                else None,
+                "resets_at": _value(entry, "resets_at"),
+            }
+        adapted[str(provider)] = {"windows": windows}
+    return adapted
+
+
 def _windows(provider_snapshot: object) -> list[tuple[str, object]]:
     container = _value(provider_snapshot, *_WINDOW_CONTAINER_KEYS)
     if container is None:
@@ -252,7 +277,7 @@ def _available_reason(provider: str, capacity: _Capacity, now: datetime) -> str:
 def _until_label(reset_at: datetime | None) -> str:
     if reset_at is None:
         return ""
-    return f" until {reset_at.astimezone(timezone.utc).strftime('%H:%M')}"
+    return f" until {reset_at.astimezone().strftime('%H:%M')}"
 
 
 def _unavailable_reason(provider: str, capacity: _Capacity | None, why: str = "") -> str:

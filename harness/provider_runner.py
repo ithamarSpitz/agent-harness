@@ -3,16 +3,20 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
+from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
 from .config import HarnessConfig
+from .headroom import headroom_snapshot
 from .impact import collect_outside_impact
 from .logging_utils import write_log
 from .models import TaskSpec, TaskRuntime, TaskStatus
-from .agent_runner import AgentResult
 from .prompts import outside_impact_for_review
-from .runner import CursorAgentRunner
+from .runner import AgentResult, CursorAgentRunner
+from .routing import Choice, adapt_headroom_snapshot, choose_provider
 from .state import StateStore
 from .ui_review import (
     capture_worktree_snapshot,
@@ -24,8 +28,18 @@ from .ui_review import (
 from .usage import UsageRecorder
 
 GitToplevelReader = Callable[[Path], str | None]
+HeadroomReader = Callable[[], object]
 
 _git_toplevel_reader: GitToplevelReader | None = None
+
+
+def clear_task_quota_disables(state: StateStore, task_id: str) -> None:
+    """Clear persisted quota routes for a manually reset task."""
+
+    marker = f".{task_id}.provider."
+    for key, reason in state.meta().items():
+        if marker in key and isinstance(reason, str) and reason.startswith("quota"):
+            state.set_meta(key, None)
 
 
 def _default_git_toplevel_reader(workspace: Path) -> str | None:
@@ -124,12 +138,16 @@ class ProviderAgentRunner:
     manages_model_routing = True
 
     def __init__(self, config: HarnessConfig, state: StateStore, codex: CodexAgentRunner,
-                 cursor: CursorAgentRunner, usage: UsageRecorder | None = None):
+                 cursor: CursorAgentRunner, usage: UsageRecorder | None = None,
+                 claude: ClaudeAgentRunner | None = None,
+                 headroom_reader: HeadroomReader | None = None):
         self.config = config
         self.state = state
         self.codex = codex
         self.cursor = cursor
+        self.claude = claude
         self.usage = usage
+        self._headroom_reader = headroom_reader or headroom_snapshot
         self._worktree_guard_blocked: set[str] = set()
 
     def _disable_key(self, task: TaskSpec) -> str:
@@ -195,8 +213,145 @@ class ProviderAgentRunner:
             )
         )
 
+    def _claude_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
+        return (
+            self.config.claude.enabled
+            and self.claude is not None
+            and not bool(
+                self.state.get_meta(f"{task.sprint}.{task.id}.provider.claude.disabled")
+            )
+            and not bool(
+                phase and self.state.get_meta(
+                    self._phase_disable_key(task, "claude", phase)
+                )
+            )
+        )
+
+    @staticmethod
+    def _snapshot_has_capacity(snapshot: object, provider: str) -> bool:
+        if not isinstance(snapshot, dict):
+            return False
+        provider_data = snapshot.get(provider)
+        if not isinstance(provider_data, dict):
+            return False
+        windows = provider_data.get("windows")
+        if not isinstance(windows, dict) or not windows:
+            return False
+        used_values = [
+            window.get("used_percent")
+            for window in windows.values()
+            if isinstance(window, dict)
+        ]
+        return bool(used_values) and all(
+            isinstance(used, (int, float)) and not isinstance(used, bool) and used < 100
+            for used in used_values
+        )
+
+    def _snapshot(
+        self, task: TaskSpec, *, preserve_disabled: set[str] | None = None
+    ) -> dict[str, dict[str, object]]:
+        try:
+            snapshot = adapt_headroom_snapshot(self._headroom_reader())
+        except Exception:
+            snapshot = {}
+        for key, provider, reason in self._temporary_disable_entries(task):
+            if provider not in (preserve_disabled or set()) and self._snapshot_has_capacity(
+                snapshot, provider
+            ):
+                self.state.set_meta(key, None)
+                print(f"{provider} re-enabled for {task.id} (was: {reason})", flush=True)
+        return snapshot
+
+    def _disabled_for(self, task: TaskSpec, phase: str) -> set[str]:
+        disabled: set[str] = set()
+        for provider in ("codex", "cursor", "claude"):
+            if self.state.get_meta(
+                f"{task.sprint}.{task.id}.provider.{provider}.disabled"
+            ) or self.state.get_meta(self._phase_disable_key(task, provider, phase)):
+                disabled.add(provider)
+        return disabled
+
+    def _cursor_implement_budget(self) -> int:
+        return max(1, len(self.config.retry.sequence))
+
+    def _routing_model_class(self, task: TaskSpec, phase: str) -> str:
+        # Reviews always use the review model class (never task.model_class /
+        # Auto). First-implement Auto routing is S9-T26, not this task.
+        if phase == "review":
+            return task.review_model_class or "reviewer"
+        return task.model_class
+
+    def _choose(
+        self,
+        task: TaskSpec,
+        phase: str,
+        *,
+        model_class: str,
+        record: bool = False,
+        extra_disabled: set[str] | None = None,
+    ) -> Choice:
+        # Claude implement/review/budget paths call _choose directly and must
+        # still clear quota:* disables when leaving WAITING_QUOTA, as today.
+        self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
+        snapshot = self._snapshot(task, preserve_disabled=extra_disabled)
+        disabled = self._disabled_for(task, phase) | (extra_disabled or set())
+        enabled = {
+            "codex": self.config.codex.enabled,
+            "cursor": self.config.cursor.enabled,
+            "claude": self.config.claude.enabled and self.claude is not None,
+        }
+        # Enabling Claude opts a project into live headroom routing. Projects
+        # that have not enabled it retain the exact historical priority order.
+        routing_snapshot: object = snapshot if self.config.claude.enabled else {}
+        implementer = self.state.get_meta(
+            f"{task.sprint}.{task.id}.provider.implementer"
+        )
+        choice = choose_provider(
+            routing_snapshot,
+            phase=phase,
+            model_class=model_class,
+            enabled=enabled,
+            priority=self.config.providers.priority,
+            implementer_provider=implementer if isinstance(implementer, str) else None,
+            disabled_for_task=disabled,
+            claude_reserve=self.config.claude.reserve,
+            now=datetime.now(timezone.utc),
+        )
+        if record:
+            message = f"provider choice for {phase}: {choice.provider or 'none'} ({choice.reason})"
+            write_log(self.codex.log_dir, f"{task.id}-routing.log", message + "\n")
+            print(f"{task.id}: {message}", flush=True)
+            if self.usage is not None:
+                self.usage.record({
+                    "event_type": "routing_choice",
+                    "provider": choice.provider or "none",
+                    "task_id": task.id,
+                    "phase": phase,
+                    "routing_reason": choice.reason,
+                    "ok": choice.provider is not None,
+                    "duration_seconds": 0.0,
+                    "code_map": False,
+                })
+        return choice
+
+    def _disable_provider(self, task: TaskSpec, provider: str, reason: str) -> None:
+        self.state.set_meta(
+            f"{task.sprint}.{task.id}.provider.{provider}.disabled", reason
+        )
+
+    @classmethod
+    def _fallback_reason(cls, result: AgentResult) -> str:
+        return cls._codex_fallback_reason(result)
+
     def _preferred_provider(self, task: TaskSpec, phase: str) -> str:
         self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
+        # Quota disables must clear from live headroom even when Claude routing
+        # is off (e.g. WAITING_TIMEOUT resume after a 5-hour window reset).
+        self._snapshot(task)
+        if self.config.claude.enabled:
+            return self._choose(
+                task, phase, model_class=self._routing_model_class(task, phase)
+            ).provider or "none"
         for provider in self.config.providers.priority:
             normalized = provider.strip().casefold()
             if normalized == "codex" and self._codex_enabled_for(task, phase):
@@ -219,6 +374,22 @@ class ProviderAgentRunner:
             })
 
     def fallback_after_stalls(self, task: TaskSpec, provider: str, phase: str) -> bool:
+        if self.config.claude.enabled:
+            self.state.set_meta(self._phase_disable_key(task, provider, phase), "stalled")
+            next_provider = self._choose(
+                task, phase, model_class=self._routing_model_class(task, phase)
+            ).provider
+            if next_provider is None:
+                self.state.set_meta(self._phase_disable_key(task, provider, phase), None)
+                return False
+            if self.usage is not None:
+                self.usage.record({
+                    "event_type": "provider_switch", "provider": provider,
+                    "switch_to": next_provider, "task_id": task.id,
+                    "reason": f"stalled:{phase}", "ok": False,
+                    "duration_seconds": 0.0, "code_map": False,
+                })
+            return True
         next_provider = None
         if provider == "codex" and self._cursor_enabled_for(task, phase):
             next_provider = "cursor"
@@ -257,7 +428,15 @@ class ProviderAgentRunner:
         return self._preferred_provider(task, "implement")
 
     def max_implementation_attempts(self, task: TaskSpec) -> int:
-        return len(self.config.codex.implementation_sequence) + max(1, len(self.config.retry.sequence))
+        claude_attempts = (
+            len(self.config.claude.implementation_sequence)
+            if self.config.claude.enabled else 0
+        )
+        return (
+            len(self.config.codex.implementation_sequence)
+            + self._cursor_implement_budget()
+            + claude_attempts
+        )
 
     def has_implementation_budget(self, task: TaskSpec, *, model_class_override: str | None = None) -> bool:
         if task.id in self._worktree_guard_blocked:
@@ -266,6 +445,23 @@ class ProviderAgentRunner:
             if not self.config.cursor.enabled:
                 return False
             return self._provider_attempt(task, "cursor") < 1
+        if self.config.claude.enabled:
+            exhausted: set[str] = set()
+            if self._provider_attempt(task, "codex") >= len(
+                self.config.codex.implementation_sequence
+            ):
+                exhausted.add("codex")
+            if self._provider_attempt(task, "cursor") >= self._cursor_implement_budget():
+                exhausted.add("cursor")
+            if self._provider_attempt(task, "claude") >= len(
+                self.config.claude.implementation_sequence
+            ):
+                exhausted.add("claude")
+            return self._choose(
+                task, "implement",
+                model_class=self._routing_model_class(task, "implement"),
+                extra_disabled=exhausted,
+            ).provider is not None
         provider = self.active_provider(task)
         if provider == "codex":
             return self._provider_attempt(task, "codex") < len(self.config.codex.implementation_sequence)
@@ -378,6 +574,12 @@ class ProviderAgentRunner:
                          model_class_override: str | None = None,
                          code_map_offered: bool = False,
                          on_process_start: Callable[[int], None] | None = None) -> AgentResult:
+        if self.config.claude.enabled and model_class_override is None:
+            return self._implement_with_routing(
+                task, workspace, timeout_minutes, attempt, previous_failure,
+                env=env, code_map_offered=code_map_offered,
+                on_process_start=on_process_start,
+            )
         if self.active_provider(task, model_class_override=model_class_override) == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -434,6 +636,94 @@ class ProviderAgentRunner:
             self._consume_provider_attempt(task, "cursor")
         return result
 
+    def _implement_with_routing(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        timeout_minutes: int,
+        attempt: int,
+        previous_failure: str | None,
+        *,
+        env: dict[str, str] | None,
+        code_map_offered: bool,
+        on_process_start: Callable[[int], None] | None,
+    ) -> AgentResult:
+        unavailable: set[str] = set()
+        last_result: AgentResult | None = None
+        while True:
+            exhausted = set(unavailable)
+            routing_class = self._routing_model_class(task, "implement")
+            if self._provider_attempt(task, "codex") >= len(
+                self.config.codex.implementation_sequence
+            ):
+                exhausted.add("codex")
+            if self._provider_attempt(task, "cursor") >= self._cursor_implement_budget():
+                exhausted.add("cursor")
+            if self._provider_attempt(task, "claude") >= len(
+                self.config.claude.implementation_sequence
+            ):
+                exhausted.add("claude")
+            choice = self._choose(
+                task, "implement", model_class=routing_class,
+                record=True, extra_disabled=exhausted,
+            )
+            provider = choice.provider
+            if provider is None:
+                return last_result or AgentResult(
+                    False, "", choice.reason, provider="none", quota_exhausted=True
+                )
+            try:
+                if provider == "codex":
+                    available, _ = self.codex.availability()
+                    if not available:
+                        result = AgentResult(
+                            False, "", "Codex CLI/auth unavailable",
+                            provider="codex", auth_failure=True,
+                        )
+                    else:
+                        index = self._provider_attempt(task, "codex")
+                        model, effort = self.config.codex.implementation_profile(index)
+                        result = self.codex.implement(
+                            task, workspace, timeout_minutes, attempt, previous_failure,
+                            model=model, reasoning_effort=effort, env=env,
+                            code_map_offered=code_map_offered,
+                            on_process_start=on_process_start,
+                        )
+                elif provider == "claude" and self.claude is not None:
+                    result = self.claude.implement(
+                        task, workspace, timeout_minutes, attempt, previous_failure,
+                        env=env, code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+                else:
+                    result = self.cursor.implement(
+                        task, workspace, timeout_minutes, attempt, previous_failure,
+                        env=env, model_class_override=self._cursor_model_class(task),
+                        code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+            except Exception as exc:
+                result = AgentResult(
+                    False, "", f"{provider} integration error: {type(exc).__name__}",
+                    provider=provider, launch_failure=True,
+                )
+
+            if self._provider_unavailable(result) or self._is_launch_failure(result):
+                last_result = result
+                reason = self._fallback_reason(result)
+                self._disable_provider(task, provider, reason)
+                unavailable.add(provider)
+                continue
+            if result.capacity_exhausted or result.transient_error:
+                return result
+            if provider != "cursor" or self._should_consume_cursor_attempt(result):
+                self._consume_provider_attempt(task, provider)
+            if result.ok:
+                self.state.set_meta(
+                    f"{task.sprint}.{task.id}.provider.implementer", provider
+                )
+            return result
+
     def review(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,
                timeout_minutes: int, *, env: dict[str, str] | None = None,
                code_map_offered: bool = False,
@@ -454,7 +744,9 @@ class ProviderAgentRunner:
                 after = capture_worktree_snapshot(workspace)
                 changed = worktree_changed_paths(snapshot, after)
                 if changed:
-                    result = fail_review_for_worktree_edits(result, changed)
+                    result = cast(
+                        AgentResult, fail_review_for_worktree_edits(result, changed)
+                    )
             return result
         finally:
             if ui_enabled:
@@ -486,6 +778,12 @@ class ProviderAgentRunner:
         code_map_offered: bool = False,
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
+        if self.config.claude.enabled:
+            return self._review_with_routing(
+                task, workspace, base_ref, verification_summary, timeout_minutes,
+                env=env, code_map_offered=code_map_offered,
+                on_process_start=on_process_start,
+            )
         if self._preferred_provider(task, "review") == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -530,11 +828,82 @@ class ProviderAgentRunner:
             on_process_start=on_process_start,
         )
 
+    def _review_with_routing(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        base_ref: str,
+        verification_summary: str,
+        timeout_minutes: int,
+        *,
+        env: dict[str, str] | None,
+        code_map_offered: bool,
+        on_process_start: Callable[[int], None] | None,
+    ) -> AgentResult:
+        unavailable: set[str] = set()
+        last_result: AgentResult | None = None
+        while True:
+            choice = self._choose(
+                task, "review",
+                model_class=self._routing_model_class(task, "review"),
+                record=True, extra_disabled=unavailable,
+            )
+            provider = choice.provider
+            if provider is None:
+                return last_result or AgentResult(
+                    False, "", choice.reason, provider="none", quota_exhausted=True
+                )
+            try:
+                if provider == "codex":
+                    available, _ = self.codex.availability()
+                    if not available:
+                        result = AgentResult(
+                            False, "", "Codex CLI/auth unavailable",
+                            provider="codex", auth_failure=True,
+                        )
+                    else:
+                        result = self.codex.review(
+                            task, workspace, base_ref, verification_summary,
+                            timeout_minutes, model=self.config.codex.review_model,
+                            env=env, code_map_offered=code_map_offered,
+                            on_process_start=on_process_start,
+                        )
+                elif provider == "claude" and self.claude is not None:
+                    result = self.claude.review(
+                        task, workspace, base_ref, verification_summary,
+                        timeout_minutes, env=env,
+                        code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+                else:
+                    result = self.cursor.review(
+                        task, workspace, base_ref, verification_summary,
+                        timeout_minutes, env=env,
+                        code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+            except Exception as exc:
+                result = AgentResult(
+                    False, "", f"{provider} integration error: {type(exc).__name__}",
+                    provider=provider, launch_failure=True,
+                )
+            if self._provider_unavailable(result) or self._is_launch_failure(result):
+                last_result = result
+                self._disable_provider(task, provider, self._fallback_reason(result))
+                unavailable.add(provider)
+                continue
+            return result
+
     def plan_change(self, task: TaskSpec, workspace: Path, failure_summary: str, timeout_minutes: int,
                     *, model_class: str, env: dict[str, str] | None = None) -> AgentResult:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
+        if self.config.claude.enabled:
+            return self._plan_change_with_routing(
+                task, workspace, failure_summary, timeout_minutes,
+                model_class=model_class, env=env,
+            )
         if self._preferred_provider(task, "plan_repair") == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -574,3 +943,59 @@ class ProviderAgentRunner:
         return self.cursor.plan_change(
             task, workspace, failure_summary, timeout_minutes, model_class=model_class, env=env
         )
+
+    def _plan_change_with_routing(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        failure_summary: str,
+        timeout_minutes: int,
+        *,
+        model_class: str,
+        env: dict[str, str] | None,
+    ) -> AgentResult:
+        unavailable: set[str] = set()
+        last_result: AgentResult | None = None
+        while True:
+            choice = self._choose(
+                task, "plan_repair", model_class=model_class,
+                record=True, extra_disabled=unavailable,
+            )
+            provider = choice.provider
+            if provider is None:
+                return last_result or AgentResult(
+                    False, "", choice.reason, provider="none", quota_exhausted=True
+                )
+            try:
+                if provider == "codex":
+                    available, _ = self.codex.availability()
+                    if not available:
+                        result = AgentResult(
+                            False, "", "Codex CLI/auth unavailable",
+                            provider="codex", auth_failure=True,
+                        )
+                    else:
+                        result = self.codex.plan_change(
+                            task, workspace, failure_summary, timeout_minutes,
+                            model=self.config.codex.planner_model, env=env,
+                        )
+                elif provider == "claude" and self.claude is not None:
+                    result = self.claude.plan_change(
+                        task, workspace, failure_summary, timeout_minutes, env=env
+                    )
+                else:
+                    result = self.cursor.plan_change(
+                        task, workspace, failure_summary, timeout_minutes,
+                        model_class=model_class, env=env,
+                    )
+            except Exception as exc:
+                result = AgentResult(
+                    False, "", f"{provider} integration error: {type(exc).__name__}",
+                    provider=provider, launch_failure=True,
+                )
+            if self._provider_unavailable(result) or self._is_launch_failure(result):
+                last_result = result
+                self._disable_provider(task, provider, self._fallback_reason(result))
+                unavailable.add(provider)
+                continue
+            return result
