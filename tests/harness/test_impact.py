@@ -12,7 +12,10 @@ from harness.codex_runner import CodexAgentRunner
 from harness.config import HarnessConfig
 from harness.impact import (
     MAX_IMPACT_LINES,
+    MAX_USERS_PER_SYMBOL,
+    NO_CODE_MAP_GREP_HEADER,
     OUTSIDE_IMPACT_HEADER,
+    UNREADABLE_CODE_MAP_GREP_HEADER,
     collect_outside_impact,
     find_changed_symbols,
     format_outside_impact_lines,
@@ -165,6 +168,8 @@ def test_graph_lists_outside_caller(tmp_path: Path) -> None:
 def test_grep_fallback_without_map(tmp_path: Path) -> None:
     repo, base = _init_fixture(tmp_path)
     body = collect_outside_impact(repo, base)
+    lines = body.splitlines()
+    assert lines[0] == NO_CODE_MAP_GREP_HEADER
     assert "caller.py:" in body
     assert "-> f" in body
 
@@ -178,9 +183,58 @@ def test_broken_graph_falls_back_to_grep_with_warning(
     (out / "graph.json").write_text("{not-json", encoding="utf-8")
     with caplog.at_level(logging.WARNING, logger="harness.impact"):
         body = collect_outside_impact(repo, base)
+    lines = body.splitlines()
+    assert lines[0] == UNREADABLE_CODE_MAP_GREP_HEADER
     assert "caller.py:" in body
     assert "-> f" in body
     assert any("failed to read code map for review impact" in r.message for r in caplog.records)
+
+
+def test_grep_fallback_skips_markdown_prefers_harness(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run(["git", "init", "-b", "main"], repo)
+    run(["git", "config", "user.name", "Test"], repo)
+    run(["git", "config", "user.email", "test@example.com"], repo)
+    write(repo / "pkg" / "api.py", "def run():\n    return 1\n")
+    write(repo / "harness" / "caller.py", "from pkg.api import run\n\ndef use():\n    return run()\n")
+    write(repo / "tests" / "test_api.py", "from pkg.api import run\n\ndef test_run():\n    assert run() == 1\n")
+    write(repo / "README.md", "Call run() to start.\n")
+    write(repo / ".gitignore", ".harness/\n")
+    run(["git", "add", "."], repo)
+    run(["git", "commit", "-m", "initial"], repo)
+    base = run(["git", "rev-parse", "HEAD"], repo)
+    write(repo / "pkg" / "api.py", "def run():\n    return 2\n")
+
+    body = collect_outside_impact(repo, base)
+    lines = [line for line in body.splitlines() if " -> " in line]
+    assert lines[0].startswith("harness/caller.py:")
+    assert any(line.startswith("tests/test_api.py:") for line in lines)
+    assert "README.md" not in body
+    assert body.splitlines()[0] == NO_CODE_MAP_GREP_HEADER
+
+
+def test_grep_fallback_caps_users_per_symbol(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run(["git", "init", "-b", "main"], repo)
+    run(["git", "config", "user.name", "Test"], repo)
+    run(["git", "config", "user.email", "test@example.com"], repo)
+    write(repo / "lib.py", "def helper():\n    return 1\n")
+    for i in range(8):
+        write(
+            repo / "tests" / f"user_{i}.py",
+            f"from lib import helper\n\ndef use_{i}():\n    return helper()\n",
+        )
+    write(repo / ".gitignore", ".harness/\n")
+    run(["git", "add", "."], repo)
+    run(["git", "commit", "-m", "initial"], repo)
+    base = run(["git", "rev-parse", "HEAD"], repo)
+    write(repo / "lib.py", "def helper():\n    return 2\n")
+
+    body = collect_outside_impact(repo, base)
+    user_lines = [line for line in body.splitlines() if " -> helper" in line]
+    assert len(user_lines) == MAX_USERS_PER_SYMBOL
 
 
 def test_impact_lines_capped_with_count() -> None:
@@ -215,5 +269,6 @@ def test_review_prompt_via_provider_grep_fallback(tmp_path: Path) -> None:
     assert result.ok
     prompt = (repo / "fake-codex-stdin.txt").read_text(encoding="utf-8")
     assert OUTSIDE_IMPACT_HEADER in prompt
+    assert NO_CODE_MAP_GREP_HEADER in prompt
     assert "caller.py:" in prompt
     assert "-> f" in prompt
