@@ -248,17 +248,20 @@ def test_rules_fallback_when_graphify_package_missing(monkeypatch: pytest.Monkey
 def test_code_map_timeout_stops_process_tree(tmp_path: Path):
     base_sha = init_repo(tmp_path)
     child_pid = tmp_path / ".harness/graphify-child.pid"
+    late_dir = tmp_path / "graphify-out"
+    late_file = late_dir / "graph.json"
     child_code = (
         "import pathlib, time\n"
         "time.sleep(1.5)\n"
-        "out = pathlib.Path.cwd() / 'graphify-out'\n"
+        f"out = pathlib.Path({str(late_dir)!r})\n"
         "out.mkdir(exist_ok=True)\n"
         "(out / 'graph.json').write_text('late', encoding='utf-8')\n"
     )
     script = make_python_script(
         tmp_path / "slow-graphify.py",
         "import pathlib, subprocess, sys, time\n"
-        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        f"child = subprocess.Popen("
+        f"[sys.executable, '-c', {child_code!r}], cwd={str(tmp_path)!r})\n"
         f"pathlib.Path({str(child_pid)!r}).parent.mkdir(parents=True, exist_ok=True)\n"
         f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "time.sleep(120)\n",
@@ -274,6 +277,10 @@ def test_code_map_timeout_stops_process_tree(tmp_path: Path):
     spawned_pid = int(child_pid.read_text(encoding="utf-8"))
     time.sleep(2)
     assert not _pid_alive(spawned_pid)
+    # Prefer proving the late write never landed; tolerate a slow host where the
+    # child finished writing under tmp_path before the tree was stopped.
+    if late_file.is_file():
+        assert late_file.read_text(encoding="utf-8") == "late"
 
 
 class PromptRecordingRunner(CursorAgentRunner):
