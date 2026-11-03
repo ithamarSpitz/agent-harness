@@ -17,6 +17,7 @@ depends_on:
   - S9-T23
   - S9-T24
   - S9-T25
+  - S9-T26
   - S9-T7
   - S9-T9
   - S9-T11
@@ -50,7 +51,8 @@ The spec parts, README and changelog describe S9 exactly as implemented.
 5. `docs/spec/review.md`: the required impact step and `IMPACT:` section (S9-T15), the "code outside the diff that uses what changed" list the harness puts in review prompts and its grep fallback (S9-T16), and that the reviewer is never the implementing provider and never Cursor Auto once another reviewer exists.
 6. `docs/spec/operations.md`: `HARNESS_HOME` and the machine-wide files under it (`agents.json` ledger, `outcomes.jsonl`), the per-call fields in usage records (S9-T18), verification records, and that tests never touch the real home folder (S9-T17).
 7. `docs/spec/operations.md` also: `harness hold` / `harness release` (S9-T25) and brief reload before each attempt plus the agent-reported block rule (S9-T24).
-8. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.
+8. `docs/spec/providers.md` also: Cursor Auto takes first implementation attempts and headroom routing applies in every project (S9-T26).
+9. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.
 
 # Acceptance criteria
 

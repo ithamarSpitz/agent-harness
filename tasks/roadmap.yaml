@@ -528,7 +528,7 @@ sprints:
         depends_on: []
       S9-T20:
         file: tasks/sprint-09-claude-and-routing/20-reviewer-edit-guard-always.md
-        stage: 4
+        stage: 5
         depends_on:
         - S9-T10
         - S9-T19
@@ -555,6 +555,11 @@ sprints:
         stage: 5
         depends_on:
         - S9-T24
+      S9-T26:
+        file: tasks/sprint-09-claude-and-routing/26-auto-first-live.md
+        stage: 4
+        depends_on:
+        - S9-T10
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
         stage: 6
@@ -570,6 +575,7 @@ sprints:
         - S9-T23
         - S9-T24
         - S9-T25
+        - S9-T26
         - S9-T7
         - S9-T9
         - S9-T11
