@@ -17,8 +17,11 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 
 MAX_IMPACT_LINES = 40
+MAX_USERS_PER_SYMBOL = 5
 IMPACT_RELATIONS = frozenset({"calls", "imports_from", "uses", "references"})
 OUTSIDE_IMPACT_HEADER = "Code outside the diff that uses what changed:"
+NO_CODE_MAP_GREP_HEADER = "no code map, used grep"
+UNREADABLE_CODE_MAP_GREP_HEADER = "code map unreadable, used grep"
 
 _HUNK_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@")
 _SOURCE_LOC_RE = re.compile(r"L(\d+)", re.IGNORECASE)
@@ -213,24 +216,28 @@ def _users_from_graph(
     workspace: Path,
     symbols: list[ChangedSymbol],
     changed_files: set[str],
-) -> list[str] | None:
-    """Return formatted user lines from graph.json, or None to trigger fallback."""
+) -> tuple[str | None, list[str] | None]:
+    """Return (fallback_header, lines).
+
+    On success: (None, lines). On missing map: (NO_CODE_MAP_GREP_HEADER, None).
+    On unreadable map: (UNREADABLE_CODE_MAP_GREP_HEADER, None) after warning.
+    """
     graph_path = workspace / "graphify-out" / "graph.json"
     if not graph_path.is_file():
-        return None
+        return NO_CODE_MAP_GREP_HEADER, None
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         LOGGER.warning("failed to read code map for review impact: %s", exc)
-        return None
+        return UNREADABLE_CODE_MAP_GREP_HEADER, None
     if not isinstance(data, dict):
         LOGGER.warning("failed to read code map for review impact: expected a JSON object")
-        return None
+        return UNREADABLE_CODE_MAP_GREP_HEADER, None
     nodes = data.get("nodes")
     links = data.get("links")
     if not isinstance(nodes, list) or not isinstance(links, list):
         LOGGER.warning("failed to read code map for review impact: missing nodes/links")
-        return None
+        return UNREADABLE_CODE_MAP_GREP_HEADER, None
 
     target_ids: dict[str, ChangedSymbol] = {}
     for node in nodes:
@@ -268,7 +275,27 @@ def _users_from_graph(
         seen.add(entry)
         lines.append(entry)
     lines.sort()
-    return lines
+    return None, lines
+
+
+def _grep_entry_sort_key(entry: str) -> tuple[int, str, int]:
+    """harness/ before other before tests/; within each, path then line."""
+    loc, _, _qual = entry.partition(" -> ")
+    file, sep, line_s = loc.rpartition(":")
+    if not sep:
+        file, line_s = loc, "0"
+    try:
+        line_no = int(line_s)
+    except ValueError:
+        line_no = 0
+    path = _posix(file)
+    if path.startswith("harness/"):
+        group = 0
+    elif path.startswith("tests/"):
+        group = 2
+    else:
+        group = 1
+    return (group, path, line_no)
 
 
 def _users_from_grep(
@@ -276,8 +303,8 @@ def _users_from_grep(
     symbols: list[ChangedSymbol],
     changed_files: set[str],
 ) -> list[str]:
-    lines: list[str] = []
-    seen: set[str] = set()
+    per_name: dict[str, list[str]] = {}
+    seen_by_name: dict[str, set[str]] = {}
     names = sorted({symbol.name for symbol in symbols})
     qual_by_name: dict[str, str] = {}
     for symbol in symbols:
@@ -287,32 +314,42 @@ def _users_from_grep(
     for name in names:
         if not name.isidentifier():
             continue
-        # Pathspec excludes; Git accepts :(exclude) on all platforms.
-        cmd = ["grep", "-n", "-I", "-w", name, "--", ".", *excludes]
+        # *.py only; pathspec excludes — Git accepts :(exclude) on all platforms.
+        cmd = ["grep", "-n", "-I", "-w", name, "--", "*.py", *excludes]
         result = _run_git(workspace, cmd)
         if result.returncode not in (0, 1):
             # Retry without excludes if pathspec failed; filter in Python.
-            result = _run_git(workspace, ["grep", "-n", "-I", "-w", name, "--", "."])
+            result = _run_git(
+                workspace, ["grep", "-n", "-I", "-w", name, "--", "*.py"]
+            )
             if result.returncode not in (0, 1):
                 continue
+        name_seen = seen_by_name.setdefault(name, set())
+        name_lines = per_name.setdefault(name, [])
         for raw in result.stdout.splitlines():
             # path:line:content
             parts = raw.split(":", 2)
             if len(parts) < 2:
                 continue
             file = _posix(parts[0])
-            if file in changed_files:
+            if not file.endswith(".py") or file in changed_files:
                 continue
             try:
                 line_no = int(parts[1])
             except ValueError:
                 continue
             entry = f"{file}:{line_no} -> {qual_by_name.get(name, name)}"
-            if entry in seen:
+            if entry in name_seen:
                 continue
-            seen.add(entry)
-            lines.append(entry)
-    lines.sort()
+            name_seen.add(entry)
+            name_lines.append(entry)
+
+    lines: list[str] = []
+    for name in names:
+        name_lines = per_name.get(name, [])
+        name_lines.sort(key=_grep_entry_sort_key)
+        lines.extend(name_lines[:MAX_USERS_PER_SYMBOL])
+    lines.sort(key=_grep_entry_sort_key)
     return lines
 
 
@@ -348,12 +385,17 @@ def collect_outside_impact(workspace: Path, base_ref: str) -> str:
             )
         changed_files.update(_untracked_files(workspace))
 
-        graph_lines = _users_from_graph(workspace, symbols, changed_files)
+        fallback_header, graph_lines = _users_from_graph(
+            workspace, symbols, changed_files
+        )
         if graph_lines is not None:
             return format_outside_impact_lines(graph_lines)
-        return format_outside_impact_lines(
+        body = format_outside_impact_lines(
             _users_from_grep(workspace, symbols, changed_files)
         )
+        if fallback_header:
+            return f"{fallback_header}\n{body}"
+        return body
     except Exception as exc:  # noqa: BLE001 - must never fail the review
         LOGGER.warning("review impact collection failed: %s", exc)
         return format_outside_impact_lines([])
