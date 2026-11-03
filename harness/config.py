@@ -131,6 +131,29 @@ class CodexConfig:
 
 
 @dataclass(slots=True)
+class ClaudeReserveConfig:
+    five_hour_max_used_percent: float = 50
+    weekly_max_used_percent: float = 70
+
+
+@dataclass(slots=True)
+class ClaudeConfig:
+    enabled: bool = False
+    command: str = "claude"
+    implementation_sequence: list[dict[str, str]] = field(default_factory=lambda: [
+        {"model": "sonnet", "effort": "medium"},
+        {"model": "sonnet", "effort": "high"},
+        {"model": "opus", "effort": "high"},
+    ])
+    review_model: str = "sonnet"
+    review_effort: str = "high"
+    escalation_model: str = "opus"
+    escalation_effort: str = "high"
+    permission_mode: str = "bypassPermissions"
+    reserve: ClaudeReserveConfig = field(default_factory=ClaudeReserveConfig)
+
+
+@dataclass(slots=True)
 class ProvidersConfig:
     priority: list[str] = field(default_factory=lambda: ["codex", "cursor"])
 
@@ -293,6 +316,7 @@ class HarnessConfig:
     release: ReleaseConfig
     doctor: DoctorConfig
     self_hosting: SelfHostingConfig = field(default_factory=SelfHostingConfig)
+    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
 
     @classmethod
     def _load_execution(cls, raw: Any) -> ExecutionConfig:
@@ -323,6 +347,45 @@ class HarnessConfig:
             if key in section
         }
         return CodeMapConfig(**allowed)
+
+    @staticmethod
+    def _load_claude(raw: Any) -> ClaudeConfig:
+        section = dict(raw or {})
+        section["reserve"] = ClaudeReserveConfig(**section.get("reserve", {}))
+        config = ClaudeConfig(**section)
+
+        if not config.implementation_sequence:
+            raise ValueError("claude.implementation_sequence must not be empty")
+
+        valid_efforts = {"low", "medium", "high", "max"}
+        for index, profile in enumerate(config.implementation_sequence):
+            model = profile.get("model") if isinstance(profile, dict) else None
+            if not isinstance(model, str) or not model.strip():
+                raise ValueError(
+                    f"claude.implementation_sequence[{index}].model must be a non-empty string"
+                )
+            effort = profile.get("effort") if isinstance(profile, dict) else None
+            if not isinstance(effort, str) or effort not in valid_efforts:
+                raise ValueError(
+                    f"claude.implementation_sequence[{index}].effort must be one of "
+                    "low, medium, high, max"
+                )
+        for key in ("review_effort", "escalation_effort"):
+            value = getattr(config, key)
+            if not isinstance(value, str) or value not in valid_efforts:
+                raise ValueError(
+                    f"claude.{key} must be one of low, medium, high, max"
+                )
+
+        for key in ("five_hour_max_used_percent", "weekly_max_used_percent"):
+            value = getattr(config.reserve, key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 <= value <= 100
+            ):
+                raise ValueError(f"claude.reserve.{key} must be between 0 and 100")
+        return config
 
     @staticmethod
     def _load_wait_patterns(raw: Any, config_type: type[CodexConfig] | type[CapacityConfig]):
@@ -361,4 +424,5 @@ class HarnessConfig:
             release=ReleaseConfig(**raw.get("release", {})),
             doctor=DoctorConfig(**raw.get("doctor", {})),
             self_hosting=SelfHostingConfig(**raw.get("self_hosting", {})),
+            claude=cls._load_claude(raw.get("claude", {})),
         )
