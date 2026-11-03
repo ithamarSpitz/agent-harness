@@ -30,6 +30,7 @@ from .init_project import run_init
 from .limits import run_limits
 from .machine_setup import run_setup_machine
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
+from .self_host import ensure_frozen_copy, run_resume_with_frozen_copy
 from .task_queue import TaskQueueError, TaskQueueManager
 from .verifier import Verifier
 
@@ -460,6 +461,34 @@ def _cmd_run_live(runtime: Runtime, sprint_id: str, sprint) -> int:
                     runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
                     continue
                 return 5
+
+            if record is not None and record.get("kind") == "RESTART_ON_NEW_CODE":
+                commit = runtime.worktrees.head_commit()
+                target = ensure_frozen_copy(runtime.root, commit)
+                if target is None:
+                    print(
+                        "WARNING: self-host frozen copy failed; continuing on current code.",
+                        file=sys.stderr,
+                    )
+                    runtime.failures.clear(sprint_id)
+                    runtime.manifests.set_status(sprint_id, "IMPLEMENTING")
+                    continue
+                try:
+                    roadmap_arg = str(runtime.roadmap_path.relative_to(runtime.root))
+                except ValueError:
+                    roadmap_arg = str(runtime.roadmap_path)
+                try:
+                    config_arg = str(runtime.config_path.relative_to(runtime.root))
+                except ValueError:
+                    config_arg = str(runtime.config_path)
+                # KeepAwake remains active in the outer cmd_run context while we wait.
+                return run_resume_with_frozen_copy(
+                    sprint_id,
+                    target,
+                    repo_root=runtime.root,
+                    roadmap=roadmap_arg,
+                    config=config_arg,
+                )
 
             runtime.manifests.finish(sprint_id, success=False)
             if record is not None:

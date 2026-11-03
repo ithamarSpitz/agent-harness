@@ -324,6 +324,28 @@ class Scheduler:
             f"Continue with: harness resume {sprint.id}"
         )
 
+    def _record_restart_on_new_code(self, sprint: SprintSpec, stage: int) -> None:
+        self.state.set_meta(f"{sprint.id}.run_status", TaskStatus.PENDING.value)
+        self.state.save()
+        self.failures.record(
+            FailureRecord(
+                sprint=sprint.id,
+                kind="RESTART_ON_NEW_CODE",
+                stage=stage,
+                task_ids=[],
+                message=(
+                    "Stage integrated successfully. Pausing so the run can continue on a "
+                    "frozen copy of the new harness code."
+                ),
+                suggested_command=f"harness resume {sprint.id}",
+            )
+        )
+        self._append_event(sprint.id, "restart on new code")
+        print(
+            f"Self-hosting: stage {stage} integrated; restarting on new code. "
+            f"Continue with: harness resume {sprint.id}"
+        )
+
     def _submit_admitted_task(
         self,
         pool: concurrent.futures.ThreadPoolExecutor,
@@ -1532,6 +1554,12 @@ class Scheduler:
             self._pickup_queue(sprint, current_stage=stage, merge_in_progress=True)
 
             if not self._integrate_stage(sprint, stage, unfinished, current_commit):
+                return False
+
+            # After a successful non-final stage, hand control back so the CLI can
+            # resume on a frozen copy of the newly integrated harness code.
+            if self.config.self_hosting.enabled and self._open_stages(sprint):
+                self._record_restart_on_new_code(sprint, stage)
                 return False
 
         self.finalize_completed_sprint(sprint, dry_run=dry_run)
