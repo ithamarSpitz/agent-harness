@@ -282,6 +282,40 @@ class ProviderAgentRunner:
     def _provider_unavailable(result: AgentResult) -> bool:
         return result.quota_exhausted or result.auth_failure or result.model_unavailable
 
+    @staticmethod
+    def _is_launch_failure(result: AgentResult) -> bool:
+        return bool(getattr(result, "launch_failure", False))
+
+    @staticmethod
+    def _is_resource_launch_failure(result: AgentResult) -> bool:
+        return bool(getattr(result, "resource_launch_failure", False))
+
+    @classmethod
+    def _codex_should_fallback(cls, result: AgentResult) -> bool:
+        return cls._provider_unavailable(result) or cls._is_launch_failure(result)
+
+    @classmethod
+    def _codex_fallback_reason(cls, result: AgentResult) -> str:
+        # Prefer quota/auth/model when those flags are set so legacy dual-flag
+        # results keep reason "auth"; pure launch failures use launch_failure.
+        if result.quota_exhausted:
+            return f"quota:{result.quota_scope or 'unspecified'}"
+        if result.auth_failure:
+            return "auth"
+        if result.model_unavailable:
+            return "model_unavailable"
+        if cls._is_launch_failure(result):
+            return "launch_failure"
+        return "model_unavailable"
+
+    @classmethod
+    def _should_consume_cursor_attempt(cls, result: AgentResult) -> bool:
+        if result.quota_exhausted or result.waiting_cause is not None:
+            return False
+        if cls._is_launch_failure(result) or cls._is_resource_launch_failure(result):
+            return False
+        return True
+
     def _guard_workspace(self, task: TaskSpec, workspace: Path) -> AgentResult | None:
         result = worktree_guard_agent_result(workspace)
         if result is None:
@@ -351,11 +385,10 @@ class ProviderAgentRunner:
                             model=model, reasoning_effort=reasoning_effort, env=env,
                             code_map_offered=code_map_offered,
                         )
-                        if self._provider_unavailable(result):
+                        if self._codex_should_fallback(result):
                             if not self.config.cursor.enabled:
                                 return result
-                            reason = (f"quota:{result.quota_scope or 'unspecified'}" if result.quota_exhausted else ("auth" if result.auth_failure else "model_unavailable"))
-                            self._mark_codex_disabled(task, reason)
+                            self._mark_codex_disabled(task, self._codex_fallback_reason(result))
                         elif result.capacity_exhausted or result.transient_error:
                             return result
                         else:
@@ -390,7 +423,7 @@ class ProviderAgentRunner:
             task, workspace, timeout_minutes, attempt, previous_failure,
             env=env, model_class_override=model_class, code_map_offered=code_map_offered,
         )
-        if not result.quota_exhausted and result.waiting_cause is None:
+        if self._should_consume_cursor_attempt(result):
             self._consume_provider_attempt(task, "cursor")
         return result
 
@@ -432,11 +465,10 @@ class ProviderAgentRunner:
                         model=self.config.codex.review_model, env=env,
                         code_map_offered=code_map_offered,
                     )
-                    if self._provider_unavailable(result):
+                    if self._codex_should_fallback(result):
                         if not self.config.cursor.enabled:
                             return result
-                        reason = (f"quota:{result.quota_scope or 'unspecified'}" if result.quota_exhausted else ("auth" if result.auth_failure else "model_unavailable"))
-                        self._mark_codex_disabled(task, reason)
+                        self._mark_codex_disabled(task, self._codex_fallback_reason(result))
                     else:
                         return result
                 else:
@@ -479,11 +511,10 @@ class ProviderAgentRunner:
                         task, workspace, failure_summary, timeout_minutes,
                         model=self.config.codex.planner_model, env=env,
                     )
-                    if self._provider_unavailable(result):
+                    if self._codex_should_fallback(result):
                         if not self.config.cursor.enabled:
                             return result
-                        reason = (f"quota:{result.quota_scope or 'unspecified'}" if result.quota_exhausted else ("auth" if result.auth_failure else "model_unavailable"))
-                        self._mark_codex_disabled(task, reason)
+                        self._mark_codex_disabled(task, self._codex_fallback_reason(result))
                     else:
                         return result
                 else:

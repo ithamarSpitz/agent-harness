@@ -40,6 +40,7 @@ def test_codex_launch_failure_waits_for_provider_error(tmp_path: Path, monkeypat
 
     assert not result.ok
     assert result.launch_failure
+    assert not result.auth_failure
     assert result.error == f"codex could not start: {launch_error}"
     assert result.provider == "codex"
     assert result.waiting_cause is None
@@ -50,6 +51,8 @@ def test_codex_launch_failure_waits_for_provider_error(tmp_path: Path, monkeypat
     event = usage.events()[0]
     assert event["waiting_cause"] is None
     assert not event["transient_error"]
+    assert event["launch_failure"] is True
+    assert event["auth_failure"] is False
 
 
 def _task(tmp_path: Path) -> TaskSpec:
