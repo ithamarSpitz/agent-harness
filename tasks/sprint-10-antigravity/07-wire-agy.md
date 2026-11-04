@@ -21,6 +21,7 @@ allowed_paths:
   - harness.yaml
   - tests/harness/test_cursor_auto_when_exhausted.py
   - tests/harness/test_board_headroom.py
+  - harness/board.py
 context:
   - spec
 environment: null
@@ -43,6 +44,7 @@ With `agy.enabled: true`, Antigravity takes part in the S9-T32 provider choice: 
 4. Log the choice and its reason as for the other providers.
 5. `harness doctor` reports whether `agy` is available when it is enabled (`agy --version`; never read credentials).
 6. With `agy.enabled: false`, routing is exactly as before.
+- Config source (operator, Nov 4 2026, follows S10-T6): pass the loaded config (or `--root` / `--config`) to `run_limits` and `headroom_snapshot` from `harness limits` in `harness/cli.py`, from `ProviderRunner` (`self.config`) and from the board (`harness/board.py`), so agy appears when the working folder is not the project root. A test runs `harness --root <tmp project> limits` from another folder and sees the agy section.
 
 # Acceptance criteria
 

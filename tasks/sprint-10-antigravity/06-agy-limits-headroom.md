@@ -35,6 +35,7 @@ verification:
 1. `harness/limits.py`: when `agy.enabled`, add an Antigravity section with one line per pool: group name, percent left, and the reset time in local time (same format as the other providers). A failed read prints one line `Antigravity: usage unavailable (<reason>)`.
 2. `harness/headroom.py`: `headroom_snapshot` adds one `Headroom` per pool for provider `agy` (used percent = 100 - remaining percent, window `weekly`, `resets_at`), from `fetch_agy_usage` (S10-T2), cached like the other sources; a failed read gives `known=False`, never an exception.
 3. The agy fetch is injectable; tests use fakes.
+- Config source (operator, Nov 4 2026, from the attempt-1 review): `run_limits` and `headroom_snapshot` take an optional `config` (an already loaded config) or `root` / `config_path`; with none given they keep today's default (`harness.yaml` in the current folder). A `harness.yaml` that exists but fails to load logs one warning naming the error and treats agy as disabled; it is never silent. Passing the config from the callers (`harness/cli.py`, `harness/provider_runner.py`, `harness/board.py`) is S10-T7's job, not this task's; do not edit them. Tests cover: explicit config with agy enabled from another working folder, and the broken-file warning.
 
 # Acceptance criteria
 
