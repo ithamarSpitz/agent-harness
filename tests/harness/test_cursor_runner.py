@@ -49,8 +49,15 @@ def test_cursor_launch_failure_is_not_a_provider_wait(tmp_path: Path, monkeypatc
     assert event["auth_failure"] is False
 
 
-def _config(tmp_path: Path, command: str = "agent", *, output_format: str | None = None) -> HarnessConfig:
+def _config(
+    tmp_path: Path,
+    command: str = "agent",
+    *,
+    output_format: str | None = None,
+    auto_when_exhausted: bool = False,
+) -> HarnessConfig:
     format_line = f"  output_format: {output_format}\n" if output_format else ""
+    auto_line = "  auto_when_exhausted: true\n" if auto_when_exhausted else ""
     path = tmp_path / "harness.yaml"
     path.write_text(
         f"""execution: {{watchdog_poll_seconds: 0.01}}
@@ -58,7 +65,7 @@ worktree: {{}}
 code_map: {{command: graphify}}
 cursor:
   command: {yaml_quote(command)}
-{format_line}  models: {{worker: test-model}}
+{format_line}{auto_line}  models: {{worker: test-model}}
 verification: {{}}
 paths: {{}}
 context: {{}}
@@ -67,6 +74,33 @@ doctor: {{}}
         encoding="utf-8",
     )
     return HarnessConfig.load(path)
+
+
+@pytest.mark.parametrize("override, expected_model", [("auto", "auto"), (None, "test-model")])
+def test_cursor_model_override_command(tmp_path: Path, monkeypatch, override, expected_model):
+    command: list[str] = []
+
+    def capture_launch(argv, *args, **kwargs):
+        command.extend(argv)
+        raise FileNotFoundError("captured")
+
+    config = _config(
+        tmp_path,
+        str(tmp_path / "fake-cursor.py"),
+        auto_when_exhausted=True,
+    )
+    assert config.cursor.models == {"worker": "test-model"}
+    runner = CursorAgentRunner(config, tmp_path / "logs")
+    monkeypatch.setattr("harness.runner.subprocess.Popen", capture_launch)
+
+    runner._invoke(
+        task_id="AUTO", phase="implement", prompt="x", workspace=tmp_path,
+        model_class="worker", model_class_override=override,
+        timeout_minutes=1, log_name="auto.log",
+    )
+
+    model_index = command.index("--model")
+    assert command[model_index + 1] == expected_model
 
 
 def test_cursor_stream_fixture_extracts_answer_usage_and_activity(tmp_path: Path):

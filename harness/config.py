@@ -51,6 +51,9 @@ class CursorConfig:
     # for Git worktrees it created and can verify as registered worktrees.
     trust_harness_worktrees: bool = True
     models: dict[str, str | None] = field(default_factory=dict)
+    # Run the `auto` model in place of the named models only while both Cursor
+    # usage pools are at 100% (so Auto never spends included Cursor usage).
+    auto_when_exhausted: bool = False
 
 
 @dataclass(slots=True)
