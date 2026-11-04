@@ -11,6 +11,14 @@ from harness.config import HarnessConfig
 from tests.portable import make_python_script
 
 
+CLAUDE_FIVE_HOUR_LIMIT_RESULT = (
+    '{"type":"result","subtype":"error_during_execution","is_error":true,'
+    '"api_error_status":429,"api_error":"usage_limit_reached",'
+    '"result":"You\'ve hit your 5-hour limit · resets 6:50pm (Asia/Jerusalem)",'
+    '"terminal_reason":"api_error"}'
+)
+
+
 def _config(tmp_path: Path, command: str) -> HarnessConfig:
     path = tmp_path / "harness.yaml"
     path.write_text(
@@ -62,6 +70,29 @@ def _runner_result(
     )
 
 
+def _runner_stream_result(tmp_path: Path, stream: str):
+    fake = make_python_script(
+        tmp_path / "fake-claude-stream.py",
+        (
+            "import sys\n"
+            "_ = sys.stdin.read()\n"
+            f"print({stream!r})\n"
+            "raise SystemExit(1)\n"
+        ),
+    )
+    runner = ClaudeAgentRunner(_config(tmp_path, str(fake)), tmp_path / "logs")
+    return runner._invoke(
+        task_id="CLAUDE-STREAM-ERROR",
+        phase="implement",
+        prompt="test",
+        workspace=tmp_path,
+        model="sonnet",
+        effort="medium",
+        timeout_minutes=1,
+        log_name="claude-stream-error.log",
+    )
+
+
 @pytest.mark.parametrize(
     ("message", "expected_quota", "expected_cause", "expected_auth"),
     [
@@ -108,6 +139,31 @@ def test_is_error_claude_result_is_classified(tmp_path: Path):
 
     assert not result.ok
     assert result.waiting_cause == "provider_error"
+
+
+def test_recorded_five_hour_limit_result_is_quota(tmp_path: Path):
+    result = _runner_stream_result(tmp_path, CLAUDE_FIVE_HOUR_LIMIT_RESULT)
+
+    assert not result.ok
+    assert result.quota_exhausted
+    assert result.waiting_cause is None
+    assert result.error == "Claude usage quota exhausted"
+
+
+def test_weekly_limit_result_is_quota(tmp_path: Path):
+    event = json.dumps(
+        {
+            "type": "result",
+            "is_error": True,
+            "result": "You've hit your weekly limit",
+            "terminal_reason": "api_error",
+        }
+    )
+
+    result = _runner_stream_result(tmp_path, event)
+
+    assert result.quota_exhausted
+    assert result.waiting_cause is None
 
 
 @pytest.mark.parametrize("message", ["rate limit handling is complete", "overloaded UI fixed"])
