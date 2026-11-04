@@ -281,6 +281,9 @@ class CursorAgentRunner:
         ]
         effective_model_class = model_class_override or model_class
         model = self.config.cursor.models.get(effective_model_class)
+        # Auto is a routing override, not a declarable task model class.
+        if model_class_override == "auto":
+            model = "auto"
         if model:
             command += ["--model", model]
         if mode:

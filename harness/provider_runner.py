@@ -275,11 +275,46 @@ class ProviderAgentRunner:
     def _cursor_implement_budget(self) -> int:
         return max(1, len(self.config.retry.sequence))
 
+    @staticmethod
+    def _cursor_used(snapshot: object) -> list[float | None]:
+        cursor = snapshot.get("cursor") if isinstance(snapshot, dict) else None
+        windows = cursor.get("windows") if isinstance(cursor, dict) else None
+        used: list[float | None] = []
+        for name in ("composer_grok", "other_models"):
+            window = windows.get(name) if isinstance(windows, dict) else None
+            value = window.get("used_percent") if isinstance(window, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                used.append(float(value))
+            else:
+                used.append(None)
+        return used
+
+    def _cursor_exhausted(self, task: TaskSpec, snapshot: object | None = None) -> bool:
+        """True when auto_when_exhausted is on and both Cursor pools are known and at 100%+."""
+        if not self.config.cursor.auto_when_exhausted:
+            return False
+        if snapshot is None:
+            snapshot = self._snapshot(task)
+        return all(value is not None and value >= 100 for value in self._cursor_used(snapshot))
+
+    def _routing_active(self, task: TaskSpec, phase: str) -> bool:
+        # Without Claude, routing is only needed while Cursor runs Auto (both
+        # pools at 100%); otherwise the historical provider path is unchanged.
+        return self.config.claude.enabled or (
+            phase in {"implement", "review"} and self._cursor_exhausted(task)
+        )
+
     def _routing_model_class(self, task: TaskSpec, phase: str) -> str:
-        # Reviews always use the review model class (never task.model_class /
-        # Auto). First-implement Auto routing is S9-T26, not this task.
+        # Reviews never run on Auto: "auto" makes routing drop Cursor for review.
+        exhausted = self._cursor_exhausted(task)
         if phase == "review":
-            return task.review_model_class or "reviewer"
+            return "auto" if exhausted else (task.review_model_class or "reviewer")
+        if (
+            phase == "implement"
+            and exhausted
+            and not any(self.state.get(task.id).provider_attempts.values())
+        ):
+            return "auto"
         return task.model_class
 
     def _choose(
@@ -304,6 +339,18 @@ class ProviderAgentRunner:
         # Enabling Claude opts a project into live headroom routing. Projects
         # that have not enabled it retain the exact historical priority order.
         routing_snapshot: object = snapshot if self.config.claude.enabled else {}
+        cursor_exhausted = self._cursor_exhausted(task, snapshot)
+        if (
+            self.config.cursor.auto_when_exhausted
+            and phase in {"implement", "review"}
+            and isinstance(routing_snapshot, dict)
+            and isinstance(routing_snapshot.get("cursor"), dict)
+        ):
+            routing_snapshot = dict(routing_snapshot)
+            if cursor_exhausted:
+                if phase == "implement":
+                    # Both pools at 100% is not "no capacity" for Cursor Auto.
+                    del routing_snapshot["cursor"]
         implementer = self.state.get_meta(
             f"{task.sprint}.{task.id}.provider.implementer"
         )
@@ -320,6 +367,19 @@ class ProviderAgentRunner:
         )
         if record:
             message = f"provider choice for {phase}: {choice.provider or 'none'} ({choice.reason})"
+            if (
+                choice.provider == "cursor"
+                and self.config.cursor.auto_when_exhausted
+                and phase in {"implement", "review"}
+            ):
+                if phase == "implement" and cursor_exhausted:
+                    message += "; cursor: auto (both pools at 100%)"
+                else:
+                    cls = (
+                        (task.review_model_class or "reviewer") if phase == "review"
+                        else self._cursor_model_class(task)
+                    )
+                    message += f"; cursor: {self.config.cursor.models.get(cls) or cls}"
             write_log(self.codex.log_dir, f"{task.id}-routing.log", message + "\n")
             print(f"{task.id}: {message}", flush=True)
             if self.usage is not None:
@@ -349,7 +409,7 @@ class ProviderAgentRunner:
         # Quota disables must clear from live headroom even when Claude routing
         # is off (e.g. WAITING_TIMEOUT resume after a 5-hour window reset).
         self._snapshot(task)
-        if self.config.claude.enabled:
+        if self._routing_active(task, phase):
             return self._choose(
                 task, phase, model_class=self._routing_model_class(task, phase)
             ).provider or "none"
@@ -446,7 +506,7 @@ class ProviderAgentRunner:
             if not self.config.cursor.enabled:
                 return False
             return self._provider_attempt(task, "cursor") < 1
-        if self.config.claude.enabled:
+        if self._routing_active(task, "implement"):
             exhausted: set[str] = set()
             if self._provider_attempt(task, "codex") >= len(
                 self.config.codex.implementation_sequence
@@ -473,6 +533,8 @@ class ProviderAgentRunner:
     def _cursor_model_class(self, task: TaskSpec, *, model_class_override: str | None = None) -> str:
         if model_class_override is not None:
             return model_class_override
+        if self._cursor_exhausted(task):
+            return "auto"
         sequence = self.config.retry.sequence or [task.model_class]
         index = self._provider_attempt(task, "cursor")
         return sequence[min(index, len(sequence) - 1)]
@@ -597,7 +659,7 @@ class ProviderAgentRunner:
                          model_class_override: str | None = None,
                          code_map_offered: bool = False,
                          on_process_start: Callable[[int], None] | None = None) -> AgentResult:
-        if self.config.claude.enabled and model_class_override is None:
+        if model_class_override is None and self._routing_active(task, "implement"):
             return self._implement_with_routing(
                 task, workspace, timeout_minutes, attempt, previous_failure,
                 env=env, code_map_offered=code_map_offered,
@@ -803,7 +865,7 @@ class ProviderAgentRunner:
         code_map_offered: bool = False,
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
-        if self.config.claude.enabled:
+        if self._routing_active(task, "review"):
             return self._review_with_routing(
                 task, workspace, base_ref, verification_summary, timeout_minutes,
                 env=env, code_map_offered=code_map_offered,

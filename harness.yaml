@@ -19,13 +19,12 @@ cursor:
   command: agent
   output_format: stream-json
   trust_harness_worktrees: true
+  # Named models; Auto implements in their place only while both Cursor pools are at 100% (never reviews).
+  auto_when_exhausted: true
   models:
-    # Auto implements while both Cursor pools are at 100% (until Nov 26 2026).
-    # S9 ONLY (user, Nov 3 2026): Auto reviews when Codex is out (Codex stays first); the operator
-    # verifies every Auto review. After S9 (Claude can review) set reviewer back to a non-Auto model.
-    worker: auto
-    hard_worker: auto
-    reviewer: auto
+    worker: composer-2.5
+    hard_worker: cursor-grok-4.6-high
+    reviewer: cursor-grok-4.6-high
     escalation: claude-opus-5-thinking-high
 
 
