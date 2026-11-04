@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -36,7 +37,7 @@ from .outcomes import append_outcome
 from .proc_tree import PeakSampler
 from .provider_runner import ProviderAgentRunner
 from .release import ReleaseRunner, sprint_is_complete
-from .roadmap import Roadmap
+from .roadmap import Roadmap, _frontmatter
 from .state import StateStore
 from .task_queue import TaskQueueManager
 from .usage import UsageRecorder, parse_review_outcome
@@ -57,6 +58,15 @@ LOGGER = logging.getLogger(__name__)
 FreeMemoryReader = Callable[[], float | None]
 SamplerFactory = Callable[[int, float], PeakSampler]
 ProcessStartHook = Callable[[int], None]
+
+_RELOADABLE_BRIEF_FIELDS = {
+    "allowed_paths": "allowed_paths",
+    "verification": "verification",
+    "timeout_minutes": "timeout_minutes",
+    "review": "review",
+    "allow_protected": "allow_protected",
+    "context": "context_refs",
+}
 
 
 def _subprocess_text(value: str | bytes | None) -> str:
@@ -363,6 +373,76 @@ class Scheduler:
             attempts = self.config.execution.default_max_attempts
         timeout = task.timeout_minutes or self.config.execution.default_timeout_minutes
         return attempts, timeout
+
+    @staticmethod
+    def _blocked_open_issues(output: str) -> str | None:
+        status = re.search(
+            r"(?im)^\s*STATUS\s*:?\s*(?:\r?\n\s*)?blocked\s*$",
+            output,
+        )
+        if status is None:
+            return None
+        issues = re.search(
+            r"(?ims)^\s*OPEN_ISSUES\s*:?\s*(.*?)"
+            r"(?=^\s*(?:STATUS|CHANGED_FILES|TEST_RESULTS)\s*:?\s*$|\Z)",
+            output,
+        )
+        if issues is None or not issues.group(1).strip():
+            return "Agent reported blocked without OPEN_ISSUES details"
+        return issues.group(1).strip()
+
+    @staticmethod
+    def _reload_attempt_brief(task: TaskSpec) -> None:
+        """Atomically refresh fields that may be operator-corrected during a run."""
+        try:
+            frontmatter = _frontmatter(task.file)
+            if not frontmatter:
+                raise ValueError("brief has no YAML frontmatter")
+            refreshed: dict[str, object] = {
+                "allowed_paths": list(frontmatter.get("allowed_paths") or []),
+                "verification": list(frontmatter.get("verification") or []),
+                "timeout_minutes": (
+                    int(frontmatter["timeout_minutes"])
+                    if frontmatter.get("timeout_minutes") is not None
+                    else None
+                ),
+                "review": bool(frontmatter.get("review", True)),
+                "allow_protected": bool(frontmatter.get("allow_protected", False)),
+                "context_refs": list(frontmatter.get("context") or []),
+            }
+            ignored: list[str] = []
+            if "id" in frontmatter and str(frontmatter["id"]) != task.id:
+                ignored.append("id")
+            if "stage" in frontmatter and int(frontmatter["stage"]) != task.stage:
+                ignored.append("stage")
+            if (
+                "depends_on" in frontmatter
+                and list(frontmatter.get("depends_on") or []) != task.depends_on
+            ):
+                ignored.append("depends_on")
+        except Exception as exc:
+            LOGGER.warning(
+                "could not reload brief for %s; keeping previous task settings: %s",
+                task.id,
+                exc,
+            )
+            return
+
+        changed = [
+            brief_name
+            for brief_name, attribute in _RELOADABLE_BRIEF_FIELDS.items()
+            if getattr(task, attribute) != refreshed[attribute]
+        ]
+        for attribute, value in refreshed.items():
+            setattr(task, attribute, value)
+        if changed:
+            LOGGER.info("reloaded brief for %s; changed fields: %s", task.id, ", ".join(changed))
+        if ignored:
+            LOGGER.info(
+                "ignored brief changes until the next start for %s: %s",
+                task.id,
+                ", ".join(ignored),
+            )
 
     def _implementation_model_class(
         self, task: TaskSpec, attempt_number: int, *, model_class_override: str | None = None
@@ -900,6 +980,7 @@ class Scheduler:
         observed_peaks: list[float],
         *,
         resume_review: bool = False,
+        blocked_open_issues: str | None = None,
     ) -> TaskOutcome | None:
         skip_verification = resume_review and self._review_resume_skips_verification(
             task.id, worktree, base_ref,
@@ -926,6 +1007,8 @@ class Scheduler:
                 self._clock() - verification_started,
             )
             if not verification.ok:
+                if blocked_open_issues is not None:
+                    return self._block_task(task, blocked_open_issues, worktree)
                 self._set_task_status(task, runtime, TaskStatus.RETRY)
                 runtime.last_error = verification.summary
                 self.state.save()
@@ -1113,6 +1196,8 @@ class Scheduler:
             not getattr(self.runner, "manages_model_routing", False)
             or self.runner.has_implementation_budget(task, model_class_override=model_class_override)
         ):
+            self._reload_attempt_brief(task)
+            _, timeout = self._defaults(task, model_class_override=model_class_override)
             runtime.attempt += 1
             self._set_task_status(task, runtime, TaskStatus.IMPLEMENTING)
             runtime.waiting_phase = None
@@ -1171,6 +1256,7 @@ class Scheduler:
             finished = self._verify_review_commit(
                 task, runtime, worktree, base_ref, timeout, task_env, code_map_offered,
                 observed_peaks,
+                blocked_open_issues=self._blocked_open_issues(result.output or ""),
             )
             if finished is not None:
                 return finished
