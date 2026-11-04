@@ -28,6 +28,14 @@ cursor:
     reviewer: auto
     escalation: claude-opus-5-thinking-high
 
+
+claude:
+  # On from S9 stage 6 (user, Nov 4 2026). Interim cap until S9-T32 replaces it with the 60-90% rule.
+  enabled: true
+  reserve:
+    five_hour_max_used_percent: 80
+    weekly_max_used_percent: 70
+
 self_hosting:
   enabled: true
 
