@@ -29,10 +29,10 @@ State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 | Part | Contents |
 | --- | --- |
 | [Task lifecycle and stage barrier](docs/spec/lifecycle.md) | Statuses, transitions, retries, integration barrier, recovery commands. |
-| [Providers, quota, and capacity](docs/spec/providers.md) | Claude Code, headroom/urgency routing, Cursor Auto, reserves, waits, and fallback. |
+| [Providers, quota, and capacity](docs/spec/providers.md) | Antigravity, Codex, Cursor and Claude Code; ladders, permissions, headroom/urgency routing, reserves, waits, and fallback. |
 | [Review and code map](docs/spec/review.md) | Independent cross-provider review, required impact analysis, UI check, optional Graphify code map. |
-| [Operations](docs/spec/operations.md) | `HARNESS_HOME`, usage/outcome records, hold/release, brief reload, post-sprint release, and live task enqueueing. |
-| [Configuration](docs/spec/configuration.md) | All `harness.yaml` keys, including Claude and Cursor Auto, plus task brief frontmatter. |
+| [Operations](docs/spec/operations.md) | `HARNESS_HOME`, usage/outcome records, provider limits/headroom, hold/release, brief reload, post-sprint release, and live task enqueueing. |
+| [Configuration](docs/spec/configuration.md) | All `harness.yaml` keys, including agy, Claude and Cursor Auto, plus task brief frontmatter. |
 
 ## Guarantees
 

@@ -17,6 +17,14 @@ Verification is a first-class usage call with provider `harness`, model `verific
 
 `harness models report [--project PATH] [--since YYYY-MM-DD]` aggregates shared calls and task outcomes by provider/model/effort/phase. `harness models import PROJECT [PROJECT ...]` imports legacy project-local usage logs, marks imported rows, and deduplicates repeated imports. Tests redirect or disable both ledger and outcomes folders; they never read or write the real home folder.
 
+## Provider limits and headroom
+
+`harness limits [--json]` reads Codex, Cursor, and Claude independently. When the project config has `agy.enabled: true`, it also runs the configured `agy.command` as `agy -p /usage --output-format json` in an isolated temporary directory with stdin closed and a 30-second timeout. This command uses no model tokens. The harness reads `command.data.groups[].buckets[]` and displays each Antigravity group with percent left and a local reset time. JSON output adds `agy.pools[]` entries with `pool_id`, `group_name`, `window`, `remaining_percent`, and Unix `resets_at`. Failure or malformed/no-pool output produces only an independent `agy.error` / `Antigravity: usage unavailable (...)` block and does not hide other providers.
+
+The command uses the loaded project config supplied by the CLI. Without one, agy is disabled; a current-directory `harness.yaml` can enable it, while a config that exists but cannot be loaded warns once and treats agy as disabled. A disabled agy provider is neither invoked nor included in text or JSON limits output.
+
+The age-aware headroom snapshot uses the same configured agy command and machine-wide cache as other providers. Each valid agy bucket becomes a known weekly `Headroom` entry whose used percent is `(1 - remaining_fraction) × 100`, with the bucket reset timestamp. A read failure produces two unknown weekly agy entries; disabled agy is absent. The board displays these entries, and routing maps them by configured pool order so it can evaluate the pool needed by the selected agy model. Snapshot reads never raise provider failures to callers.
+
 ## Holding and releasing one task
 
 `harness hold TASK` records the task in the project runtime `.harness/hold-request`. The scheduler checks holds before every new agent call, after implementation/review calls, and immediately before commit. A held task is parked as `BLOCKED` with `held by operator`; it is not committed, and a hold observed with a quota/capacity result wins over the wait. Pending tasks do not start while held. Passed tasks cannot be held.

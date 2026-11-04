@@ -1,6 +1,6 @@
 # Agent Harness
 
-A small orchestrator that runs Codex, Cursor, and Claude Code agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
+A small orchestrator that runs Antigravity, Codex, Cursor, and Claude Code agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
 
 ## Install on a new computer
 
@@ -13,6 +13,7 @@ Install and authenticate these yourself before using the harness:
 - **Codex CLI** — run `codex login`
 - **Cursor CLI** (`agent`) — run `agent login`
 - **Claude Code** (optional) — install and authenticate `claude`
+- **Google Antigravity CLI** (optional) — install `agy` and sign in with your Google account
 
 Clone this repository, then from the repo root run:
 
@@ -34,7 +35,16 @@ Check the environment:
 harness doctor --full
 ```
 
-Provider enablement is in `harness.yaml` (`codex.enabled`, `cursor.enabled`, `claude.enabled`). To enable Claude:
+Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `cursor.enabled`, `claude.enabled`). To enable Antigravity after you have installed and signed in to `agy`:
+
+```yaml
+agy:
+  enabled: true
+providers:
+  priority: [agy, codex, cursor, claude]
+```
+
+The harness only runs the `agy` command with per-call settings; it does not install, update, sign in, read credentials, or change saved Antigravity configuration. Override `agy.command` only when the executable is not on PATH. To enable Claude:
 
 ```yaml
 claude:
@@ -171,7 +181,7 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `usage` | Local agent invocation log summary. |
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
-| `limits [--json]` | Codex, Cursor, and Claude usage limits (independent blocks). |
+| `limits [--json]` | Codex, Cursor, Claude, and enabled Antigravity usage limits (independent blocks). |
 | `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |
 | `models import PROJECT [PROJECT ...]` | Import legacy project usage logs into the shared outcomes log. |
 | `setup-machine` | Post-install machine setup invoked by install scripts. |
