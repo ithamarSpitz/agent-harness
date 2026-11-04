@@ -39,8 +39,10 @@ S9-T5 (`harness/routing.py`, `choose_provider`) has the rule "the first implemen
 3. Reviews never run Cursor with a model that resolves to `auto` (for example `reviewer: auto`): then Cursor is not a review candidate. Reviews go to a provider other than the implementer (recorded as `provider.implementer`) whenever another one is available, with or without headroom data. If the implementer is the only available provider, it reviews its own work, as `choose_provider` does today; a review never waits just because only the implementer is available.
 4. Log the choice and reason as S9-T10 does.
 5. If part of this already exists when you start, keep it and add the missing parts and the tests.
-6. Keep the existing behavior around these rules: when a chosen provider turns out unavailable, disable it for the call and choose again (as before this task); log every choice and its reason and write its usage record, also on the no-headroom priority path.
-7. Routing-choice records written to `.harness/usage.jsonl` (event_type `routing_choice`) are not provider calls: tests and reports that count calls skip them (update `tests/harness/test_cli_end_to_end.py` to count only call records). Tests whose setup means a single provider (for example `tests/harness/test_worktree_guard.py` with a fake Codex) disable the other providers in their config, so the self-review rule applies there.
+6. Keep the existing behavior around these rules: when a chosen provider turns out unavailable, disable it for the call and choose again (as before this task); log every implementation and review choice and its reason (decision 7), also on the no-headroom priority path; provider calls keep writing their usage records as before.
+7. Routing choices are logged to the run log only (the existing routing log line). Do not write routing-choice records into `.harness/usage.jsonl` or the outcomes log; `usage.jsonl` holds provider calls only, so counts in reports and `tests/harness/test_cli_end_to_end.py` stay as before. Tests whose setup means a single provider (for example `tests/harness/test_worktree_guard.py` with a fake Codex) disable the other providers in their config, so the self-review rule applies there.
+8. "Auto" always means the resolved model `auto`, never a model-class name: a class whose name is `auto` but maps to another model is a normal named model.
+9. The logging rule covers implementation and review choices; plan-repair calls keep their current behavior.
 
 # Acceptance criteria
 
