@@ -97,10 +97,12 @@ if not args or args[0] != "exec":
 
 prompt = sys.stdin.read()
 workspace = Path(args[args.index("--cd") + 1])
-if "FAKE_UI_SLEEP" not in prompt and "FAKE_UI_DELETE_UNTRACKED" not in prompt:
+if not any(m in prompt for m in ("FAKE_UI_SLEEP", "FAKE_UI_DELETE_UNTRACKED", "FAKE_NEW_FILE", "FAKE_NOOP")):
     (workspace / "fake-codex-argv.json").write_text(json.dumps(args), encoding="utf-8")
     (workspace / "fake-codex-stdin.txt").write_text(prompt, encoding="utf-8")
 
+if "FAKE_NEW_FILE" in prompt:
+    (workspace / "_tmp_probe.py").write_text("x", encoding="utf-8")
 if "FAKE_UI_EDIT" in prompt:
     (workspace / "tracked.txt").write_text("edited\n", encoding="utf-8")
 if "FAKE_UI_DELETE_UNTRACKED" in prompt:
@@ -235,6 +237,56 @@ def test_provider_review_fails_when_reviewer_edits_tracked_files(tmp_path: Path)
     assert not result.ok
     assert "Reviewer changed files in the worktree" in result.output
     assert "tracked.txt" in result.output
+
+
+def _router_without_ui_review(tmp_path: Path):
+    repo = _init_git_worktree(tmp_path)
+    config = HarnessConfig.load(_base_yaml(tmp_path, codex_command=str(_fake_codex_cli(tmp_path))))
+    assert not config.ui_review.enabled
+    manager = WorktreeManager(repo, repo / ".harness")
+    _, worktree = manager.create("T1", "HEAD")
+    state = StateStore(repo / ".harness/state.json")
+    codex = CodexAgentRunner(config, repo / ".harness/logs")
+    cursor = CursorAgentRunner(config, repo / ".harness/logs", repo_root=repo, worktree_root=manager.worktree_root)
+    return ProviderAgentRunner(config, state, codex, cursor), worktree
+
+
+def test_review_fails_on_new_file_when_ui_review_disabled(tmp_path: Path):
+    router, worktree = _router_without_ui_review(tmp_path)
+    result = router.review(_task(tmp_path), worktree, "HEAD", "FAKE_NEW_FILE", 1)
+    assert not result.ok
+    assert "Reviewer changed files in the worktree" in result.output
+    assert "_tmp_probe.py" in result.output
+
+
+def test_review_passes_when_nothing_changes_and_ui_review_disabled(tmp_path: Path):
+    router, worktree = _router_without_ui_review(tmp_path)
+    result = router.review(_task(tmp_path), worktree, "HEAD", "FAKE_NOOP", 1)
+    assert result.ok
+
+
+def test_cleanup_receives_agent_pid_and_start_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = _init_git_worktree(tmp_path)
+    config = HarnessConfig.load(
+        _base_yaml(
+            tmp_path,
+            codex_command=str(_fake_codex_cli(tmp_path)),
+            ui_review={"enabled": True, "start_commands": ["npm start"], "url": "http://localhost:1"},
+        )
+    )
+    manager = WorktreeManager(repo, repo / ".harness")
+    _, worktree = manager.create("T1", "HEAD")
+    state = StateStore(repo / ".harness/state.json")
+    codex = CodexAgentRunner(config, repo / ".harness/logs")
+    cursor = CursorAgentRunner(config, repo / ".harness/logs", repo_root=repo, worktree_root=manager.worktree_root)
+    router = ProviderAgentRunner(config, state, codex, cursor)
+    calls: list[dict] = []
+    monkeypatch.setattr("harness.provider_runner.cleanup_ui_review_processes", lambda **kw: calls.append(kw))
+    outer: list[int] = []
+    router.review(_task(tmp_path), worktree, "HEAD", "FAKE_NOOP", 1, on_process_start=outer.append)
+    assert len(calls) == 1 and outer
+    assert calls[0]["agent_pid"] == outer[0]
+    assert isinstance(calls[0]["agent_started_at"], float)
 
 
 def test_worktree_changed_paths_lists_deleted_untracked_file():

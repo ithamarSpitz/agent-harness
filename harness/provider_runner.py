@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -523,12 +524,29 @@ class ProviderAgentRunner:
         self.state.save()
         return result
 
+    @staticmethod
+    def _track_agent_process(
+        on_process_start: Callable[[int], None] | None,
+    ) -> tuple[Callable[[int], None], dict[str, float | int]]:
+        """Wrap the PID hook to remember the agent PID and its Unix start time."""
+        seen: dict[str, float | int] = {}
+
+        def hook(pid: int) -> None:
+            seen["pid"] = pid
+            seen["started_at"] = time.time()
+            if on_process_start is not None:
+                on_process_start(pid)
+
+        return hook, seen
+
     def _safe_ui_review_cleanup(
         self,
         *,
         task: TaskSpec,
         workspace: Path,
         ports_before: dict[int, str],
+        agent_pid: int | None = None,
+        agent_started_at: float | None = None,
     ) -> None:
         """Stop new ui_review listeners / worktree processes; never raise to the caller."""
         try:
@@ -538,6 +556,8 @@ class ProviderAgentRunner:
                 log_dir=self.codex.log_dir,
                 task_id=task.id,
                 ports_before=ports_before,
+                agent_pid=agent_pid,
+                agent_started_at=agent_started_at,
             )
         except Exception as exc:
             write_log(
@@ -556,17 +576,20 @@ class ProviderAgentRunner:
             return guarded
         ui_enabled = self.config.ui_review.enabled
         ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
+        hook, seen = self._track_agent_process(on_process_start)
         try:
             return self._implement_inner(
                 task, workspace, timeout_minutes, attempt, previous_failure,
                 env=env, model_class_override=model_class_override,
                 code_map_offered=code_map_offered,
-                on_process_start=on_process_start,
+                on_process_start=hook,
             )
         finally:
             if ui_enabled:
                 self._safe_ui_review_cleanup(
                     task=task, workspace=workspace, ports_before=ports_before,
+                    agent_pid=cast("int | None", seen.get("pid")),
+                    agent_started_at=seen.get("started_at"),
                 )
 
     def _implement_inner(self, task: TaskSpec, workspace: Path, timeout_minutes: int, attempt: int,
@@ -732,26 +755,28 @@ class ProviderAgentRunner:
         if guarded is not None:
             return guarded
         ui_enabled = self.config.ui_review.enabled
-        snapshot = capture_worktree_snapshot(workspace) if ui_enabled else None
+        snapshot = capture_worktree_snapshot(workspace)
         ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
+        hook, seen = self._track_agent_process(on_process_start)
         try:
             result = self._review_inner(
                 task, workspace, base_ref, verification_summary, timeout_minutes,
                 env=env, code_map_offered=code_map_offered,
-                on_process_start=on_process_start,
+                on_process_start=hook,
             )
-            if ui_enabled and snapshot is not None:
-                after = capture_worktree_snapshot(workspace)
-                changed = worktree_changed_paths(snapshot, after)
-                if changed:
-                    result = cast(
-                        AgentResult, fail_review_for_worktree_edits(result, changed)
-                    )
+            after = capture_worktree_snapshot(workspace)
+            changed = worktree_changed_paths(snapshot, after)
+            if changed:
+                result = cast(
+                    AgentResult, fail_review_for_worktree_edits(result, changed)
+                )
             return result
         finally:
             if ui_enabled:
                 self._safe_ui_review_cleanup(
                     task=task, workspace=workspace, ports_before=ports_before,
+                    agent_pid=cast("int | None", seen.get("pid")),
+                    agent_started_at=seen.get("started_at"),
                 )
 
     def _review_inner(self, task: TaskSpec, workspace: Path, base_ref: str, verification_summary: str,

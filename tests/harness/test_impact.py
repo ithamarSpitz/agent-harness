@@ -103,7 +103,7 @@ if not args or args[0] != "exec":
 
 prompt = sys.stdin.read()
 workspace = Path(args[args.index("--cd") + 1])
-(workspace / "fake-codex-stdin.txt").write_text(prompt, encoding="utf-8")
+(Path(__file__).parent / "fake-codex-stdin.txt").write_text(prompt, encoding="utf-8")
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"VERDICT: PASS"}}))
 print(json.dumps({"type":"turn.completed","usage":{}}))
 ''',
@@ -253,7 +253,7 @@ def test_review_prompt_via_provider_includes_graph_caller(tmp_path: Path) -> Non
     runner = _provider(repo, cli)
     result = runner.review(_task(repo), repo, base, "ok", 1)
     assert result.ok
-    prompt = (repo / "fake-codex-stdin.txt").read_text(encoding="utf-8")
+    prompt = (tmp_path / "fake-codex-stdin.txt").read_text(encoding="utf-8")
     assert OUTSIDE_IMPACT_HEADER in prompt
     assert "caller.py:4 -> f" in prompt
     assert prompt.index(OUTSIDE_IMPACT_HEADER) < prompt.index(
@@ -267,7 +267,7 @@ def test_review_prompt_via_provider_grep_fallback(tmp_path: Path) -> None:
     runner = _provider(repo, cli)
     result = runner.review(_task(repo), repo, base, "ok", 1)
     assert result.ok
-    prompt = (repo / "fake-codex-stdin.txt").read_text(encoding="utf-8")
+    prompt = (tmp_path / "fake-codex-stdin.txt").read_text(encoding="utf-8")
     assert OUTSIDE_IMPACT_HEADER in prompt
     assert NO_CODE_MAP_GREP_HEADER in prompt
     assert "caller.py:" in prompt
