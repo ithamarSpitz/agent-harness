@@ -11,6 +11,8 @@ allowed_paths:
   - harness/board.py
   - tests/harness/test_board_headroom.py
   - tests/harness/test_board.py
+  - harness/board_loop.py
+  - tests/harness/test_board_loop.py
 context:
   - spec
 environment: null
@@ -41,6 +43,7 @@ Split from S9-T12 (Nov 4 2026). S9-T12's three attempts failed review on this li
    - Unknown value: `?` instead of the number.
 3. If the full line does not fit the width, use the short format: two-letter names (`cx`, `cu`, `cl`, and the first two letters for others), percents only, windows joined with `/`, no reset clocks, for example `cx 96/46 · cu 100/25 · cl 58/22`. Only if the short line still does not fit, cut it at the width.
 4. The line goes directly under the existing header line; snapshots without `headroom` render exactly as before.
+- Wiring (operator, Nov 4 2026): the live board must really show the line. `harness/board_loop.py` (`build_snapshot`, which calls `snapshot_from_state`) passes the live headroom source and the configured `providers.priority` order. Tests inject a fake source, never real usage. Keep the work already in this worktree.
 
 # Acceptance criteria
 
