@@ -4,7 +4,7 @@ stage: 7
 model_class: worker
 timeout_minutes: 45
 review: true
-allow_protected: false
+allow_protected: true
 depends_on:
   - S9-T20
 allowed_paths:

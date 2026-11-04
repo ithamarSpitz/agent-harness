@@ -4,7 +4,7 @@ stage: 8
 model_class: hard_worker
 timeout_minutes: 75
 review: true
-allow_protected: false
+allow_protected: true
 depends_on:
   - S9-T30
   - S9-T31
