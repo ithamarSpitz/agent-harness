@@ -57,7 +57,7 @@ Before Nov 2 2026 this repo's `harness.yaml` had named Cursor models: `worker: c
 
 Fake headroom, Codex and Cursor enabled, named models as in decision 2, `auto_when_exhausted: true`:
 1. Cursor at 100%/100%: attempt-1 implement runs Cursor with model `auto`; a Cursor review is not chosen (another provider reviews, or it waits).
-2. Cursor at 100%/40%, 40%/100% or unknown: attempt 1 goes to Codex; with Codex quota-disabled for the task, the implement runs on Cursor with `composer-2.5` (worker), never `auto`.
+2. Cursor at 100%/40% or 40%/100%: never `auto`; Cursor follows the normal capacity rules (decision 7: a window at 100% means Cursor has no usage), so attempt 1 goes to Codex, and with Codex quota-disabled the implement goes to the next provider with usage or waits. Cursor usage unknown: attempt 1 goes to Codex; with Codex quota-disabled the implement runs on Cursor with `composer-2.5` (worker), never `auto`. These tests run with this repo's real setting `claude.enabled: true` (Claude in the fake headroom), not with Claude disabled. (Operator correction, Nov 4 2026: the earlier wording contradicted decision 7 and S9-T32 decision 2.)
 3. Cursor at 40%/40%, Codex quota-disabled: review runs on Cursor with `cursor-grok-4.6-high`.
 4. `auto_when_exhausted: false`: same inputs give today's results.
 5. `harness.yaml` matches decision 2, and `harness validate` passes.
