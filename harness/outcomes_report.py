@@ -40,13 +40,13 @@ class ModelRow:
 def default_outcomes_path() -> Path:
     """Path to the machine-wide outcomes log (honors outcomes.set_outcomes_folder)."""
     from . import outcomes as outcomes_mod
+    from .home import harness_home
 
     if outcomes_mod._folder_configured:
         folder = outcomes_mod._folder_override
-        if folder is None:
-            return Path.home() / ".harness" / "outcomes.jsonl"
-        return folder / "outcomes.jsonl"
-    return Path.home() / ".harness" / "outcomes.jsonl"
+        if folder is not None:
+            return folder / "outcomes.jsonl"
+    return harness_home() / "outcomes.jsonl"
 
 
 def load_outcome_records(path: Path) -> list[dict[str, Any]]:
