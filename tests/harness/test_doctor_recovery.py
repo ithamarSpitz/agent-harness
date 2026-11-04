@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from harness.cli import build_runtime, cmd_cleanup, cmd_reset_task, cmd_unblock
+from harness.cli import build_runtime, cmd_cleanup, cmd_doctor, cmd_reset_task, cmd_unblock
 from harness.doctor import Doctor
 from harness.failure import FailureRecord
 from harness.models import TaskStatus
@@ -113,4 +113,26 @@ def test_doctor_full_checks_auth_models_env_and_recovery_commands(tmp_path: Path
     assert runtime.state.get("A").status == TaskStatus.PENDING
     assert runtime.failures.get("s1") is None
     assert not worktree.exists()
+
+
+def test_doctor_reports_agy_only_when_enabled(tmp_path: Path, capsys):
+    fake = init_project(tmp_path)
+    config_path = tmp_path / "harness.yaml"
+    original = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        original + f"\nagy:\n  enabled: true\n  command: {yaml_quote(fake)}\n",
+        encoding="utf-8",
+    )
+    runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", config_path)
+
+    assert cmd_doctor(runtime, full=False) == 0
+    assert "agy-cli/login" in capsys.readouterr().out
+
+    config_path.write_text(
+        original + f"\nagy:\n  enabled: false\n  command: {yaml_quote(fake)}\n",
+        encoding="utf-8",
+    )
+    runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", config_path)
+    assert cmd_doctor(runtime, full=False) == 0
+    assert "agy-cli/login" not in capsys.readouterr().out
 

@@ -11,6 +11,8 @@ from subprocess import Popen, TimeoutExpired
 
 import pytest
 
+import harness.cli as cli_module
+from harness.agy_usage import AgyBucket
 from harness.cli import main
 from harness.limits import (
     CLAUDE_OAUTH_BETA,
@@ -28,6 +30,11 @@ from harness.limits import (
 
 FAKE_CURSOR_TOKEN = "cursor-secret-test-token-do-not-print"
 FAKE_CLAUDE_TOKEN = "claude-secret-test-token-do-not-print"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
 
 
 def write_rollout(path: Path, payload: dict, *, timestamp: int, append: bool = False) -> None:
@@ -1010,3 +1017,42 @@ def test_limits_cli_runs_without_harness_yaml(tmp_path: Path, monkeypatch: pytes
     assert "Cursor (monthly)" in out
     assert "Claude: no data yet" in out
     assert FAKE_CURSOR_TOKEN not in out
+
+
+def test_limits_cli_uses_root_config_for_agy_from_another_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "harness.yaml").write_text(
+        "agy:\n  enabled: true\n  command: fake-agy\n",
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    original = run_limits
+
+    def configured_run_limits(**kwargs):  # type: ignore[no-untyped-def]
+        def agy(*, command: str) -> list[AgyBucket]:
+            assert command == "fake-agy"
+            return [
+                AgyBucket(
+                    pool_id="gemini-weekly",
+                    group_name="Gemini Models",
+                    window="weekly",
+                    remaining_fraction=0.75,
+                    reset_time=datetime.now(timezone.utc) + timedelta(days=2),
+                )
+            ]
+
+        return original(**kwargs, agy_source=agy)
+
+    monkeypatch.setattr(cli_module, "run_limits", configured_run_limits)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main(["--root", str(project), "limits"])
+
+    assert code == 0
+    assert "Antigravity" in buf.getvalue()
+    assert "Gemini Models: 75% left" in buf.getvalue()

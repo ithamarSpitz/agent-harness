@@ -7,6 +7,7 @@ import subprocess
 import sys
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .board_loop import (
@@ -20,6 +21,7 @@ from .board_loop import (
     sprint_has_active_run,
     suppress_progress_stdout,
 )
+from .board import live_headroom_source
 from .capacity import CapacityManager
 from .config import HarnessConfig
 from .context import ContextResolver
@@ -31,10 +33,11 @@ from .manifest import RunManifestManager
 from .memory import free_memory_gb
 from .models import TaskRuntime, TaskStatus
 from .plan_change import PlanChangeManager, _relative_brief_path
-from .quota import KeepAwake, QuotaManager
+from .quota import KeepAwake, QuotaManager, QuotaResetInfo, default_limits_source
 from .roadmap import Roadmap, RoadmapError
 from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
+from .agy_runner import AgyAgentRunner
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .process_utils import prepare_external_argv, split_command
 from .runner import CursorAgentRunner
@@ -106,8 +109,12 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
         ClaudeAgentRunner(config, runtime_root / "logs", context, usage)
         if config.claude.enabled else None
     )
+    agy_runner = (
+        AgyAgentRunner(config, runtime_root / "logs", context, usage)
+        if config.agy.enabled else None
+    )
     runner = ProviderAgentRunner(
-        config, state, codex_runner, cursor_runner, usage, claude_runner
+        config, state, codex_runner, cursor_runner, usage, claude_runner, agy_runner
     )
     verifier = Verifier(config, runtime_root / "logs", worktrees)
     scheduler = Scheduler(
@@ -124,7 +131,19 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
     )
     manifests = RunManifestManager(root, runtime_root, state)
     validator = ProjectValidator(root, roadmap, config)
-    quota = QuotaManager(config, state)
+    def routing_limits(now):
+        found = list(default_limits_source(now))
+        for key, value in state.meta().items():
+            if not key.endswith(".routing_quota_reset_at"):
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            reset = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            if reset > now:
+                found.append(QuotaResetInfo("claude", reset))
+        return found
+
+    quota = QuotaManager(config, state, limits_source=routing_limits)
     capacity = CapacityManager(config, state)
     plan_changes = PlanChangeManager(root, runtime_root, state, failures)
     return Runtime(
@@ -218,6 +237,7 @@ def _cmd_watch_live(runtime: Runtime, sprint_id: str | None) -> int:
         stop_when_finished=True,
         interactive=interactive,
         mode="watch",
+        headroom_source=lambda: live_headroom_source(runtime.config),
     )
     try:
         loop.run_until_stopped()
@@ -313,12 +333,51 @@ def cmd_doctor(runtime: Runtime, *, full: bool) -> int:
             checks.append(DoctorCheck(
                 "claude-cli/login", proc.returncode == 0,
                 detail[:300] or "claude --version returned no output",
-                required=not (runtime.config.codex.enabled or runtime.config.cursor.enabled),
+                required=not (
+                    runtime.config.agy.enabled
+                    or runtime.config.codex.enabled
+                    or runtime.config.cursor.enabled
+                ),
             ))
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             checks.append(DoctorCheck(
                 "claude-cli/login", False, str(exc),
-                required=not (runtime.config.codex.enabled or runtime.config.cursor.enabled),
+                required=not (
+                    runtime.config.agy.enabled
+                    or runtime.config.codex.enabled
+                    or runtime.config.cursor.enabled
+                ),
+            ))
+    if runtime.config.agy.enabled:
+        parts = split_command(runtime.config.agy.command)
+        try:
+            proc = subprocess.run(
+                prepare_external_argv([*parts, "--version"]),
+                cwd=runtime.root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=15,
+            )
+            detail = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+            checks.append(DoctorCheck(
+                "agy-cli/login", proc.returncode == 0,
+                detail[:300] or "agy --version returned no output",
+                required=not (
+                    runtime.config.codex.enabled
+                    or runtime.config.cursor.enabled
+                    or runtime.config.claude.enabled
+                ),
+            ))
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            checks.append(DoctorCheck(
+                "agy-cli/login", False, str(exc),
+                required=not (
+                    runtime.config.codex.enabled
+                    or runtime.config.cursor.enabled
+                    or runtime.config.claude.enabled
+                ),
             ))
     print(Doctor.render(checks))
     if full:
@@ -540,6 +599,7 @@ def _cmd_run_live(
                 stop_when_finished=False,
                 interactive=should_use_console(real_stdout, sys.stdin, no_board=no_board),
                 mode="run",
+                headroom_source=lambda: live_headroom_source(runtime.config),
             )
             board.start_background()
 
@@ -1339,7 +1399,11 @@ def main(argv: list[str] | None = None) -> int:
             no_github=args.no_github,
         )
     if args.command == "limits":
-        return run_limits(as_json=args.json)
+        return run_limits(
+            as_json=args.json,
+            root=root,
+            config_path=(root / args.config).resolve(),
+        )
     if args.command == "setup-machine":
         return run_setup_machine()
     if args.command == "models":

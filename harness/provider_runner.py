@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+from .agy_runner import AgyAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
 from .config import HarnessConfig
@@ -40,11 +41,11 @@ _git_toplevel_reader: GitToplevelReader | None = None
 
 
 def clear_task_quota_disables(state: StateStore, task_id: str) -> None:
-    """Clear persisted quota routes for a manually reset task."""
+    """Clear task-wide provider routes for a manually reset task."""
 
     marker = f".{task_id}.provider."
-    for key, reason in state.meta().items():
-        if marker in key and isinstance(reason, str) and reason.startswith("quota"):
+    for key in state.meta():
+        if marker in key and key.endswith(".disabled"):
             state.set_meta(key, None)
 
 
@@ -146,6 +147,7 @@ class ProviderAgentRunner:
     def __init__(self, config: HarnessConfig, state: StateStore, codex: CodexAgentRunner,
                  cursor: CursorAgentRunner, usage: UsageRecorder | None = None,
                  claude: ClaudeAgentRunner | None = None,
+                 agy: AgyAgentRunner | None = None,
                  headroom_reader: HeadroomReader | None = None,
                  clock: Clock | None = None):
         self.config = config
@@ -153,8 +155,11 @@ class ProviderAgentRunner:
         self.codex = codex
         self.cursor = cursor
         self.claude = claude
+        self.agy = agy
         self.usage = usage
-        self._headroom_reader = headroom_reader or headroom_snapshot
+        self._headroom_reader = headroom_reader or (
+            lambda: headroom_snapshot(config=self.config)
+        )
         self._clock = clock or time.time
         self._worktree_guard_blocked: set[str] = set()
 
@@ -235,6 +240,43 @@ class ProviderAgentRunner:
             )
         )
 
+    def _agy_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
+        return (
+            self.config.agy.enabled
+            and self.agy is not None
+            and not bool(
+                self.state.get_meta(f"{task.sprint}.{task.id}.provider.agy.disabled")
+            )
+            and not bool(
+                phase and self.state.get_meta(self._phase_disable_key(task, "agy", phase))
+            )
+        )
+
+    def _agy_pool_for_model(self, model: str) -> str | None:
+        for pool, prefixes in self.config.agy.pools.items():
+            if any(model.startswith(prefix) for prefix in prefixes):
+                return pool
+        return None
+
+    def _adapt_snapshot(self, raw: object) -> dict[str, dict[str, object]]:
+        snapshot = adapt_headroom_snapshot(raw)
+        if not isinstance(raw, dict):
+            return snapshot
+        entries = raw.get("agy")
+        if not isinstance(entries, (list, tuple)):
+            return snapshot
+        windows: dict[str, object] = {}
+        for pool, entry in zip(self.config.agy.pools, entries, strict=False):
+            used = getattr(entry, "used_percent", None)
+            known = getattr(entry, "known", None)
+            windows[pool] = {
+                "used_percent": used if known else None,
+                "resets_at": getattr(entry, "resets_at", None),
+            }
+        if windows:
+            snapshot["agy"] = {"windows": windows}
+        return snapshot
+
     @staticmethod
     def _snapshot_has_capacity(snapshot: object, provider: str) -> bool:
         if not isinstance(snapshot, dict):
@@ -250,7 +292,8 @@ class ProviderAgentRunner:
             for window in windows.values()
             if isinstance(window, dict)
         ]
-        return bool(used_values) and all(
+        check = any if provider == "agy" else all
+        return bool(used_values) and check(
             isinstance(used, (int, float)) and not isinstance(used, bool) and used < 100
             for used in used_values
         )
@@ -259,7 +302,7 @@ class ProviderAgentRunner:
         self, task: TaskSpec, *, preserve_disabled: set[str] | None = None
     ) -> dict[str, dict[str, object]]:
         try:
-            snapshot = adapt_headroom_snapshot(self._headroom_reader())
+            snapshot = self._adapt_snapshot(self._headroom_reader())
         except Exception:
             snapshot = {}
         self._reconcile_cursor_auto_exhaustion(snapshot)
@@ -312,7 +355,7 @@ class ProviderAgentRunner:
     def _remember_cursor_auto_exhaustion(self, snapshot: object | None = None) -> None:
         if snapshot is None:
             try:
-                snapshot = adapt_headroom_snapshot(self._headroom_reader())
+                snapshot = self._adapt_snapshot(self._headroom_reader())
             except Exception:
                 snapshot = {}
         reset_at = self._cursor_reset_at(snapshot)
@@ -329,7 +372,7 @@ class ProviderAgentRunner:
 
     def _disabled_for(self, task: TaskSpec, phase: str) -> set[str]:
         disabled: set[str] = set()
-        for provider in ("codex", "cursor", "claude"):
+        for provider in ("agy", "codex", "cursor", "claude"):
             if self.state.get_meta(
                 f"{task.sprint}.{task.id}.provider.{provider}.disabled"
             ) or self.state.get_meta(self._phase_disable_key(task, provider, phase)):
@@ -381,6 +424,78 @@ class ProviderAgentRunner:
             return "auto"
         return task.model_class
 
+    @staticmethod
+    def _window_used(window: object) -> float | None:
+        if not isinstance(window, dict):
+            return None
+        value = window.get("used_percent")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None
+
+    def _agy_pool_for_call(
+        self,
+        task: TaskSpec,
+        phase: str,
+        model_class: str,
+        snapshot: dict[str, dict[str, object]],
+    ) -> str | None:
+        if phase == "implement":
+            if model_class.strip().casefold() == "escalation":
+                models = [self.config.agy.escalation_model]
+            else:
+                start = min(
+                    self._provider_attempt(task, "agy"),
+                    len(self.config.agy.implementation_sequence) - 1,
+                )
+                models = [
+                    str(entry["model"])
+                    for entry in self.config.agy.implementation_sequence[start:]
+                ]
+        elif model_class.strip().casefold() == "escalation":
+            models = [self.config.agy.escalation_model]
+        else:
+            models = [self.config.agy.review_model]
+
+        provider = snapshot.get("agy", {})
+        windows = provider.get("windows") if isinstance(provider, dict) else None
+        for model in models:
+            pool = self._agy_pool_for_model(model)
+            window = windows.get(pool) if isinstance(windows, dict) else None
+            used = self._window_used(window)
+            if used is None or used < 100:
+                return pool
+        return self._agy_pool_for_model(models[-1]) if models else None
+
+    def _snapshot_for_call(
+        self,
+        task: TaskSpec,
+        phase: str,
+        model_class: str,
+        snapshot: dict[str, dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        if not self.config.agy.enabled or "agy" not in snapshot:
+            return snapshot
+        pool = self._agy_pool_for_call(task, phase, model_class, snapshot)
+        provider = snapshot.get("agy", {})
+        windows = provider.get("windows") if isinstance(provider, dict) else None
+        if pool is None or not isinstance(windows, dict):
+            return snapshot
+        filtered = dict(snapshot)
+        filtered["agy"] = {"windows": {pool: windows.get(pool, {})}}
+        return filtered
+
+    def _agy_exhausted_pools(self, task: TaskSpec) -> set[str]:
+        snapshot = self._snapshot(task)
+        provider = snapshot.get("agy", {})
+        windows = provider.get("windows") if isinstance(provider, dict) else None
+        if not isinstance(windows, dict):
+            return set()
+        return {
+            pool for pool, window in windows.items()
+            if (self._window_used(window) or 0.0) >= 100
+        }
+
     def _choose(
         self,
         task: TaskSpec,
@@ -394,8 +509,10 @@ class ProviderAgentRunner:
         # still clear quota:* disables when leaving WAITING_QUOTA, as today.
         self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
         snapshot = self._snapshot(task, preserve_disabled=extra_disabled)
+        snapshot = self._snapshot_for_call(task, phase, model_class, snapshot)
         disabled = self._disabled_for(task, phase) | (extra_disabled or set())
         enabled = {
+            "agy": self.config.agy.enabled and self.agy is not None,
             "codex": self.config.codex.enabled,
             "cursor": self.config.cursor.enabled,
             "claude": self.config.claude.enabled and self.claude is not None,
@@ -421,6 +538,13 @@ class ProviderAgentRunner:
             now=datetime.fromtimestamp(clock, tz=timezone.utc),
             pace=lambda provider, window: full_pace(provider, window, now=clock),
             auto_when_exhausted=auto_allowed,
+        )
+        reset_key = f"{task.sprint}.{task.id}.routing_quota_reset_at"
+        self.state.set_meta(
+            reset_key,
+            choice.wait_until.timestamp()
+            if choice.provider is None and choice.wait_until is not None
+            else None,
         )
         if record:
             message = f"provider choice for {phase}: {choice.provider or 'none'} ({choice.reason})"
@@ -457,6 +581,7 @@ class ProviderAgentRunner:
 
         skipped = self._disabled_for(task, phase) | unavailable
         enabled = {
+            "agy": self.config.agy.enabled and self.agy is not None,
             "codex": self.config.codex.enabled,
             "cursor": self.config.cursor.enabled,
             "claude": self.config.claude.enabled and self.claude is not None,
@@ -493,6 +618,8 @@ class ProviderAgentRunner:
             ).provider or "none"
         for provider in self.config.providers.priority:
             normalized = provider.strip().casefold()
+            if normalized == "agy" and self._agy_enabled_for(task, phase):
+                return "agy"
             if normalized == "codex" and self._codex_enabled_for(task, phase):
                 return "codex"
             if normalized == "cursor" and self._cursor_enabled_for(task, phase):
@@ -501,6 +628,8 @@ class ProviderAgentRunner:
             return "codex"
         if self._cursor_enabled_for(task, phase):
             return "cursor"
+        if self._agy_enabled_for(task, phase):
+            return "agy"
         return "none"
 
     def _mark_codex_disabled(self, task: TaskSpec, reason: str) -> None:
@@ -574,12 +703,17 @@ class ProviderAgentRunner:
         return self._preferred_provider(task, "implement")
 
     def max_implementation_attempts(self, task: TaskSpec) -> int:
+        agy_attempts = (
+            len(self.config.agy.implementation_sequence)
+            if self.config.agy.enabled else 0
+        )
         claude_attempts = (
             len(self.config.claude.implementation_sequence)
             if self.config.claude.enabled else 0
         )
         return (
-            len(self.config.codex.implementation_sequence)
+            agy_attempts
+            + len(self.config.codex.implementation_sequence)
             + self._cursor_implement_budget()
             + claude_attempts
         )
@@ -593,6 +727,10 @@ class ProviderAgentRunner:
             return self._provider_attempt(task, "cursor") < 1
         if self._routing_active(task, "implement"):
             exhausted: set[str] = set()
+            if self._provider_attempt(task, "agy") >= len(
+                self.config.agy.implementation_sequence
+            ):
+                exhausted.add("agy")
             if self._provider_attempt(task, "codex") >= len(
                 self.config.codex.implementation_sequence
             ):
@@ -731,7 +869,7 @@ class ProviderAgentRunner:
                 code_map_offered=code_map_offered,
                 on_process_start=hook,
             )
-            if result.ok and result.provider in {"codex", "cursor", "claude"}:
+            if result.ok and result.provider in {"agy", "codex", "cursor", "claude"}:
                 # Every path records the implementer so review can avoid it.
                 self.state.set_meta(
                     f"{task.sprint}.{task.id}.provider.implementer", result.provider
@@ -833,6 +971,10 @@ class ProviderAgentRunner:
         while True:
             exhausted = set(unavailable)
             routing_class = self._routing_model_class(task, "implement")
+            if self._provider_attempt(task, "agy") >= len(
+                self.config.agy.implementation_sequence
+            ):
+                exhausted.add("agy")
             if self._provider_attempt(task, "codex") >= len(
                 self.config.codex.implementation_sequence
             ):
@@ -858,7 +1000,17 @@ class ProviderAgentRunner:
             override = None
             cursor_model_class: str | None = None
             try:
-                if provider == "codex":
+                if provider == "agy" and self.agy is not None:
+                    result = self.agy.implement(
+                        task, workspace, timeout_minutes,
+                        self._provider_attempt(task, "agy") + 1,
+                        previous_failure, env=env,
+                        model_class_override=routing_class,
+                        code_map_offered=code_map_offered,
+                        exhausted_pools=self._agy_exhausted_pools(task),
+                        on_process_start=on_process_start,
+                    )
+                elif provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
                         override = "auth_or_cli_unavailable"
@@ -1060,7 +1212,14 @@ class ProviderAgentRunner:
                 switched = None
             override = None
             try:
-                if provider == "codex":
+                if provider == "agy" and self.agy is not None:
+                    result = self.agy.review(
+                        task, workspace, base_ref, verification_summary,
+                        timeout_minutes, env=env,
+                        code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+                elif provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
                         override = "auth_or_cli_unavailable"
@@ -1179,7 +1338,12 @@ class ProviderAgentRunner:
                     False, "", choice.reason, provider="none", quota_exhausted=True
                 )
             try:
-                if provider == "codex":
+                if provider == "agy" and self.agy is not None:
+                    result = self.agy.plan_change(
+                        task, workspace, failure_summary, timeout_minutes,
+                        model_class=model_class, env=env,
+                    )
+                elif provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
                         result = AgentResult(

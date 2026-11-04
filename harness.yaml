@@ -45,9 +45,13 @@ self_hosting:
 
 providers:
   priority:
+    - agy
     - codex
     - cursor
     - claude
+
+agy:
+  enabled: true
 
 codex:
   enabled: true

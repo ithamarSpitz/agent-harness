@@ -21,6 +21,7 @@ class Choice:
     reason: str
     scores: dict[str, float | None] = field(default_factory=dict)
     auto: bool = False
+    wait_until: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,9 +246,10 @@ def _hours_until_other_usage(
     for provider in others:
         blocking = usage[provider].blocking
         if not blocking:
-            if not disabled[provider]:
-                return 0.0
-            continue
+            # A task-local quota disable can outlive a cached snapshot that still
+            # shows free capacity. Without a reset attached to the disable, treat
+            # its return time as unknown (the strictest Claude cap), never skip it.
+            return 0.0
         resets = [w.reset_at for w in blocking]
         if any(reset is None for reset in resets):
             continue
@@ -330,7 +332,11 @@ def _disabled(disabled_for_task: object, provider: str) -> bool:
 def _until_label(reset_at: datetime | None) -> str:
     if reset_at is None:
         return ""
-    return f" until {reset_at.astimezone().strftime('%H:%M')}"
+    local = reset_at.astimezone()
+    now = datetime.now().astimezone()
+    if local.date() == now.date():
+        return f" until {local.strftime('%H:%M')}"
+    return f" until {local.strftime('%Y-%m-%d %H:%M')}"
 
 
 def _pools_exhausted(u: _Usage) -> bool:
@@ -384,24 +390,37 @@ def choose_provider(
 
     notes: dict[str, str] = {}
     blocked: dict[str, str] = {}
+    reset_candidates: list[datetime] = []
     has_usage: list[str] = []
     for provider in candidates:
         u = usage[provider]
         if u.blocking:
             reset = max((w.reset_at for w in u.blocking if w.reset_at is not None), default=None)
             blocked[provider] = f"{provider} out{_until_label(reset)}"
+            if reset is not None:
+                reset_candidates.append(reset)
             continue
         if provider == "claude":
             why, cap = _claude_block(u, hours=hours, reserve=claude_reserve, now=now)
             if why:
-                blocked[provider] = f"claude {why}"
+                window_name = "5-hour" if why.startswith("5-hour") else "week"
+                reset = next(
+                    (window.reset_at for window in u.windows if window.name == window_name),
+                    None,
+                )
+                blocked[provider] = f"claude {why}{_until_label(reset)}"
+                if reset is not None:
+                    reset_candidates.append(reset)
                 continue
             notes[provider] = f"claude under cap {cap:g}%"
         has_usage.append(provider)
 
     if phase == "review":
         # Auto never reviews; pools at 100% already mean Cursor has no usage.
-        if implementer_provider in has_usage and len(has_usage) > 1:
+        # Antigravity reviews are always independent, even if that means waiting.
+        if implementer_provider == "agy" and implementer_provider in has_usage:
+            has_usage.remove(implementer_provider)
+        elif implementer_provider in has_usage and len(has_usage) > 1:
             has_usage.remove(implementer_provider)
 
     wastes: dict[str, tuple[float, str | None]] = {}
@@ -437,4 +456,9 @@ def choose_provider(
             reasons.append(blocked[provider])
         else:
             reasons.append(f"{provider} unavailable")
-    return Choice(None, "; ".join(reasons) or "no providers configured", scores)
+    return Choice(
+        None,
+        "; ".join(reasons) or "no providers configured",
+        scores,
+        wait_until=min(reset_candidates, default=None),
+    )
