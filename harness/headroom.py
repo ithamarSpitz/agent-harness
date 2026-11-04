@@ -9,11 +9,15 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterator
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator
 
+from .agy_usage import AgyBucket, fetch_agy_usage
 from .home import harness_home
 from .pace import record_samples
-from .limits import LimitsPaths, load_claude, load_codex, load_cursor
+from .limits import LimitsPaths, _agy_settings, load_claude, load_codex, load_cursor
+
+if TYPE_CHECKING:
+    from .config import HarnessConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +30,7 @@ class Headroom:
 
 
 LimitsSource = Callable[[LimitsPaths], tuple[list[str], dict[str, Any]]]
+AgyUsageSource = Callable[..., list[AgyBucket]]
 
 _PROVIDER_WINDOWS = {
     "codex": ("five_hour", "weekly"),
@@ -36,6 +41,7 @@ _MEMORY_LOCK = threading.Lock()
 _memory_cached_at: float | None = None
 _memory_cache_path: Path | None = None
 _memory_snapshot: dict[str, tuple[Headroom, ...]] | None = None
+_memory_agy_enabled: bool | None = None
 
 
 def _unknown(provider: str, window: str) -> Headroom:
@@ -117,6 +123,25 @@ def _load_provider(
         return [_unknown(provider, window) for window in _PROVIDER_WINDOWS[provider]]
 
 
+def _agy_entries(source: AgyUsageSource, command: str) -> list[Headroom]:
+    try:
+        buckets = source(command=command)
+        if not buckets:
+            raise ValueError("no quota pools returned")
+        return [
+            Headroom(
+                "agy",
+                (1.0 - bucket.remaining_fraction) * 100.0,
+                int(bucket.reset_time.timestamp()),
+                "weekly",
+                True,
+            )
+            for bucket in buckets
+        ]
+    except Exception:
+        return [_unknown("agy", "weekly"), _unknown("agy", "weekly")]
+
+
 def _copy_snapshot(snapshot: dict[str, tuple[Headroom, ...]]) -> dict[str, list[Headroom]]:
     return {provider: list(entries) for provider, entries in snapshot.items()}
 
@@ -130,7 +155,9 @@ def _fresh(cached_at: float, now: float, max_age_seconds: float) -> bool:
     return max_age_seconds > 0 and 0 <= age < max_age_seconds
 
 
-def _decode_snapshot(raw: Any) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
+def _decode_snapshot(
+    raw: Any, *, agy_enabled: bool = False
+) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     if not isinstance(raw, dict):
         return None
     try:
@@ -149,14 +176,31 @@ def _decode_snapshot(raw: Any) -> tuple[float, dict[str, tuple[Headroom, ...]]] 
             if any(entry.provider != provider for entry in entries):
                 return None
             snapshot[provider] = entries
+        if agy_enabled:
+            raw_entries = raw_providers["agy"]
+            if not isinstance(raw_entries, list) or not raw_entries:
+                return None
+            entries = tuple(Headroom(**entry) for entry in raw_entries if isinstance(entry, dict))
+            if len(entries) != len(raw_entries):
+                return None
+            if any(entry.provider != "agy" or entry.window != "weekly" for entry in entries):
+                return None
+            snapshot["agy"] = entries
+        elif "agy" in raw_providers:
+            return None
         return cached_at, snapshot
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
 
-def _read_disk_cache(cache_path: Path) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
+def _read_disk_cache(
+    cache_path: Path, *, agy_enabled: bool = False
+) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     try:
-        return _decode_snapshot(json.loads(cache_path.read_text(encoding="utf-8")))
+        return _decode_snapshot(
+            json.loads(cache_path.read_text(encoding="utf-8")),
+            agy_enabled=agy_enabled,
+        )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
 
@@ -260,6 +304,12 @@ def headroom_snapshot(
     cache_path: Path | None = None,
     now: Callable[[], float] | None = None,
     history_path: Path | None = None,
+    agy_enabled: bool | None = None,
+    agy_command: str | None = None,
+    agy_source: AgyUsageSource = fetch_agy_usage,
+    config: HarnessConfig | None = None,
+    root: Path | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, list[Headroom]]:
     """Return a cheap, recent view of provider usage and reset times.
 
@@ -267,10 +317,18 @@ def headroom_snapshot(
     access. Source failures are represented by unknown entries and never escape.
     """
 
-    global _memory_cache_path, _memory_cached_at, _memory_snapshot
+    global _memory_agy_enabled, _memory_cache_path, _memory_cached_at, _memory_snapshot
 
     now = now or time.time
     cache_path = (cache_path or harness_home() / "headroom-cache.json").expanduser()
+    if agy_enabled is None or agy_command is None:
+        configured_enabled, configured_command = _agy_settings(
+            config, root=root, config_path=config_path
+        )
+        if agy_enabled is None:
+            agy_enabled = configured_enabled
+        if agy_command is None:
+            agy_command = configured_command
 
     with _MEMORY_LOCK:
         current_time = now()
@@ -278,6 +336,7 @@ def headroom_snapshot(
             _memory_snapshot is not None
             and _memory_cached_at is not None
             and _memory_cache_path == cache_path
+            and _memory_agy_enabled == agy_enabled
             and _fresh(_memory_cached_at, current_time, max_age_seconds)
         ):
             return _copy_snapshot(_memory_snapshot)
@@ -285,12 +344,13 @@ def headroom_snapshot(
         with _disk_lock(cache_path) as cache_available:
             current_time = now()
             if cache_available:
-                disk_cache = _read_disk_cache(cache_path)
+                disk_cache = _read_disk_cache(cache_path, agy_enabled=agy_enabled)
                 if disk_cache is not None and _fresh(
                     disk_cache[0], current_time, max_age_seconds
                 ):
                     _memory_cached_at, _memory_snapshot = disk_cache
                     _memory_cache_path = cache_path
+                    _memory_agy_enabled = agy_enabled
                     return _copy_snapshot(_memory_snapshot)
 
             try:
@@ -306,9 +366,12 @@ def headroom_snapshot(
                     "cursor": _load_provider("cursor", cursor_source, source_paths),
                     "claude": _load_provider("claude", claude_source, source_paths),
                 }
+            if agy_enabled:
+                snapshot["agy"] = _agy_entries(agy_source, agy_command)
             frozen = _freeze(snapshot)
             _memory_cached_at = current_time
             _memory_cache_path = cache_path
+            _memory_agy_enabled = agy_enabled
             _memory_snapshot = frozen
             record_samples(
                 [entry for entries in frozen.values() for entry in entries],

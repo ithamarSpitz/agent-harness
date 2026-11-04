@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import harness.headroom as headroom
+from harness.agy_usage import AgyBucket
+from harness.config import HarnessConfig
 from harness.headroom import Headroom, headroom_snapshot
 from harness.limits import LimitsPaths
 
@@ -248,6 +252,146 @@ def test_failing_source_is_unknown_and_does_not_block_others(tmp_path: Path) -> 
     assert all(not entry.known for entry in snapshot["cursor"])
     assert all(entry.used_percent is None for entry in snapshot["cursor"])
     assert all(entry.known for entry in snapshot["codex"] + snapshot["claude"])
+
+
+def test_agy_buckets_are_included_with_used_percent(tmp_path: Path) -> None:
+    reset = datetime(2026, 11, 10, 13, 46, 45, tzinfo=timezone.utc)
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        assert command == "fake-agy"
+        return [
+            AgyBucket("gemini-weekly", "Gemini Models", "weekly", 0.75, reset),
+            AgyBucket("3p-weekly", "Claude and GPT models", "weekly", 0.2, reset),
+        ]
+
+    snapshot = headroom_snapshot(
+        max_age_seconds=0,
+        paths=_paths(tmp_path),
+        cache_path=tmp_path / "agy-cache.json",
+        agy_enabled=True,
+        agy_command="fake-agy",
+        agy_source=agy,
+    )
+
+    assert snapshot["agy"] == [
+        Headroom("agy", 25.0, int(reset.timestamp()), "weekly", True),
+        Headroom("agy", 80.0, int(reset.timestamp()), "weekly", True),
+    ]
+
+
+def test_agy_failure_is_unknown_and_disabled_is_unchanged(tmp_path: Path) -> None:
+    calls = 0
+
+    def fail(*, command: str) -> list[AgyBucket]:
+        nonlocal calls
+        calls += 1
+        raise OSError(command)
+
+    failed = headroom_snapshot(
+        max_age_seconds=0,
+        paths=_paths(tmp_path),
+        cache_path=tmp_path / "failed-agy-cache.json",
+        agy_enabled=True,
+        agy_source=fail,
+    )
+    disabled = headroom_snapshot(
+        max_age_seconds=0,
+        paths=_paths(tmp_path),
+        cache_path=tmp_path / "disabled-agy-cache.json",
+        agy_enabled=False,
+        agy_source=fail,
+    )
+
+    assert len(failed["agy"]) == 2
+    assert all(not entry.known for entry in failed["agy"])
+    assert set(disabled) == {"codex", "cursor", "claude"}
+    assert calls == 1
+
+
+def test_enabled_agy_from_config_uses_fresh_cache(tmp_path: Path) -> None:
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text("agy:\n  enabled: true\n  command: fake-agy\n", encoding="utf-8")
+    reset = datetime(2026, 11, 10, 13, 46, 45, tzinfo=timezone.utc)
+    calls = 0
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        nonlocal calls
+        calls += 1
+        assert command == "fake-agy"
+        return [AgyBucket("gemini-weekly", "Gemini Models", "weekly", 0.75, reset)]
+
+    kwargs = {
+        "paths": _paths(tmp_path),
+        "cache_path": tmp_path / "configured-agy-cache.json",
+        "config_path": config_path,
+        "now": lambda: 1_800_000_000.0,
+        "agy_source": agy,
+    }
+    first = headroom_snapshot(**kwargs)
+    second = headroom_snapshot(**kwargs)
+
+    assert first == second
+    assert "agy" in first
+    assert calls == 1
+
+
+def test_agy_enabled_by_explicit_loaded_config_from_another_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    config_path = project / "harness.yaml"
+    config_path.write_text("agy:\n  enabled: true\n  command: fake-agy\n", encoding="utf-8")
+    config = HarnessConfig.load(config_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    reset = datetime(2026, 11, 10, 13, 46, 45, tzinfo=timezone.utc)
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        assert command == "fake-agy"
+        return [
+            AgyBucket("gemini-weekly", "Gemini Models", "weekly", 0.75, reset),
+            AgyBucket("3p-weekly", "Claude and GPT models", "weekly", 0.2, reset),
+        ]
+
+    snapshot = headroom_snapshot(
+        max_age_seconds=0,
+        paths=_paths(tmp_path),
+        cache_path=tmp_path / "explicit-config-cache.json",
+        config=config,
+        agy_source=agy,
+    )
+
+    assert [entry.used_percent for entry in snapshot["agy"]] == [25.0, 80.0]
+
+
+def test_broken_config_warns_and_treats_agy_as_disabled(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text("agy: [unclosed\n", encoding="utf-8")
+    calls = 0
+
+    def unused(*, command: str) -> list[AgyBucket]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    with caplog.at_level(logging.WARNING, logger="harness.limits"):
+        snapshot = headroom_snapshot(
+            max_age_seconds=0,
+            paths=_paths(tmp_path),
+            cache_path=tmp_path / "broken-config-cache.json",
+            config_path=config_path,
+            agy_source=unused,
+        )
+
+    assert set(snapshot) == {"codex", "cursor", "claude"}
+    assert calls == 0
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert str(config_path) in warnings[0].getMessage()
 
 
 def test_path_discovery_failure_returns_all_unknown(
