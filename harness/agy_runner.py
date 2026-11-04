@@ -76,6 +76,13 @@ _NO_CODE_MAP = (
 class AgyAgentRunner:
     """Run implementation and review agents through Antigravity's headless CLI."""
 
+    # agy 1.5.0 reads MCP servers only from its saved mcp_config.json (managed
+    # by ``agy mcp add``); ``--settings`` takes settings.json keys and has no
+    # per-call MCP server. The harness never edits agy's configuration, so agy
+    # cannot run the Playwright UI check. Provider choice skips agy for calls
+    # of projects with ``ui_review`` enabled.
+    supports_ui_review = False
+
     def __init__(
         self,
         config: HarnessConfig,
@@ -608,7 +615,7 @@ class AgyAgentRunner:
             self._context_paths(task),
             False,
             self.config.code_map.command,
-            ui_review=(self.config.ui_review if self.config.ui_review.enabled else None),
+            ui_review=None,
         )
         return self._invoke(
             task_id=task.id,
@@ -650,7 +657,7 @@ class AgyAgentRunner:
             self._context_paths(task),
             False,
             self.config.code_map.command,
-            ui_review=(self.config.ui_review if self.config.ui_review.enabled else None),
+            ui_review=None,
         )
         return self._invoke(
             task_id=task.id,
