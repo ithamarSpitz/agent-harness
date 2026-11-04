@@ -56,7 +56,7 @@ The spec parts, README and changelog describe S9 exactly as implemented.
 6. `docs/spec/operations.md`: `HARNESS_HOME` and the machine-wide files under it (`agents.json` ledger, `outcomes.jsonl`), the per-call fields in usage records (S9-T18), verification records, and that tests never touch the real home folder (S9-T17).
 7. `docs/spec/operations.md` also: `harness hold` / `harness release` (S9-T25) and brief reload before each attempt plus the agent-reported block rule (S9-T24).
 8. `docs/spec/providers.md` also: Cursor Auto takes first implementation attempts and headroom routing applies in every project (S9-T26).
-9. `docs/spec/configuration.md` and `docs/spec/providers.md` also: `cursor.free_only` (S9-T30): Cursor Auto is used only while both Cursor pools are at 100%; named Cursor models are unaffected.
+9. `docs/spec/configuration.md` and `docs/spec/providers.md` also: `cursor.auto_when_exhausted` (S9-T30): Cursor uses its named models; only while both Cursor pools are at 100% does Auto replace them for implementation (never for review), and the Auto-first attempt applies only then.
 10. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.
 
 # Acceptance criteria

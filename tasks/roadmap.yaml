@@ -577,7 +577,7 @@ sprints:
         depends_on:
         - S9-T10
       S9-T30:
-        file: tasks/sprint-09-claude-and-routing/30-cursor-free-only.md
+        file: tasks/sprint-09-claude-and-routing/30-cursor-auto-when-exhausted.md
         stage: 7
         depends_on:
         - S9-T26
