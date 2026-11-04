@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
 
 from .home import harness_home
+from .pace import record_samples
 from .limits import LimitsPaths, load_claude, load_codex, load_cursor
 
 
@@ -258,6 +259,7 @@ def headroom_snapshot(
     paths: LimitsPaths | None = None,
     cache_path: Path | None = None,
     now: Callable[[], float] | None = None,
+    history_path: Path | None = None,
 ) -> dict[str, list[Headroom]]:
     """Return a cheap, recent view of provider usage and reset times.
 
@@ -308,6 +310,11 @@ def headroom_snapshot(
             _memory_cached_at = current_time
             _memory_cache_path = cache_path
             _memory_snapshot = frozen
+            record_samples(
+                [entry for entries in frozen.values() for entry in entries],
+                now=current_time,
+                path=history_path,
+            )
             if cache_available:
                 try:
                     _write_disk_cache(cache_path, current_time, frozen)
