@@ -2,6 +2,12 @@
 
 Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](README.md) is the short operator guide.
 
+## Sprint S10 — Google Antigravity provider
+
+- Optional `agy` provider with a pool-aware Gemini/Claude implementation ladder, independent plan-mode reviews, per-call exact permissions, denied-action failures, and token/usage records.
+- Antigravity weekly quota pools participate in headroom/urgency routing, same-call fallback, quota/capacity/auth handling, the live board, and `harness limits` / `--json` when enabled.
+- Agy 1.5.0 headless streaming uses `-p=` and session-only settings; the harness leaves installation, sign-in, credentials, saved configuration, and updates to the user and does not inject UI/MCP tooling into agy calls.
+
 ## Sprint S9 — Claude Code, headroom routing, impact review, and model outcomes
 
 - Claude Code provider with implementation/review ladders, quota/error handling, Playwright support, and configurable five-hour/weekly reserves.

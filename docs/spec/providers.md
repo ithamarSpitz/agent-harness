@@ -1,6 +1,6 @@
 # Providers
 
-This document describes how the harness chooses between Codex, Cursor and Claude Code, switches providers, classifies failures, and pauses for quota or capacity. `SPEC.md` links the other specification parts.
+This document describes how the harness chooses between Antigravity (`agy`), Codex, Cursor and Claude Code, switches providers, classifies failures, and pauses for quota or capacity. `SPEC.md` links the other specification parts.
 
 ## Providers and fallback
 
@@ -8,22 +8,33 @@ This document describes how the harness chooses between Codex, Cursor and Claude
 
 | Config | Default | Role |
 | --- | --- | --- |
-| `providers.priority` | `["codex", "cursor"]` | Base order for headroom routing (see below). Enabled providers omitted from the list are appended after it. Add `"claude"` to place Claude explicitly. |
+| `providers.priority` | `["codex", "cursor"]` | Base order for headroom routing (see below). Enabled providers omitted from the list are appended after it. Add `"agy"` or `"claude"` to place them explicitly. |
 | `codex.enabled` | `false` | Codex CLI integration. |
 | `cursor.enabled` | `true` | Cursor CLI integration. |
 | `claude.enabled` | `false` | Claude Code CLI integration. |
+| `agy.enabled` | `false` | Antigravity CLI integration. The harness invokes the configured `agy` command and uses the user's existing login. |
 
 Disabled providers are never chosen. If nothing is enabled or usable, agent calls fail with an auth-style error or the scheduler follows its wait behavior (see "Headroom routing").
 
 ### What each provider runs
 
-| Phase | Codex | Cursor | Claude Code |
-| --- | --- | --- | --- |
-| Implementation | `codex.implementation_sequence` entry by Codex attempt index (model + optional `reasoning_effort` per entry) | `cursor.models[<class>]` where class comes from `retry.sequence` or the task’s `model_class` | `claude.implementation_sequence` entry by Claude attempt index (default `sonnet/medium`, `sonnet/high`, `opus/high`); an explicit escalation model class selects `claude.escalation_model` / `claude.escalation_effort` |
-| Review | `codex.review_model` | `cursor.models[task.review_model_class or "reviewer"]`, `--mode=ask` | `claude.review_model` / `claude.review_effort` (default `sonnet` / `high`) |
-| Plan repair | `codex.planner_model` | `cursor.models[planner_model_class]` (CLI default class `escalation` when not overridden) | Claude review profile; with `claude.enabled`, plan repair uses headroom routing, otherwise it keeps the Codex/Cursor behavior above |
+| Phase | Antigravity (`agy`) | Codex | Cursor | Claude Code |
+| --- | --- | --- | --- | --- |
+| Implementation | `agy.implementation_sequence` entry by agy attempt index (default Gemini Flash Medium, Gemini Flash High, then Claude Opus Thinking/high); an explicit escalation class selects `agy.escalation_model` / `agy.escalation_effort` | `codex.implementation_sequence` entry by Codex attempt index (model + optional `reasoning_effort` per entry) | `cursor.models[<class>]` where class comes from `retry.sequence` or the task’s `model_class` | `claude.implementation_sequence` entry by Claude attempt index (default `sonnet/medium`, `sonnet/high`, `opus/high`); an explicit escalation model class selects `claude.escalation_model` / `claude.escalation_effort` |
+| Review | `agy.review_model` / `agy.review_effort` (default Claude Sonnet 4.6/high), with `--mode plan` | `codex.review_model` | `cursor.models[task.review_model_class or "reviewer"]`, `--mode=ask` | `claude.review_model` / `claude.review_effort` (default `sonnet` / `high`) |
+| Plan repair | Review profile, or escalation profile for an explicit escalation class, with `--mode plan`; agy participates in plan-repair headroom routing only on the routing path enabled by `claude.enabled` | `codex.planner_model` | `cursor.models[planner_model_class]` (CLI default class `escalation` when not overridden) | Claude review profile; with `claude.enabled`, plan repair uses headroom routing, otherwise it keeps the legacy selection path |
 
 Claude runs non-interactively with `stream-json`, the selected model and effort, and `claude.permission_mode` (default `bypassPermissions`).
+
+Antigravity 1.5.0 runs non-interactively with `-p=`, a single NDJSON user message on stdin, `--input-format stream-json --output-format stream-json`, the selected model/effort, and per-call `--settings`. Implementation uses `--mode accept-edits`; review and plan repair use `--mode plan`. The harness closes stdin after writing the message and relies on its own agent timeout rather than `--print-timeout`. It logs `agy --version` once per runner and records response token fields from the final result.
+
+**Agy quota pools and ladder.** `/usage` exposes two weekly pools. The default `agy.pools` maps `gemini-` models to `gemini-weekly` and `claude-` / `gpt-oss-` models to `3p-weekly`. Routing evaluates the pool needed by the current call, not the provider's unrelated pool. If an implementation call exhausts one pool, the runner can immediately skip later ladder entries in that pool and try the next configured entry from another pool without spending another outer attempt. A model used by the implementation, review or escalation profiles must match exactly one configured pool.
+
+The models reported by the installed CLI for S10 are `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. The default ladder uses the models shown in the phase table; configured alternatives still have to match exactly one pool.
+
+**Agy permissions and denied actions.** Headless agy cannot ask for permission. Implementation uses `accept-edits`, while shell access is granted only through session-only `--settings '{"permissions":{"allow":[...]}}'`; the harness never saves settings and never uses `--dangerously-skip-permissions`. It builds exact `command(...)` rules from task verification commands, `agy.base_allow`, and exact base-ref diff commands. Verification command chains are split at unquoted `&&`, `|` and `;`. Agy 1.5.0 does not match wildcard or `regex:` command rules, so known Git defaults are expanded and unsupported wildcard, regex and Graphify rules are dropped with a warning. A result is successful only with process exit 0, final status `SUCCESS`, and an empty `denied_actions` list. Any denied action fails the call even though agy may exit 0 and report `SUCCESS`; the error lists its display name and action.
+
+**Agy tools and UI checks.** Agy 1.5.0 reads MCP servers only from saved user configuration and has no per-call MCP setting. The harness never edits that configuration, never offers the code map to agy, and never adds Playwright/MCP setup or UI-check instructions to agy implementation or review calls. `AgyAgentRunner.supports_ui_review` is therefore false. The provider wrapper still performs its ordinary post-call UI process/port cleanup when project UI review is enabled.
 
 **Claude and Playwright:** For implementation and review, Claude receives a strict temporary MCP configuration. With `ui_review.enabled` it contains only the configured Playwright MCP server (`npx` with `ui_review.playwright_mcp_package`); otherwise it is empty so user MCP servers are not loaded. Plan repair does not receive this configuration.
 
@@ -35,7 +46,7 @@ Claude runs non-interactively with `stream-json`, the selected model and effort,
 
 Implementation and review calls are routed by `choose_provider` (`harness/routing.py`) in **every** project, from the age-aware, machine-wide headroom snapshot (the same one shown on the live board). With no headroom data the result is exactly `providers.priority` order. The policy excludes disabled providers and providers disabled for the task, then applies these rules:
 
-1. Start with `providers.priority`, followed by enabled providers omitted from it. The S9 routing scenarios use the base order agy, Codex, Cursor, Claude; `choose_provider` itself works on whatever provider names are in `priority`/`enabled`, and `agy` appears only in those scenario tests and the board, not as a runner in this repository.
+1. Start with `providers.priority`, followed by enabled providers omitted from it. The routing scenarios use the base order agy, Codex, Cursor, Claude; `choose_provider` itself works on whatever provider names are in `priority`/`enabled`.
 2. **Cursor Auto first:** on a task's first implementation attempt only, if `cursor.auto_when_exhausted` is true and both known Cursor pools are at 100% or more, choose Cursor Auto before every other provider. Auto is never used for review.
 3. Exclude a provider that has a usage window at 100%, and apply the Claude reserve below.
 4. **Waste and urgency:** the quota that would expire unused is `remaining percent − hours to reset × full pace`. Providers with positive waste are *urgent* and go first, greatest waste first; ties keep configured order. Full pace comes from the S9-T31 pace source (`full_pace`), with routing fallbacks of 30%/hour for five-hour windows, 3%/hour for weekly windows and 1%/hour for monthly windows.
@@ -62,15 +73,15 @@ The chosen provider and the routing reason are logged (`<task>-routing.log`) and
 
 ### Per-task and per-phase routing
 
-`ProviderAgentRunner` owns provider choice and attempt indices in `runtime.provider_attempts` (`codex`, `cursor`, `claude`).
+`ProviderAgentRunner` owns provider choice and attempt indices in `runtime.provider_attempts` (`agy`, `codex`, `cursor`, `claude`).
 
 **Task-wide Codex disable** (metadata `{sprint}.{task_id}.provider.codex.disabled`): set when Codex hits quota, auth, model-unavailable, CLI/auth probe failure, or integration error **and** Cursor fallback is enabled. The **same** agent call then continues on Cursor without entering a waiting status. Value is a reason string (for example `quota:5h`, `auth`, `auth_or_cli_unavailable`). Claude quota or auth failures similarly set `{sprint}.{task_id}.provider.claude.disabled` so routing selects another provider; launch failures do not spend an implementation attempt.
 
-**Task-wide Cursor disable** (`{sprint}.{task_id}.provider.cursor.disabled`): set the same way when Cursor returns quota, auth, model-unavailable or a launch failure and another provider is usable (for example after Cursor Auto hits quota). Cleared with the Codex disable on a **new** sprint run manifest, not on `resume`. The Claude disable (`...provider.claude.disabled`) is not cleared by a new manifest; like the others, quota-reason disables of any provider are cleared when the task leaves `WAITING_QUOTA`.
+**Task-wide Cursor disable** (`{sprint}.{task_id}.provider.cursor.disabled`): set the same way when Cursor returns quota, auth, model-unavailable or a launch failure and another provider is usable (for example after Cursor Auto hits quota). Cleared with the Codex disable on a **new** sprint run manifest, not on `resume`. Agy and Claude disable keys are not cleared by a new manifest; like the others, quota-reason disables of any provider are cleared when the task leaves `WAITING_QUOTA` or live headroom shows usable capacity again.
 
 **Per-phase provider disable** (`{sprint}.{task_id}.provider.{provider}.disabled.{phase}`): after **three** stall/timeout events for the same phase and provider, `fallback_after_stalls` may disable that provider for that phase only and record a switch to the other provider (to whichever provider headroom routing then picks, with the phase-local disable applied; a Codex pick requires a fresh availability probe to succeed). Unlike Codex quota/auth fallback, this is **not** a same-call continue: `_handle_agent_wait` still pauses with `WAITING_TIMEOUT`, `waiting_provider` stays the stalled provider, and the alternate provider runs only on the next `harness run` / `harness resume` (with `capacity.policy: wait`, after `retry_interval_minutes`).
 
-Each **new** run manifest clears task-wide Codex/Cursor disable keys so every task probes Codex again. **Resume** preserves prior fallback. Headroom routing also clears quota-reason disables when a task leaves `WAITING_QUOTA`.
+Each **new** run manifest clears task-wide Codex/Cursor disable keys so every task probes Codex again. **Resume** preserves prior fallback. Headroom routing also clears temporary quota disables when a task leaves `WAITING_QUOTA` or the provider has usable live capacity; for agy, either weekly pool below 100% counts as capacity at this reconciliation step.
 
 ### Codex vs Cursor on failure (same call)
 
@@ -83,7 +94,9 @@ Each **new** run manifest clears task-wide Codex/Cursor disable keys so every ta
 
 If Codex quota/auth/model failure occurs and Cursor is **disabled**, the harness does **not** fall back; quota exhaustion can still lead to `WAITING_QUOTA` when the returned result has `quota_exhausted`.
 
-The implement loop generalizes this to every provider: when Codex, Cursor or Claude returns quota, auth, model-unavailable or a launch failure and another candidate is still usable, the failing provider is disabled for the task (reason such as `quota:5h`) and the same call continues on the next routed provider. With no other candidate the result is returned and the normal wait/retry handling applies. Claude failures are classified into quota, authentication, network, provider-busy, provider-error and timeout/stall results (quota phrases accept straight and typographic apostrophes); timeout or stall takes precedence and becomes `WAITING_TIMEOUT`, busy becomes capacity exhaustion, network and provider errors are transient waits, and a nonzero exit or reported stream error without a classified wait is an ordinary Claude failure.
+The implement loop generalizes this to every provider: when agy, Codex, Cursor or Claude returns quota, auth, model-unavailable or a launch failure and another candidate is still usable, the failing provider is disabled for the task (reason such as `quota:gemini-weekly`) and the same call continues on the next routed provider. With no other candidate the result is returned and the normal wait/retry handling applies. Claude failures are classified into quota, authentication, network, provider-busy, provider-error and timeout/stall results (quota phrases accept straight and typographic apostrophes); timeout or stall takes precedence and becomes `WAITING_TIMEOUT`, busy becomes capacity exhaustion, network and provider errors are transient waits, and a nonzero exit or reported stream error without a classified wait is an ordinary Claude failure.
+
+**Agy result classification.** Limit and error phrases are considered only when the call failed (nonzero exit, timeout/stall, non-`SUCCESS` result), and never merely because they appear in a successful answer. Credits/quota/`RESOURCE_EXHAUSTED` phrases are quota, scoped to the selected pool and treated as a cap until its reset. `model capacity exhausted` and `rate limit` are temporary provider-busy capacity. Authentication phrases set auth failure; network and HTTP 5xx-style phrases set their corresponding transient wait causes. Quota beats timeout, while timeout/stall beats capacity/network/provider error. An unclassified failed agy call is an ordinary failure rather than a provider-error wait.
 
 ### Implementation attempt budget
 
@@ -95,14 +108,14 @@ With `ProviderAgentRunner`, the implement loop continues while `runtime.attempt 
 | --- | --- |
 | CLI `--model-class` | **1** |
 | Task sets `max_attempts` | that integer (not 1) |
-| Otherwise | `max_implementation_attempts()` = `len(codex.implementation_sequence) + max(1, len(retry.sequence))`, plus `len(claude.implementation_sequence)` when `claude.enabled` |
+| Otherwise | `max_implementation_attempts()` = `len(codex.implementation_sequence) + max(1, len(retry.sequence))`, plus the agy and Claude sequence lengths when those providers are enabled |
 
 `max_implementation_attempts()` always returns that sum. It does not read `task.max_attempts` or `--model-class`.
 
 **Live implement-call cap** (`has_implementation_budget`):
 
 - `--model-class`: one Cursor call (`provider_attempts["cursor"] < 1`). Not `len(retry.sequence)`.
-- Otherwise headroom routing decides. A provider whose own budget is used up is treated as unavailable for this check: Codex when `provider_attempts["codex"]` reaches `len(codex.implementation_sequence)`, Cursor when it reaches `max(1, len(retry.sequence))`, Claude when it reaches `len(claude.implementation_sequence)`. The task has budget while `choose_provider` still returns a provider from the rest. Ordinary failures consume one attempt of the provider that ran; the next attempt is routed again, so exhausting one provider's sequence falls through to another usable provider and the task is blocked only when none remains.
+- Otherwise headroom routing decides. A provider whose own budget is used up is treated as unavailable for this check: agy, Codex and Claude when their provider-attempt count reaches their implementation sequence length, and Cursor when it reaches `max(1, len(retry.sequence))`. The task has budget while `choose_provider` still returns a provider from the rest. Ordinary failures consume one attempt of the provider that ran; the next attempt is routed again, so exhausting one provider's sequence falls through to another usable provider and the task is blocked only when none remains.
 - Cursor model class uses effective sequence `retry.sequence` if non-empty, otherwise `[task.model_class]`; index `i` (from `provider_attempts["cursor"]`) picks `sequence[min(i, len(sequence) - 1)]`. With default empty `retry.sequence`, that is one attempt at the task’s `model_class`. With `cursor.auto_when_exhausted` and both pools at 100%, the first attempt uses `auto` instead.
 
 Implementation and review always go through headroom routing, in every project; plan repair does so only when `claude.enabled`. The legacy `execution.default_max_attempts` path (`len(retry.sequence)` if non-empty, otherwise `2`) remains only for runners that do not manage model routing.
@@ -134,7 +147,7 @@ Account **quota** and transient **capacity** are separate. The scheduler records
 | `WAITING_PROVIDER_ERROR` | Other transient provider/server errors | either |
 | `WAITING_TIMEOUT` | Hard timeout or stall watchdog | either |
 
-Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`codex` | `cursor` | `claude`). Sprint-level meta `{sprint_id}.run_status` mirrors the pause for manifests.
+Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`agy` | `codex` | `cursor` | `claude`). Sprint-level meta `{sprint_id}.run_status` mirrors the pause for manifests.
 
 ### Cause detection
 
@@ -155,7 +168,7 @@ Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`c
 | `provider_error` | `WAITING_PROVIDER_ERROR` |
 | `timeout` | `WAITING_TIMEOUT` |
 
-**Important:** `WAITING_QUOTA` is recorded only when the **agent result** has `quota_exhausted` — in practice **Cursor** quota (or Codex quota when Cursor fallback is disabled). Codex quota with Cursor enabled disables Codex and retries on Cursor in the same call instead of waiting.
+**Important:** `WAITING_QUOTA` is recorded only when the **agent result** has `quota_exhausted` — for example agy or Cursor quota when no alternate provider remains, or Codex quota when fallback is disabled. When another provider is usable, the implement loop disables the exhausted provider and continues in the same call instead of waiting.
 
 ### Failure records and exit codes
 
@@ -209,6 +222,8 @@ Review-phase capacity/quota/timeout waits do **not** trigger another implement c
 
 **Capacity (Codex):** `codex.busy_patterns`, `codex.network_patterns`, `codex.provider_error_patterns`.
 
+**Agy:** fixed runner patterns distinguish credits/quota/`RESOURCE_EXHAUSTED`, temporary model capacity/rate limits, authentication, network, and HTTP 5xx-style provider errors as described above; they are not configurable YAML keys.
+
 **Legacy yaml pattern keys (`codex:` and `capacity:` sections):** on load, `HarnessConfig._load_wait_patterns` merges legacy `capacity_patterns` and `exhaustion_patterns` into `busy_patterns`, and legacy `transient_patterns` into `provider_error_patterns` (unknown legacy transient strings are treated as provider-error-shaped). The `quota:` section uses `quota.exhaustion_patterns` only (no merge helper).
 
 Codex also uses `codex.auth_patterns` and `codex.model_unavailable_patterns` for fallback (not waiting statuses).
@@ -219,4 +234,4 @@ Codex also uses `codex.auth_patterns` and `codex.model_unavailable_patterns` for
 - Cursor pattern classification runs before the timeout override; a timed-out or stalled call is always treated as `WAITING_TIMEOUT` regardless of network-like output in the log.
 - Codex only sets `waiting_cause: timeout` when the hard timeout or stall watchdog fired. Output that merely matches `timeout` / `timed out` in `codex.provider_error_patterns` is classified as `provider_error` → `WAITING_PROVIDER_ERROR`, not `WAITING_TIMEOUT`.
 - Codex `_classify` checks auth and model-unavailable patterns before the timeout branch, so auth-shaped text in diagnostics can trigger same-call Cursor fallback (when enabled) instead of a capacity wait even when the call also timed out.
-- Plan repair (`PlanChangeManager.propose` via `harness plan-change propose`) uses the same Codex/Cursor routing as the table above (headroom routing when `claude.enabled`), but `quota_exhausted`, `capacity_exhausted`, and other non-ok results raise `RuntimeError`. They do not set `WAITING_*`, sleep, or resume. The wait statuses in this document apply to implement and review only.
+- Plan repair (`PlanChangeManager.propose` via `harness plan-change propose`) uses the legacy Codex/Cursor selection unless `claude.enabled` activates headroom routing, where agy can also be selected when enabled. `quota_exhausted`, `capacity_exhausted`, and other non-ok results raise `RuntimeError`; they do not set `WAITING_*`, sleep, or resume. The wait statuses in this document apply to implement and review only.

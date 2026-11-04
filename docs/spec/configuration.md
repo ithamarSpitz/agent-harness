@@ -85,11 +85,52 @@ Claude Code uses `stream-json` and passes the configured model, effort, and perm
 
 Reserve percentages must be between 0 and 100, hour/day values must be nonnegative, and `max_percent` must be at least `min_percent`. Legacy `reserve.five_hour_max_used_percent` and `reserve.weekly_max_used_percent` are ignored with a warning.
 
+### `agy`
+
+Antigravity is opt-in. The harness only starts the official CLI command with session-only arguments; installation, sign-in, updates, and saved agy settings remain the user's responsibility.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Allow agy to participate in provider routing and include its two pools in live limits/headroom. |
+| `command` | `"agy"` | Antigravity CLI executable or path. |
+| `implementation_sequence` | Gemini 3.8 Flash Medium, Gemini 3.8 Flash High, then Claude Opus 4.6 Thinking/high | Successive implementation profiles. Each item is a mapping with a string `model` and optional `effort` (`low`, `medium`, `high`, `xhigh`, or `max`); the list must not be empty. |
+| `review_model` | `"claude-sonnet-4-6"` | Model for review and non-escalation plan repair. |
+| `review_effort` | `"high"` | Effort for review and non-escalation plan repair. |
+| `escalation_model` | `"claude-opus-4-6-thinking"` | Model selected by an explicit escalation class. |
+| `escalation_effort` | `"high"` | Effort selected with `escalation_model`. |
+| `pools` | `gemini-weekly: ["gemini-"]`; `3p-weekly: ["claude-", "gpt-oss-"]` | Quota-pool ids mapped to model-id prefixes. Pool ids and prefixes are strings; every implementation, review, and escalation model must match exactly one pool. |
+| `base_allow` | Git status/diff/log wildcard rules and `command(graphify *)` | Base agy permission rules added to every call. Known Git wildcards are expanded to exact prompt commands. Other wildcard, `regex:`, and Graphify rules are dropped because agy 1.5.0 cannot match them exactly; implementation also adds exact task-verification and base-ref diff commands. |
+
+The default implementation sequence in YAML form is:
+
+```yaml
+agy:
+  enabled: false
+  command: agy
+  implementation_sequence:
+    - model: gemini-3.8-flash-medium
+    - model: gemini-3.8-flash-high
+    - model: claude-opus-4-6-thinking
+      effort: high
+  review_model: claude-sonnet-4-6
+  review_effort: high
+  escalation_model: claude-opus-4-6-thinking
+  escalation_effort: high
+  pools:
+    gemini-weekly: [gemini-]
+    3p-weekly: [claude-, gpt-oss-]
+  base_allow:
+    - command(git status*)
+    - command(git diff*)
+    - command(git log*)
+    - command(graphify *)
+```
+
 ### `providers`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `priority` | `["codex", "cursor"]` | Base order for headroom routing. Enabled providers omitted from the list are appended. Add `"claude"` to place Claude explicitly. Urgent expiring quota may move a provider ahead of this order. |
+| `priority` | `["codex", "cursor"]` | Base order for headroom routing. Enabled providers omitted from the list are appended. Add `"agy"` or `"claude"` to place them explicitly. Urgent expiring quota may move a provider ahead of this order. |
 
 ### `retry`
 
