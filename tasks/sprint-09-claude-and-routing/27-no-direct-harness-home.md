@@ -10,6 +10,7 @@ depends_on:
   - S9-T23
 allowed_paths:
   - tests/harness/test_no_direct_harness_home.py
+  - harness/outcomes_report.py
 context:
   - spec
 environment: null
@@ -36,7 +37,7 @@ No harness module builds a path to the machine-wide harness folder on its own; e
 
 # Acceptance criteria
 
-1. The test passes on the current code (after S9-T9 and S9-T23).
+1. The test passes. `harness/outcomes_report.py` (`default_outcomes_path`, lines that build `Path.home() / ".harness" / "outcomes.jsonl"`) still builds the path itself on main (operator found this Nov 4 2026); change those lines to use `harness_home() / "outcomes.jsonl"`, keeping its existing override behavior.
 2. A temporary fake source with `Path.home() / ".harness" / "x"` (written under `tmp_path` and checked with the same function) makes it fail with the file and line.
 
 # Rules for every S9 task
