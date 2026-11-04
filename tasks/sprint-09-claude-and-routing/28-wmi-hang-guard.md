@@ -12,6 +12,7 @@ allowed_paths:
   - harness/manifest.py
   - tests/conftest.py
   - tests/harness/test_winplatform.py
+  - tests/harness/test_manifest.py
 context:
   - spec
 environment: null
@@ -51,3 +52,4 @@ On Nov 3 2026 two S9 verification runs (S9-T12 and S9-T9) each hung for the full
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

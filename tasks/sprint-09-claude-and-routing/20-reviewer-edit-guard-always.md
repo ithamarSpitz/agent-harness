@@ -13,6 +13,9 @@ allowed_paths:
   - harness/ui_review.py
   - harness/runner.py
   - tests/harness/test_review_edit_guard.py
+  - tests/harness/test_ui_review.py
+  - tests/harness/test_implementer_cleanup.py
+  - tests/harness/test_worktree_guard.py
 context:
   - spec
 environment: null
@@ -51,3 +54,4 @@ On Nov 3 2026 the Cursor Auto reviewer of S9-T16 wrote three scratch files (`_gr
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

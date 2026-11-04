@@ -10,6 +10,7 @@ depends_on:
 allowed_paths:
   - harness/board.py
   - tests/harness/test_board_headroom.py
+  - tests/harness/test_board.py
 context:
   - spec
 environment: null
@@ -56,3 +57,4 @@ Split from S9-T12 (Nov 4 2026). S9-T12's three attempts failed review on this li
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

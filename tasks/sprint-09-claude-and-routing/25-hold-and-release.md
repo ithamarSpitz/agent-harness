@@ -11,6 +11,8 @@ allowed_paths:
   - harness/scheduler.py
   - harness/cli.py
   - tests/harness/test_hold_release.py
+  - tests/harness/test_scheduler_stop.py
+  - tests/harness/test_console_commands.py
 context:
   - spec
 environment: null
@@ -52,3 +54,4 @@ Today the only ways to stop a task are a stop request for the whole sprint (`.ha
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

@@ -14,6 +14,14 @@ allowed_paths:
   - harness/provider_runner.py
   - harness.yaml
   - tests/harness/test_cursor_auto_when_exhausted.py
+  - tests/harness/test_provider_choice.py
+  - tests/harness/test_auto_first.py
+  - tests/harness/test_codex_provider.py
+  - tests/harness/test_quota_fallback_expiry.py
+  - tests/harness/test_retry_budget.py
+  - tests/harness/test_launch_failure.py
+  - tests/harness/test_launch_fallback_reason.py
+  - tests/harness/test_cursor_runner.py
 context:
   - spec
 environment: null
@@ -62,3 +70,4 @@ Fake headroom, Codex and Cursor enabled, named models as in decision 2, `auto_wh
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

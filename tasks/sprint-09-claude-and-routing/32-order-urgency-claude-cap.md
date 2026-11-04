@@ -15,6 +15,15 @@ allowed_paths:
   - harness.yaml
   - tests/harness/test_routing.py
   - tests/harness/test_routing_scenarios.py
+  - tests/harness/test_provider_choice.py
+  - tests/harness/test_auto_first.py
+  - tests/harness/test_codex_provider.py
+  - tests/harness/test_quota_fallback_expiry.py
+  - tests/harness/test_retry_budget.py
+  - tests/harness/test_worktree_guard.py
+  - tests/harness/test_cli_end_to_end.py
+  - tests/harness/test_config_claude.py
+  - tests/harness/test_cursor_auto_when_exhausted.py
 context:
   - spec
 environment: null
@@ -72,3 +81,4 @@ Base order agy, codex, cursor, claude. Full pace (injected): Codex 5-hour 30%/h,
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).

@@ -11,6 +11,8 @@ allowed_paths:
   - harness/provider_runner.py
   - tests/harness/test_provider_choice.py
   - tests/harness/test_auto_first.py
+  - tests/harness/test_cli_end_to_end.py
+  - tests/harness/test_worktree_guard.py
 context:
   - spec
 environment: null
@@ -38,6 +40,7 @@ S9-T5 (`harness/routing.py`, `choose_provider`) has the rule "the first implemen
 4. Log the choice and reason as S9-T10 does.
 5. If part of this already exists when you start, keep it and add the missing parts and the tests.
 6. Keep the existing behavior around these rules: when a chosen provider turns out unavailable, disable it for the call and choose again (as before this task); log every choice and its reason and write its usage record, also on the no-headroom priority path.
+7. Routing-choice records written to `.harness/usage.jsonl` (event_type `routing_choice`) are not provider calls: tests and reports that count calls skip them (update `tests/harness/test_cli_end_to_end.py` to count only call records). Tests whose setup means a single provider (for example `tests/harness/test_worktree_guard.py` with a fake Codex) disable the other providers in their config, so the self-review rule applies there.
 
 # Acceptance criteria
 
@@ -53,3 +56,4 @@ S9-T5 (`harness/routing.py`, `choose_provider`) has the rule "the first implemen
 - Never read, print, log or store tokens or credentials. Claude Code uses the user's own login; the harness only starts the `claude` program.
 - Statuses and waits use the S7 names (`WAITING_QUOTA`, `WAITING_NETWORK`, ...).
 - Change only `allowed_paths`. If a criterion cannot be met inside them, stop and report it in OPEN_ISSUES.
+- Existing tests that check behavior you change on purpose are updated to the new behavior (only the ones listed in `allowed_paths`); never weaken a test to make it pass. If another existing test outside `allowed_paths` fails, stop and report it in OPEN_ISSUES (STATUS: blocked).
