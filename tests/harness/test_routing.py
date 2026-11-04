@@ -118,7 +118,7 @@ def test_all_out_names_every_provider():
 
     assert choice.provider is None
     assert all(provider in choice.reason for provider in ("codex", "cursor", "claude"))
-    codex_reset_local = (NOW + timedelta(hours=2)).astimezone().strftime("%H:%M")
+    codex_reset_local = (NOW + timedelta(hours=2)).astimezone().strftime("%Y-%m-%d %H:%M")
     assert f"codex out until {codex_reset_local}" in choice.reason
     assert "cursor out until" in choice.reason
     assert "claude 5-hour at 80% (cap 67.5%)" in choice.reason
@@ -209,3 +209,33 @@ def test_provider_disabled_for_the_task_is_skipped():
     choice = choose({}, disabled={"codex"})
 
     assert choice.provider == "cursor"
+
+
+def test_quota_disabled_provider_with_stale_capacity_keeps_claude_cap_strict():
+    choice = choose(
+        {
+            "codex": {"primary": window(95, 1.9)},
+            "cursor": {"monthly": window(100, 22 * 24)},
+            "claude": {"windows": {"five_hour": window(60, 0.5)}},
+        },
+        disabled={"codex"},
+    )
+
+    assert choice.provider is None
+    assert "claude 5-hour at 60% (cap 60%)" in choice.reason
+
+
+def test_claude_cap_reset_is_an_earlier_wait_candidate():
+    choice = choose(
+        {
+            "codex": {"primary": window(100, 1.5)},
+            "cursor": {"monthly": window(100, 22 * 24)},
+            "claude": {
+                "windows": {"five_hour": window(65, 1), "weekly": window(10, 24)}
+            },
+        }
+    )
+
+    assert choice.provider is None
+    assert choice.wait_until == NOW + timedelta(hours=1)
+    assert "claude 5-hour at 65%" in choice.reason

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .config import HarnessConfig
 from .headroom import Headroom, headroom_snapshot
 from .models import SprintSpec, TaskSpec, TaskStatus
 from .state import StateStore
@@ -429,9 +430,11 @@ def _live_headroom(
     return {name: list(raw[name]) for name in names}
 
 
-def live_headroom_source() -> Mapping[str, Sequence[Headroom]]:
+def live_headroom_source(
+    config: HarnessConfig | None = None,
+) -> Mapping[str, Sequence[Headroom]]:
     """Read current headroom through the age-aware public API."""
-    return headroom_snapshot()
+    return headroom_snapshot(config=config)
 
 
 def snapshot_from_state(

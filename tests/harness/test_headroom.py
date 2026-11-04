@@ -20,6 +20,11 @@ from harness.headroom import Headroom, headroom_snapshot
 from harness.limits import LimitsPaths
 
 
+@pytest.fixture(autouse=True)
+def _isolate_project_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+
 def _paths(tmp_path: Path) -> LimitsPaths:
     return LimitsPaths(
         codex_home=tmp_path / "codex",

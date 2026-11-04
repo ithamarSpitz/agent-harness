@@ -122,7 +122,7 @@ def test_live_source_refreshes_stale_data_through_headroom_snapshot(
     cache.write_text(json.dumps({"cached_at": 1, "providers": stale}), encoding="utf-8")
     control = tmp_path / "control.json"
     control.write_text(json.dumps({"cached_at": 1, "providers": stale}), encoding="utf-8")
-    fresh = headroom_snapshot(cache_path=control, now=lambda: 2.0)
+    fresh = headroom_snapshot(cache_path=control, now=lambda: 2.0, agy_enabled=False)
     assert fresh["codex"][0].used_percent == 77.0  # fixture is a readable cache
     seen: list[str] = []
 
@@ -133,7 +133,7 @@ def test_live_source_refreshes_stale_data_through_headroom_snapshot(
 
         return load
 
-    def live() -> dict[str, list[Headroom]]:
+    def live(*, config=None) -> dict[str, list[Headroom]]:  # type: ignore[no-untyped-def]
         return headroom_snapshot(
             codex_source=src("codex"),
             cursor_source=src("cursor"),
@@ -141,6 +141,7 @@ def test_live_source_refreshes_stale_data_through_headroom_snapshot(
             paths=LimitsPaths.from_env(),
             cache_path=cache,
             now=lambda: 10_000.0,
+            agy_enabled=False,
         )
 
     monkeypatch.setattr(board_module, "headroom_snapshot", live)
