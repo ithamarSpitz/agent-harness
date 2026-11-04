@@ -32,11 +32,12 @@ S9-T5 (`harness/routing.py`, `choose_provider`) has the rule "the first implemen
 
 # Decisions (do not reopen)
 
-1. For implementation attempt 1 of a task, when Cursor is enabled and `cursor.models` has an `auto` model, call `choose_provider` with `model_class="auto"` and run Cursor with that model. Later attempts use the task's model class as today. A task brief can opt out with `model_class: hard_worker` or higher (those keep their class on attempt 1).
+1. For implementation attempt 1 of a task, when Cursor is enabled and `cursor.models` maps the task's model class to the model `auto` (for example `worker: auto`, the class to model mapping used in `harness/runner.py`; there is no separate `auto` key), call `choose_provider` with `model_class="auto"` and run Cursor with that model. Later attempts use the task's model class as today. A task brief can opt out with `model_class: hard_worker` or higher (those keep their class on attempt 1).
 2. Use the live headroom snapshot for choices in every project. When no headroom data is available, the order is exactly `providers.priority` (as S9-T10 decision 5 intended).
-3. Reviews never go to Cursor Auto and never to the provider that implemented the task (already recorded as `provider.implementer`); if no other reviewer is available, the review waits as today.
+3. Reviews never run Cursor with a model that resolves to `auto` (for example `reviewer: auto`): then Cursor is not a review candidate. Reviews go to a provider other than the implementer (recorded as `provider.implementer`) whenever another one is available, with or without headroom data. If the implementer is the only available provider, it reviews its own work, as `choose_provider` does today; a review never waits just because only the implementer is available.
 4. Log the choice and reason as S9-T10 does.
 5. If part of this already exists when you start, keep it and add the missing parts and the tests.
+6. Keep the existing behavior around these rules: when a chosen provider turns out unavailable, disable it for the call and choose again (as before this task); log every choice and its reason and write its usage record, also on the no-headroom priority path.
 
 # Acceptance criteria
 
