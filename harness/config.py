@@ -166,6 +166,31 @@ class ClaudeConfig:
 
 
 @dataclass(slots=True)
+class AgyConfig:
+    enabled: bool = False
+    command: str = "agy"
+    implementation_sequence: list[dict[str, str]] = field(default_factory=lambda: [
+        {"model": "gemini-3.8-flash-medium"},
+        {"model": "gemini-3.8-flash-high"},
+        {"model": "claude-opus-4-6-thinking", "effort": "high"},
+    ])
+    review_model: str = "claude-sonnet-4-6"
+    review_effort: str = "high"
+    escalation_model: str = "claude-opus-4-6-thinking"
+    escalation_effort: str = "high"
+    pools: dict[str, list[str]] = field(default_factory=lambda: {
+        "gemini-weekly": ["gemini-"],
+        "3p-weekly": ["claude-", "gpt-oss-"],
+    })
+    base_allow: list[str] = field(default_factory=lambda: [
+        "command(git status*)",
+        "command(git diff*)",
+        "command(git log*)",
+        "command(graphify *)",
+    ])
+
+
+@dataclass(slots=True)
 class ProvidersConfig:
     priority: list[str] = field(default_factory=lambda: ["codex", "cursor"])
 
@@ -329,6 +354,7 @@ class HarnessConfig:
     doctor: DoctorConfig
     self_hosting: SelfHostingConfig = field(default_factory=SelfHostingConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    agy: AgyConfig = field(default_factory=AgyConfig)
 
     @classmethod
     def _load_execution(cls, raw: Any) -> ExecutionConfig:
@@ -417,6 +443,84 @@ class HarnessConfig:
         return config
 
     @staticmethod
+    def _load_agy(raw: Any) -> AgyConfig:
+        if raw is not None and not isinstance(raw, dict):
+            raise ValueError("agy must be a mapping")
+        config = AgyConfig(**dict(raw or {}))
+
+        for key in (
+            "command",
+            "review_model",
+            "review_effort",
+            "escalation_model",
+            "escalation_effort",
+        ):
+            value = getattr(config, key)
+            if not isinstance(value, str):
+                raise ValueError(f"agy.{key} must be a string")
+
+        if not isinstance(config.implementation_sequence, list):
+            raise ValueError("agy.implementation_sequence must be a list")
+        if not config.implementation_sequence:
+            raise ValueError("agy.implementation_sequence must not be empty")
+
+        valid_efforts = {"low", "medium", "high", "xhigh", "max"}
+        for index, profile in enumerate(config.implementation_sequence):
+            key = f"agy.implementation_sequence[{index}]"
+            if not isinstance(profile, dict):
+                raise ValueError(f"{key} must be a mapping")
+            model = profile.get("model")
+            if not isinstance(model, str):
+                raise ValueError(f"{key}.model must be a string")
+            if "effort" in profile:
+                effort = profile["effort"]
+                if not isinstance(effort, str):
+                    raise ValueError(f"{key}.effort must be a string")
+                if effort not in valid_efforts:
+                    raise ValueError(
+                        f"{key}.effort must be one of low, medium, high, xhigh, max"
+                    )
+
+        for key in ("review_effort", "escalation_effort"):
+            if getattr(config, key) not in valid_efforts:
+                raise ValueError(
+                    f"agy.{key} must be one of low, medium, high, xhigh, max"
+                )
+
+        if not isinstance(config.pools, dict):
+            raise ValueError("agy.pools must be a mapping")
+        for pool_id, prefixes in config.pools.items():
+            if not isinstance(pool_id, str):
+                raise ValueError("agy.pools pool ids must be strings")
+            if not isinstance(prefixes, list):
+                raise ValueError(f"agy.pools.{pool_id} must be a list")
+            for index, prefix in enumerate(prefixes):
+                if not isinstance(prefix, str):
+                    raise ValueError(
+                        f"agy.pools.{pool_id}[{index}] must be a string"
+                    )
+
+        if not isinstance(config.base_allow, list):
+            raise ValueError("agy.base_allow must be a list")
+        for index, rule in enumerate(config.base_allow):
+            if not isinstance(rule, str):
+                raise ValueError(f"agy.base_allow[{index}] must be a string")
+
+        models = [profile["model"] for profile in config.implementation_sequence]
+        models.extend((config.review_model, config.escalation_model))
+        for model in models:
+            matching_pools = {
+                pool_id
+                for pool_id, prefixes in config.pools.items()
+                if any(model.startswith(prefix) for prefix in prefixes)
+            }
+            if len(matching_pools) != 1:
+                raise ValueError(
+                    f"agy model {model!r} must belong to exactly one pool"
+                )
+        return config
+
+    @staticmethod
     def _load_wait_patterns(raw: Any, config_type: type[CodexConfig] | type[CapacityConfig]):
         section = dict(raw or {})
         defaults = config_type()
@@ -454,4 +558,5 @@ class HarnessConfig:
             doctor=DoctorConfig(**raw.get("doctor", {})),
             self_hosting=SelfHostingConfig(**raw.get("self_hosting", {})),
             claude=cls._load_claude(raw.get("claude", {})),
+            agy=cls._load_agy(raw.get("agy", {})),
         )
