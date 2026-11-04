@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import yaml
 
+from harness.board import render_board, snapshot_from_state
 from harness.cli import cmd_reset_task, cmd_retry, cmd_run_task, cmd_unblock
 from harness.config import HarnessConfig
 from harness.headroom import Headroom, headroom_snapshot
 from harness.limits import LimitsPaths
-from harness.models import TaskSpec, TaskStatus
+from harness.models import SprintSpec, TaskSpec, TaskStatus
 from harness.provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from harness.routing import adapt_headroom_snapshot, choose_provider
 from harness.runner import AgentResult
@@ -35,10 +36,7 @@ def _config(tmp_path: Path, *, claude: bool = True) -> HarnessConfig:
                 "claude": {
                     "enabled": claude,
                     "implementation_sequence": [{"model": "sonnet", "effort": "medium"}],
-                    "reserve": {
-                        "five_hour_max_used_percent": 50,
-                        "weekly_max_used_percent": 80,
-                    },
+                    "reserve": {"min_percent": 60, "max_percent": 90},
                 },
                 "providers": {"priority": ["codex", "cursor", "claude"]},
                 "retry": {"sequence": ["worker"]},
@@ -149,12 +147,23 @@ def test_headroom_favoring_claude_routes_implementation_and_logs_reason(tmp_path
 
     assert result.ok and result.provider == "claude"
     assert (codex.implement_calls, cursor.implement_calls, claude.implement_calls) == (0, 0, 1)
-    choices = [event for event in usage.events() if event.get("routing_reason")]
-    assert choices[-1]["provider"] == "claude"
-    assert "free" in choices[-1]["routing_reason"]
-    assert "provider choice for implement: claude" in (
-        tmp_path / "logs" / "T1-routing.log"
-    ).read_text(encoding="utf-8")
+    # Routing choices go to the run log only, never to usage.jsonl.
+    assert [e for e in usage.events() if e.get("routing_reason")] == []
+    log = (tmp_path / "logs" / "T1-routing.log").read_text(encoding="utf-8")
+    assert "provider choice for implement: claude (urgent: waste 50% of claude 5-hour" in log
+    # The board reads the reason from this meta key.
+    reason = _state.get_meta(f"{task.sprint}.{task.id}.board.routing_reason")
+    assert isinstance(reason, str) and reason.startswith("urgent: waste 50% of claude 5-hour")
+
+    # harness.board shows that reason (from the meta key, not usage.jsonl).
+    runtime = _state.get(task.id)
+    runtime.status = TaskStatus.IMPLEMENTING
+    runtime.attempt = 1
+    sprint = SprintSpec(id=task.sprint, name="Routing", tasks={task.id: task})
+    snapshot = snapshot_from_state(_state, sprint, datetime.now(timezone.utc))
+    assert snapshot.stages[0].tasks[0].routing_reason == reason
+    lines = render_board(snapshot, 200)
+    assert any("urgent: waste 50% of claude 5-hour" in line for line in lines)
 
 
 def test_review_after_claude_implementation_uses_another_provider(tmp_path: Path):
@@ -189,7 +198,7 @@ def test_review_does_not_treat_task_auto_class_as_auto_only(tmp_path: Path):
 
 def test_claude_over_reserve_is_not_called(tmp_path: Path):
     router, _state, _usage, codex, _cursor, claude = _router(
-        tmp_path, _headroom(claude_used=55)
+        tmp_path, _headroom(claude_used=65)
     )
     task = _task(tmp_path)
     workspace = tmp_path / "worktree"
@@ -200,20 +209,52 @@ def test_claude_over_reserve_is_not_called(tmp_path: Path):
     assert claude.implement_calls == 0
 
 
-def test_claude_disabled_keeps_priority_order_even_with_headroom(tmp_path: Path):
-    snapshot = _headroom()
-    snapshot["codex"][0] = Headroom(
-        "codex", 99, int(time.time()) + 100 * 3600, "weekly", True
-    )
-    router, _state, _usage, codex, _cursor, _claude = _router(
+def test_claude_disabled_still_routes_by_the_rules_not_only_priority(tmp_path: Path):
+    # Codex has 1% left but resets in 100h (no waste); Cursor's pool resets in 1h
+    # with 5% left... its waste is 5 - 1 x 1 = 4%, so Cursor goes first.
+    now = int(time.time())
+    snapshot = {
+        "codex": [Headroom("codex", 99, now + 100 * 3600, "weekly", True)],
+        "cursor": [Headroom("cursor", 95, now + 3600, "other_models", True)],
+    }
+    router, _state, _usage, codex, cursor, _claude = _router(
         tmp_path, snapshot, claude_enabled=False
     )
     task = _task(tmp_path)
     workspace = tmp_path / "worktree"
     workspace.mkdir()
 
+    assert router.implement(task, workspace, 1, 1, None).provider == "cursor"
+    assert (codex.implement_calls, cursor.implement_calls) == (0, 1)
+
+
+def test_no_headroom_data_follows_priority_exactly_in_every_project(tmp_path: Path):
+    router, _state, _usage, codex, cursor, _claude = _router(
+        tmp_path, {}, claude_enabled=False
+    )
+    router.config.providers.priority = ["cursor", "codex"]
+    task = _task(tmp_path)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
+    assert router.implement(task, workspace, 1, 1, None).provider == "cursor"
+    assert (codex.implement_calls, cursor.implement_calls) == (0, 1)
+
+
+def test_review_never_runs_on_the_implementer_when_another_has_usage(tmp_path: Path):
+    router, state, _usage, codex, cursor, _claude = _router(
+        tmp_path, {}, claude_enabled=False
+    )
+    task = _task(tmp_path)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
     assert router.implement(task, workspace, 1, 1, None).provider == "codex"
-    assert codex.implement_calls == 1
+    assert state.get_meta("S1.T1.provider.implementer") == "codex"
+    review = router.review(task, workspace, "base", "ok", 1)
+
+    assert review.provider == "cursor"
+    assert (codex.review_calls, cursor.review_calls) == (0, 1)
 
 
 def test_real_headroom_result_adapts_for_choose_provider(tmp_path: Path):
@@ -281,7 +322,7 @@ def test_quota_disable_clears_when_snapshot_has_capacity_claude_on(tmp_path: Pat
     # Claude over reserve so ranking prefers Codex; a lingering disable would
     # skip Codex and pick Cursor instead.
     router, state, _usage, _codex, _cursor, _claude = _router(
-        tmp_path, _headroom(claude_used=55, codex_used=0)
+        tmp_path, _headroom(claude_used=65, codex_used=0)
     )
     task = _task(tmp_path)
     key = "S1.T1.provider.codex.disabled"
@@ -296,7 +337,7 @@ def test_waiting_quota_resume_clears_quota_disable_claude_on(tmp_path: Path, cap
     """Claude path must clear quota:* on WAITING_QUOTA even without free capacity."""
     # Codex still shows 100% so capacity-based clear alone would leave the disable.
     router, state, _usage, _codex, _cursor, _claude = _router(
-        tmp_path, _headroom(claude_used=55, codex_used=100)
+        tmp_path, _headroom(claude_used=65, codex_used=100)
     )
     task = _task(tmp_path)
     key = "S1.T1.provider.codex.disabled"

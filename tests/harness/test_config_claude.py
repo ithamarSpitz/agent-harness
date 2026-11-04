@@ -19,8 +19,11 @@ def test_claude_defaults_when_section_is_omitted(tmp_path: Path):
     assert config.claude == ClaudeConfig()
     assert config.claude.enabled is False
     assert config.claude.reserve == ClaudeReserveConfig(
-        five_hour_max_used_percent=50,
-        weekly_max_used_percent=70,
+        min_percent=60,
+        max_percent=90,
+        min_hours=1,
+        max_hours=5,
+        weekly_percent_per_day=7,
     )
 
 
@@ -40,8 +43,11 @@ claude:
   escalation_effort: max
   permission_mode: default
   reserve:
-    five_hour_max_used_percent: 25
-    weekly_max_used_percent: 60
+    min_percent: 25
+    max_percent: 60
+    min_hours: 2
+    max_hours: 6
+    weekly_percent_per_day: 5
 """,
     )
 
@@ -58,8 +64,11 @@ claude:
         escalation_effort="max",
         permission_mode="default",
         reserve=ClaudeReserveConfig(
-            five_hour_max_used_percent=25,
-            weekly_max_used_percent=60,
+            min_percent=25,
+            max_percent=60,
+            min_hours=2,
+            max_hours=6,
+            weekly_percent_per_day=5,
         ),
     )
 
@@ -85,16 +94,16 @@ claude:
         ("claude:\n  escalation_effort: extreme\n", r"claude\.escalation_effort"),
         ("claude:\n  escalation_effort: [high]\n", r"claude\.escalation_effort"),
         (
-            "claude:\n  reserve:\n    five_hour_max_used_percent: -1\n",
-            r"claude\.reserve\.five_hour_max_used_percent",
+            "claude:\n  reserve:\n    min_percent: -1\n",
+            r"claude.reserve.min_percent",
         ),
         (
-            "claude:\n  reserve:\n    weekly_max_used_percent: 101\n",
-            r"claude\.reserve\.weekly_max_used_percent",
+            "claude:\n  reserve:\n    max_percent: 101\n",
+            r"claude.reserve.max_percent",
         ),
         (
-            "claude:\n  reserve:\n    weekly_max_used_percent: true\n",
-            r"claude\.reserve\.weekly_max_used_percent",
+            "claude:\n  reserve:\n    weekly_percent_per_day: true\n",
+            r"claude.reserve.weekly_percent_per_day",
         ),
     ],
 )
@@ -143,3 +152,16 @@ def test_provider_priority_accepts_claude(tmp_path: Path):
     )
 
     assert config.providers.priority == ["codex", "claude", "cursor"]
+
+
+def test_old_reserve_keys_load_but_are_ignored_with_a_warning(tmp_path: Path, caplog):
+    with caplog.at_level("WARNING"):
+        config = load_config(
+            tmp_path,
+            "claude:\n  reserve:\n    five_hour_max_used_percent: 80\n"
+            "    weekly_max_used_percent: 60\n",
+        )
+
+    assert config.claude.reserve == ClaudeReserveConfig()
+    assert "five_hour_max_used_percent" in caplog.text
+    assert "weekly_max_used_percent" in caplog.text

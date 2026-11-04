@@ -15,6 +15,7 @@ from .headroom import headroom_snapshot
 from .impact import collect_outside_impact
 from .logging_utils import write_log
 from .models import TaskSpec, TaskRuntime, TaskStatus
+from .pace import full_pace
 from .prompts import outside_impact_for_review
 from .runner import AgentResult, CursorAgentRunner
 from .routing import Choice, adapt_headroom_snapshot, choose_provider
@@ -298,11 +299,9 @@ class ProviderAgentRunner:
         return all(value is not None and value >= 100 for value in self._cursor_used(snapshot))
 
     def _routing_active(self, task: TaskSpec, phase: str) -> bool:
-        # Without Claude, routing is only needed while Cursor runs Auto (both
-        # pools at 100%); otherwise the historical provider path is unchanged.
-        return self.config.claude.enabled or (
-            phase in {"implement", "review"} and self._cursor_exhausted(task)
-        )
+        # Every project routes implementation and review through choose_provider;
+        # with no headroom data the order is providers.priority exactly.
+        return phase in {"implement", "review"}
 
     def _routing_model_class(self, task: TaskSpec, phase: str) -> str:
         # Reviews never run on Auto: "auto" makes routing drop Cursor for review.
@@ -336,26 +335,16 @@ class ProviderAgentRunner:
             "cursor": self.config.cursor.enabled,
             "claude": self.config.claude.enabled and self.claude is not None,
         }
-        # Enabling Claude opts a project into live headroom routing. Projects
-        # that have not enabled it retain the exact historical priority order.
-        routing_snapshot: object = snapshot if self.config.claude.enabled else {}
-        cursor_exhausted = self._cursor_exhausted(task, snapshot)
-        if (
-            self.config.cursor.auto_when_exhausted
-            and phase in {"implement", "review"}
-            and isinstance(routing_snapshot, dict)
-            and isinstance(routing_snapshot.get("cursor"), dict)
-        ):
-            routing_snapshot = dict(routing_snapshot)
-            if cursor_exhausted:
-                if phase == "implement":
-                    # Both pools at 100% is not "no capacity" for Cursor Auto.
-                    del routing_snapshot["cursor"]
+        # Auto is only the first implementation attempt of a task.
+        auto_allowed = self.config.cursor.auto_when_exhausted and not any(
+            self.state.get(task.id).provider_attempts.values()
+        )
+        clock = time.time()
         implementer = self.state.get_meta(
             f"{task.sprint}.{task.id}.provider.implementer"
         )
         choice = choose_provider(
-            routing_snapshot,
+            snapshot,
             phase=phase,
             model_class=model_class,
             enabled=enabled,
@@ -364,6 +353,8 @@ class ProviderAgentRunner:
             disabled_for_task=disabled,
             claude_reserve=self.config.claude.reserve,
             now=datetime.now(timezone.utc),
+            pace=lambda provider, window: full_pace(provider, window, now=clock),
+            auto_when_exhausted=auto_allowed,
         )
         if record:
             message = f"provider choice for {phase}: {choice.provider or 'none'} ({choice.reason})"
@@ -372,7 +363,7 @@ class ProviderAgentRunner:
                 and self.config.cursor.auto_when_exhausted
                 and phase in {"implement", "review"}
             ):
-                if phase == "implement" and cursor_exhausted:
+                if phase == "implement" and choice.auto:
                     message += "; cursor: auto (both pools at 100%)"
                 else:
                     cls = (
@@ -380,20 +371,38 @@ class ProviderAgentRunner:
                         else self._cursor_model_class(task)
                     )
                     message += f"; cursor: {self.config.cursor.models.get(cls) or cls}"
-            write_log(self.codex.log_dir, f"{task.id}-routing.log", message + "\n")
+            log_dir = getattr(self.codex, "log_dir", None)
+            if log_dir is not None:
+                write_log(log_dir, f"{task.id}-routing.log", message + "\n")
             print(f"{task.id}: {message}", flush=True)
-            if self.usage is not None:
-                self.usage.record({
-                    "event_type": "routing_choice",
-                    "provider": choice.provider or "none",
-                    "task_id": task.id,
-                    "phase": phase,
-                    "routing_reason": choice.reason,
-                    "ok": choice.provider is not None,
-                    "duration_seconds": 0.0,
-                    "code_map": False,
-                })
+            # The board reads this key; usage.jsonl holds provider calls only.
+            self.state.set_meta(
+                f"{task.sprint}.{task.id}.board.routing_reason", choice.reason
+            )
         return choice
+
+    def _has_other_candidate(
+        self, task: TaskSpec, phase: str, provider: str, unavailable: set[str]
+    ) -> bool:
+        """True when another provider is enabled and not disabled for this task."""
+
+        skipped = self._disabled_for(task, phase) | unavailable
+        enabled = {
+            "codex": self.config.codex.enabled,
+            "cursor": self.config.cursor.enabled,
+            "claude": self.config.claude.enabled and self.claude is not None,
+        }
+        return any(
+            on and name not in skipped for name, on in enabled.items() if name != provider
+        )
+
+    def _record_switch(self, task: TaskSpec, provider: str, reason: str, switch_to: str) -> None:
+        if self.usage is not None:
+            self.usage.record({
+                "event_type": "provider_switch", "provider": provider, "switch_to": switch_to,
+                "task_id": task.id, "reason": reason, "ok": False, "duration_seconds": 0.0,
+                "code_map": False,
+            })
 
     def _disable_provider(self, task: TaskSpec, provider: str, reason: str) -> None:
         self.state.set_meta(
@@ -435,11 +444,18 @@ class ProviderAgentRunner:
             })
 
     def fallback_after_stalls(self, task: TaskSpec, provider: str, phase: str) -> bool:
-        if self.config.claude.enabled:
+        if self.config.claude.enabled or self._routing_active(task, phase):
             self.state.set_meta(self._phase_disable_key(task, provider, phase), "stalled")
             next_provider = self._choose(
                 task, phase, model_class=self._routing_model_class(task, phase)
             ).provider
+            if next_provider == "codex":
+                try:
+                    codex_available, _ = self.codex.availability(refresh=True)
+                except Exception:
+                    codex_available = False
+                if not codex_available:
+                    next_provider = None
             if next_provider is None:
                 self.state.set_meta(self._phase_disable_key(task, provider, phase), None)
                 return False
@@ -640,12 +656,18 @@ class ProviderAgentRunner:
         ports_before = snapshot_port_listeners(self.config.ui_review.ports) if ui_enabled else {}
         hook, seen = self._track_agent_process(on_process_start)
         try:
-            return self._implement_inner(
+            result = self._implement_inner(
                 task, workspace, timeout_minutes, attempt, previous_failure,
                 env=env, model_class_override=model_class_override,
                 code_map_offered=code_map_offered,
                 on_process_start=hook,
             )
+            if result.ok and result.provider in {"codex", "cursor", "claude"}:
+                # Every path records the implementer so review can avoid it.
+                self.state.set_meta(
+                    f"{task.sprint}.{task.id}.provider.implementer", result.provider
+                )
+            return result
         finally:
             if ui_enabled:
                 self._safe_ui_review_cleanup(
@@ -735,6 +757,8 @@ class ProviderAgentRunner:
     ) -> AgentResult:
         unavailable: set[str] = set()
         last_result: AgentResult | None = None
+        switched: tuple[str, str] | None = None
+        override: str | None = None
         while True:
             exhausted = set(unavailable)
             routing_class = self._routing_model_class(task, "implement")
@@ -757,10 +781,15 @@ class ProviderAgentRunner:
                 return last_result or AgentResult(
                     False, "", choice.reason, provider="none", quota_exhausted=True
                 )
+            if switched is not None:
+                self._record_switch(task, switched[0], switched[1], provider)
+                switched = None
+            override = None
             try:
                 if provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
+                        override = "auth_or_cli_unavailable"
                         result = AgentResult(
                             False, "", "Codex CLI/auth unavailable",
                             provider="codex", auth_failure=True,
@@ -788,6 +817,7 @@ class ProviderAgentRunner:
                         on_process_start=on_process_start,
                     )
             except Exception as exc:
+                override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
@@ -795,8 +825,11 @@ class ProviderAgentRunner:
 
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
-                reason = self._fallback_reason(result)
+                if not self._has_other_candidate(task, "implement", provider, unavailable):
+                    return result
+                reason = override or self._fallback_reason(result)
                 self._disable_provider(task, provider, reason)
+                switched = (provider, reason)
                 unavailable.add(provider)
                 continue
             if result.capacity_exhausted or result.transient_error:
@@ -929,6 +962,8 @@ class ProviderAgentRunner:
     ) -> AgentResult:
         unavailable: set[str] = set()
         last_result: AgentResult | None = None
+        switched: tuple[str, str] | None = None
+        override: str | None = None
         while True:
             choice = self._choose(
                 task, "review",
@@ -940,10 +975,15 @@ class ProviderAgentRunner:
                 return last_result or AgentResult(
                     False, "", choice.reason, provider="none", quota_exhausted=True
                 )
+            if switched is not None:
+                self._record_switch(task, switched[0], switched[1], provider)
+                switched = None
+            override = None
             try:
                 if provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
+                        override = "auth_or_cli_unavailable"
                         result = AgentResult(
                             False, "", "Codex CLI/auth unavailable",
                             provider="codex", auth_failure=True,
@@ -970,13 +1010,18 @@ class ProviderAgentRunner:
                         on_process_start=on_process_start,
                     )
             except Exception as exc:
+                override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
                 )
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
-                self._disable_provider(task, provider, self._fallback_reason(result))
+                if not self._has_other_candidate(task, "review", provider, unavailable):
+                    return result
+                reason = override or self._fallback_reason(result)
+                self._disable_provider(task, provider, reason)
+                switched = (provider, reason)
                 unavailable.add(provider)
                 continue
             return result

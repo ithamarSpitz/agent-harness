@@ -29,11 +29,16 @@ cursor:
 
 
 claude:
-  # On from S9 stage 6 (user, Nov 4 2026). Interim cap until S9-T32 replaces it with the 60-90% rule.
+  # On from S9 stage 6 (user, Nov 4 2026).
   enabled: true
+  # 5-hour cap: 60% if another provider is back within 1h, 90% if not for 5h or more, linear between.
+  # Weekly cap: 100 - 7% per day until the weekly reset.
   reserve:
-    five_hour_max_used_percent: 80
-    weekly_max_used_percent: 60  # interim: 100 - 7% x ~5.65 days left (S9-T32 makes it live)
+    min_percent: 60
+    max_percent: 90
+    min_hours: 1
+    max_hours: 5
+    weekly_percent_per_day: 7
 
 self_hosting:
   enabled: true
@@ -42,6 +47,7 @@ providers:
   priority:
     - codex
     - cursor
+    - claude
 
 codex:
   enabled: true
