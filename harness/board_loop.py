@@ -15,7 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, TextIO, Literal
 
-from .board import BoardEvent, BoardSnapshot, render_board, snapshot_from_state
+from .board import (
+    BoardEvent,
+    BoardSnapshot,
+    live_headroom_source,
+    render_board,
+    snapshot_from_state,
+)
 from .console_commands import ConsoleContext, QuitSignal, capture_cli, run_command
 from .console_input import KeyReader, LineEditor
 from .console_screen import PROMPT_PREFIX, compose
@@ -240,6 +246,7 @@ class BoardLoop:
         mode: ConsoleMode = "watch",
         key_reader_factory: Callable[[], KeyReader] | None = None,
         editor: LineEditor | None = None,
+        headroom_source: Callable[[], Any] | None = live_headroom_source,
     ) -> None:
         self.runtime = runtime
         self.sprint_id = sprint_id
@@ -257,6 +264,7 @@ class BoardLoop:
         self._environment = environment
         self._key_reader_factory = key_reader_factory
         self._editor = editor if editor is not None else LineEditor()
+        self._headroom_source = headroom_source
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._screen = Screen(self.stream)
@@ -478,6 +486,8 @@ class BoardLoop:
         running = count_running_agents(state, sprint)
         maximum = max(1, int(config.execution.max_parallel_agents))
         default_max_attempts = int(config.execution.default_max_attempts)
+        providers = getattr(config, "providers", None)
+        provider_order = getattr(providers, "priority", None)
         return snapshot_from_state(
             state,
             sprint,
@@ -488,6 +498,8 @@ class BoardLoop:
             free_gb=free_gb,
             per_agent_gb=per_agent,
             default_max_attempts=default_max_attempts,
+            provider_order=provider_order,
+            headroom_source=self._headroom_source if providers is not None else None,
         )
 
     def render_lines(self, snapshot: BoardSnapshot | None = None) -> list[str]:
