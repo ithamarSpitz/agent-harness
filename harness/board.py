@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Sequence
+from pathlib import Path
+from typing import Mapping, Sequence
 
 from .models import SprintSpec, TaskSpec, TaskStatus
 from .state import StateStore
@@ -27,6 +29,7 @@ class BoardTask:
     phase_elapsed_seconds: int | None = None
     dependency_ids: list[str] = field(default_factory=list)
     added: bool = False
+    routing_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,11 @@ def _format_task_row(task: BoardTask, *, unicode: bool) -> str:
     return "  " + " ".join(parts)
 
 
+def _format_routing_reason(task: BoardTask) -> str:
+    reason = " ".join(task.routing_reason.split()) if task.routing_reason else ""
+    return f"    {reason}" if reason else ""
+
+
 def _aware(when: datetime) -> datetime:
     if when.tzinfo is None:
         return when.replace(tzinfo=timezone.utc)
@@ -148,6 +156,11 @@ def render_board(snapshot: BoardSnapshot, width: int, *, unicode: bool = True) -
         lines.append(_format_stage_header(stage, unicode=unicode))
         for task in stage.tasks:
             lines.append(_format_task_row(task, unicode=unicode))
+            reason_line = (
+                _format_routing_reason(task) if _is_agent_status(task.status) else ""
+            )
+            if reason_line:
+                lines.append(reason_line)
     if snapshot.events:
         newest = sorted(snapshot.events, key=lambda event: _aware(event.time), reverse=True)
         lines.append("")
@@ -220,6 +233,36 @@ def _meta_text(state: StateStore, key: str) -> str | None:
     return text or None
 
 
+def _usage_path(state: StateStore) -> Path:
+    return Path(state.path).parent / "usage.jsonl"
+
+
+def _latest_routing_reasons(state: StateStore, sprint: SprintSpec) -> dict[str, str]:
+    task_ids = set(sprint.tasks)
+    reasons: dict[str, str] = {}
+    try:
+        lines = _usage_path(state).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return reasons
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict) or event.get("event_type") != "routing_choice":
+            continue
+        task_id = event.get("task_id")
+        reason = event.get("routing_reason")
+        if (
+            isinstance(task_id, str)
+            and task_id in task_ids
+            and isinstance(reason, str)
+            and reason.strip()
+        ):
+            reasons[task_id] = reason.strip()
+    return reasons
+
+
 def _task_stage(state: StateStore, sprint: SprintSpec, task: TaskSpec) -> int:
     override = _meta_int(state, f"tasks.{task.id}.stage")
     if override is not None:
@@ -278,6 +321,7 @@ def _board_task(
     *,
     now: datetime,
     default_max_attempts: int,
+    routing_reasons: Mapping[str, str],
 ) -> BoardTask:
     runtime = state.get(task.id)
     provider = _meta_text(state, f"{sprint.id}.{task.id}.board.provider")
@@ -286,6 +330,9 @@ def _board_task(
         provider = runtime.waiting_provider
     if model is None and runtime.status in _AGENT_STATUSES:
         model = task.model_class
+    routing_reason = _meta_text(state, f"{sprint.id}.{task.id}.board.routing_reason")
+    if routing_reason is None:
+        routing_reason = routing_reasons.get(task.id)
     max_attempts = task.max_attempts if task.max_attempts is not None else default_max_attempts
     return BoardTask(
         id=task.id,
@@ -297,6 +344,7 @@ def _board_task(
         phase_elapsed_seconds=_phase_elapsed_seconds(state, sprint, task, runtime.status, now),
         dependency_ids=list(task.depends_on),
         added=runtime.added,
+        routing_reason=routing_reason,
     )
 
 
@@ -324,6 +372,7 @@ def snapshot_from_state(
         per_agent_gb = _meta_float(state, f"{sprint.id}.board.per_agent_gb")
     if per_agent_gb is None:
         per_agent_gb = _meta_float(state, "resources.memory_per_agent_gb")
+    routing_reasons = _latest_routing_reasons(state, sprint)
 
     board_stages: list[BoardStage] = []
     for stage_number in stages_sorted:
@@ -341,6 +390,7 @@ def snapshot_from_state(
                         task,
                         now=now,
                         default_max_attempts=default_max_attempts,
+                        routing_reasons=routing_reasons,
                     )
                     for task in tasks
                 ],

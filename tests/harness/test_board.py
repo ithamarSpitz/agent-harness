@@ -118,6 +118,87 @@ def test_render_board_truncates_to_width():
             assert "\n" not in line
 
 
+def test_render_board_shows_routing_reason_at_supported_widths():
+    snapshot = BoardSnapshot(
+        sprint_id="S9",
+        sprint_title="Claude and routing",
+        current_stage=5,
+        stage_count=6,
+        stages=[
+            BoardStage(
+                number=5,
+                tasks=[
+                    BoardTask(
+                        id="S9-T12",
+                        status=TaskStatus.IMPLEMENTING.value,
+                        provider="claude",
+                        model="sonnet",
+                        routing_reason="claude: 58% of the five-hour quota free",
+                    )
+                ],
+            )
+        ],
+    )
+
+    for width in (60, 120):
+        lines = render_board(snapshot, width)
+        assert all(len(line) <= width for line in lines)
+        assert lines == [
+            "S9   Claude and routing   stage 5/6",
+            "Stage 5",
+            "  S9-T12 IMPLEMENTING claude sonnet try 0/2",
+            "    claude: 58% of the five-hour quota free",
+        ]
+
+
+def test_render_board_does_not_show_stale_reason_for_inactive_task():
+    snapshot = BoardSnapshot(
+        sprint_id="S9",
+        sprint_title="T",
+        current_stage=1,
+        stage_count=1,
+        stages=[
+            BoardStage(
+                number=1,
+                tasks=[
+                    BoardTask(
+                        id="T1",
+                        status=TaskStatus.DONE.value,
+                        routing_reason="old choice",
+                    )
+                ],
+            )
+        ],
+    )
+    assert render_board(snapshot, 120) == [
+        "S9   T   stage 1/1",
+        "Stage 1",
+        "  T1 DONE try 0/2",
+    ]
+
+
+def test_render_board_keeps_long_routing_reason_on_one_indented_line():
+    reason = "claude: most headroom\n" + "available capacity " * 10
+    snapshot = BoardSnapshot(
+        sprint_id="S9",
+        sprint_title="Routing",
+        current_stage=1,
+        stage_count=1,
+        stages=[BoardStage(number=1, tasks=[BoardTask(
+            id="T1",
+            status=TaskStatus.REVIEWING.value,
+            provider="claude",
+            model="sonnet",
+            routing_reason=reason,
+        )])],
+    )
+    for width in (60, 120):
+        lines = render_board(snapshot, width)
+        assert len(lines) == 4
+        assert lines[-1] == ("    " + " ".join(reason.split()))[:width]
+        assert all(len(line) <= width and "\n" not in line for line in lines)
+
+
 def test_render_board_long_elapsed():
     snapshot = BoardSnapshot(
         sprint_id="S1",
@@ -206,6 +287,7 @@ def test_snapshot_from_state_maps_fake_state(tmp_path: Path):
     state.set_meta("resources.memory_per_agent_gb", 2.5)
     state.set_meta("S8.S8-T2.board.provider", "cursor")
     state.set_meta("S8.S8-T2.board.model", "worker")
+    state.set_meta("S8.S8-T2.board.routing_reason", "cursor: most headroom")
     state.set_meta("S8.S8-T2.phase_started_at", "2026-11-02T12:00:00+00:00")
 
     done = state.get("S8-T1")
@@ -233,6 +315,7 @@ def test_snapshot_from_state_maps_fake_state(tmp_path: Path):
     assert snapshot.stages[0].tasks[0].status == TaskStatus.DONE.value
     assert snapshot.stages[1].tasks[0].provider == "cursor"
     assert snapshot.stages[1].tasks[0].model == "worker"
+    assert snapshot.stages[1].tasks[0].routing_reason == "cursor: most headroom"
     assert snapshot.stages[1].tasks[0].phase_elapsed_seconds == 12 * 60
     assert snapshot.stages[1].tasks[0].added is True
     assert snapshot.stages[1].tasks[0].dependency_ids == ["S8-T1"]
@@ -295,3 +378,39 @@ def test_snapshot_from_state_derives_stage_and_elapsed(tmp_path: Path):
     header = render_board(snapshot, 120)[0]
     assert "parallel 1/3 (free 10 GB, ~4 GB/agent)" in header
     assert "CHECKING cursor worker" in render_board(snapshot, 120)[4]
+
+
+def test_snapshot_from_state_reads_latest_recorded_routing_reason(tmp_path: Path):
+    sprint = SprintSpec(
+        id="S9",
+        name="Routing",
+        tasks={
+            "T1": TaskSpec(id="T1", file=Path("tasks/t1.md"), sprint="S9", stage=1)
+        },
+    )
+    state = StateStore(tmp_path / ".harness" / "state.json")
+    state.get("T1").status = TaskStatus.REVIEWING
+    usage_path = tmp_path / ".harness" / "usage.jsonl"
+    usage_path.parent.mkdir(parents=True, exist_ok=True)
+    usage_path.write_text(
+        '\n'.join(
+            [
+                '{"event_type":"routing_choice","task_id":"T1",'
+                '"routing_reason":"codex: earlier choice"}',
+                '{"event_type":"agent_call","task_id":"T1"}',
+                '{"event_type":"routing_choice","task_id":"T1",'
+                '"routing_reason":"claude: 58% free"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = snapshot_from_state(
+        state,
+        sprint,
+        datetime(2026, 11, 3, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.stages[0].tasks[0].routing_reason == "claude: 58% free"
+    assert "    claude: 58% free" in render_board(snapshot, 120)
