@@ -59,7 +59,7 @@ Base order agy, codex, cursor, claude. Full pace (injected): Codex 5-hour 30%/h,
 
 # Acceptance criteria
 
-1. The five scenarios pass exactly as written.
+1. `tests/harness/test_routing_scenarios.py` has one test function per scenario, named `test_scenario_1_everything_has_usage`, `test_scenario_2_codex_about_to_waste`, `test_scenario_3_agy_and_codex_urgent`, `test_scenario_4_cursor_pools_at_100`, `test_scenario_5_only_claude_has_usage`. Each one builds exactly the quotas, reset times and paces written in its scenario (no other values) and asserts every result written there: the implement provider, the review provider, and in 4 and 5 the extra cases (Auto failed; Claude at 76%; H = 6). A reviewer fails the task if any scenario value or expected result differs from this brief.
 2. Cap: H = 0.5 gives 60; H = 1 gives 60; H = 3 gives 75; H = 5 gives 90; H = 8 gives 90.
 3. No headroom data at all: the order is `providers.priority` exactly.
 4. `harness.yaml` priority is `[codex, cursor, claude]`, and `harness validate` passes.
