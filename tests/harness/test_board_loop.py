@@ -24,6 +24,7 @@ from harness.board_loop import (
 from harness.console_input import KeyReader, LineEditor
 from harness.console_screen import PROMPT_PREFIX
 from harness.events import append_event
+from harness.headroom import Headroom
 from harness.models import SprintSpec, TaskSpec, TaskStatus
 from harness.state import StateStore
 
@@ -192,6 +193,35 @@ def test_board_loop_draws_from_state_and_events(
     assert count_running_agents(state, sprint) == 1
     assert find_active_sprint_id(runtime.roadmap, state) == "s1"
     assert sleeps
+
+
+def test_board_loop_passes_live_headroom_and_configured_provider_order(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.config.providers = SimpleNamespace(priority=["cursor", "codex"])
+    calls: list[int] = []
+
+    def fake_headroom() -> dict[str, list[Headroom]]:
+        calls.append(1)
+        return {
+            "codex": [Headroom("codex", 96, None, "five_hour", True)],
+            "cursor": [Headroom("cursor", 25, None, "other_models", True)],
+        }
+
+    loop = BoardLoop(
+        runtime,
+        "s1",
+        stream=FakeTTY(),
+        free_memory=lambda: 4.0,
+        headroom_source=fake_headroom,
+    )
+
+    snapshot = loop.build_snapshot()
+
+    assert calls == [1]
+    assert snapshot.headroom is not None
+    assert list(snapshot.headroom) == ["cursor", "codex"]
 
 
 def test_board_loop_stops_when_sprint_finished(

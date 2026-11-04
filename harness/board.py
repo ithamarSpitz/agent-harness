@@ -4,8 +4,9 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
+from .headroom import Headroom, headroom_snapshot
 from .models import SprintSpec, TaskSpec, TaskStatus
 from .state import StateStore
 
@@ -57,6 +58,7 @@ class BoardSnapshot:
     per_agent_gb: float | None = None
     stages: list[BoardStage] = field(default_factory=list)
     events: list[BoardEvent] = field(default_factory=list)
+    headroom: Mapping[str, Sequence[Headroom]] | None = None
 
 
 def _truncate(line: str, width: int) -> str:
@@ -100,6 +102,64 @@ def _format_header(snapshot: BoardSnapshot) -> str:
             )
         line = f"{line}   {parallel}"
     return line
+
+
+def _percent(entry: Headroom) -> str | None:
+    if not entry.known or entry.used_percent is None:
+        return None
+    return str(round(entry.used_percent))
+
+
+def _reset_clock(entry: Headroom) -> str:
+    if not entry.known or entry.resets_at is None:
+        return ""
+    try:
+        return datetime.fromtimestamp(entry.resets_at).strftime("%H:%M")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+_WINDOW_LABELS = {"five_hour": "5h", "weekly": "wk"}
+
+
+def _full_headroom_entry(provider: str, entries: Sequence[Headroom]) -> str:
+    if provider == "cursor":
+        values = [f"{_percent(e) or '?'}%" for e in entries]
+        return f"{provider} " + "/".join(values)
+    parts = [provider]
+    for entry in entries:
+        percent = _percent(entry)
+        text = f"{percent}%" if percent is not None else "?%"
+        label = (
+            _WINDOW_LABELS.get(entry.window, entry.window)
+            if provider in ("codex", "claude")
+            else entry.window
+        )
+        parts.append(label)
+        parts.append(text)
+        if provider == "codex" and entry.window == "five_hour":
+            clock = _reset_clock(entry)
+            if clock:
+                parts.append(f"({clock})")
+    return " ".join(parts)
+
+
+def _short_headroom_entry(provider: str, entries: Sequence[Headroom]) -> str:
+    code = {"codex": "cx", "cursor": "cu", "claude": "cl"}.get(provider, provider[:2])
+    return f"{code} " + "/".join(_percent(e) or "?" for e in entries)
+
+
+def _format_headroom(snapshot: BoardSnapshot, width: int, *, unicode: bool) -> str | None:
+    if not snapshot.headroom:
+        return None
+    items = [(name, entries) for name, entries in snapshot.headroom.items() if entries]
+    if not items:
+        return None
+    separator = " · " if unicode else " | "
+    full = separator.join(_full_headroom_entry(n, e) for n, e in items)
+    if len(full) <= width:
+        return full
+    return separator.join(_short_headroom_entry(n, e) for n, e in items)
 
 
 def _format_stage_header(stage: BoardStage, *, unicode: bool) -> str:
@@ -152,6 +212,9 @@ def _format_event(event: BoardEvent) -> str:
 
 def render_board(snapshot: BoardSnapshot, width: int, *, unicode: bool = True) -> list[str]:
     lines: list[str] = [_format_header(snapshot)]
+    headroom_line = _format_headroom(snapshot, width, unicode=unicode)
+    if headroom_line:
+        lines.append(headroom_line)
     for stage in snapshot.stages:
         lines.append(_format_stage_header(stage, unicode=unicode))
         for task in stage.tasks:
@@ -348,6 +411,29 @@ def _board_task(
     )
 
 
+def _live_headroom(
+    source: Callable[[], Mapping[str, Sequence[Headroom]]] | None,
+    order: Sequence[str] | None,
+) -> dict[str, Sequence[Headroom]] | None:
+    """Live headroom via headroom_snapshot (never the cache file); None on failure."""
+    if source is None:
+        return None
+    try:
+        raw = source()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    names = [name for name in (order or []) if name in raw]
+    names += [name for name in raw if name not in names]
+    return {name: list(raw[name]) for name in names}
+
+
+def live_headroom_source() -> Mapping[str, Sequence[Headroom]]:
+    """Read current headroom through the age-aware public API."""
+    return headroom_snapshot()
+
+
 def snapshot_from_state(
     state: StateStore,
     sprint: SprintSpec,
@@ -359,6 +445,8 @@ def snapshot_from_state(
     free_gb: float | None = None,
     per_agent_gb: float | None = None,
     default_max_attempts: int = 2,
+    provider_order: Sequence[str] | None = None,
+    headroom_source: Callable[[], Mapping[str, Sequence[Headroom]]] | None = None,
 ) -> BoardSnapshot:
     stages_sorted = _stage_numbers(sprint, state)
     current = _current_stage(sprint, state, stages_sorted)
@@ -397,6 +485,7 @@ def snapshot_from_state(
             )
         )
 
+    headroom = _live_headroom(headroom_source, provider_order)
     return BoardSnapshot(
         sprint_id=sprint.id,
         sprint_title=sprint.name,
@@ -408,4 +497,5 @@ def snapshot_from_state(
         per_agent_gb=per_agent_gb,
         stages=board_stages,
         events=list(events) if events is not None else [],
+        headroom=headroom,
     )
