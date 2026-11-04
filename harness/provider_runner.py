@@ -31,6 +31,10 @@ from .usage import UsageRecorder
 
 GitToplevelReader = Callable[[Path], str | None]
 HeadroomReader = Callable[[], object]
+Clock = Callable[[], float]
+
+_CURSOR_AUTO_EXHAUSTED_UNTIL = "cursor.auto.exhausted_until"
+_CURSOR_AUTO_FALLBACK_SECONDS = 24 * 60 * 60
 
 _git_toplevel_reader: GitToplevelReader | None = None
 
@@ -142,7 +146,8 @@ class ProviderAgentRunner:
     def __init__(self, config: HarnessConfig, state: StateStore, codex: CodexAgentRunner,
                  cursor: CursorAgentRunner, usage: UsageRecorder | None = None,
                  claude: ClaudeAgentRunner | None = None,
-                 headroom_reader: HeadroomReader | None = None):
+                 headroom_reader: HeadroomReader | None = None,
+                 clock: Clock | None = None):
         self.config = config
         self.state = state
         self.codex = codex
@@ -150,6 +155,7 @@ class ProviderAgentRunner:
         self.claude = claude
         self.usage = usage
         self._headroom_reader = headroom_reader or headroom_snapshot
+        self._clock = clock or time.time
         self._worktree_guard_blocked: set[str] = set()
 
     def _disable_key(self, task: TaskSpec) -> str:
@@ -256,6 +262,7 @@ class ProviderAgentRunner:
             snapshot = adapt_headroom_snapshot(self._headroom_reader())
         except Exception:
             snapshot = {}
+        self._reconcile_cursor_auto_exhaustion(snapshot)
         for key, provider, reason in self._temporary_disable_entries(task):
             if provider not in (preserve_disabled or set()) and self._snapshot_has_capacity(
                 snapshot, provider
@@ -263,6 +270,62 @@ class ProviderAgentRunner:
                 self.state.set_meta(key, None)
                 print(f"{provider} re-enabled for {task.id} (was: {reason})", flush=True)
         return snapshot
+
+    @staticmethod
+    def _cursor_reset_at(snapshot: object) -> float | None:
+        cursor = snapshot.get("cursor") if isinstance(snapshot, dict) else None
+        windows = cursor.get("windows") if isinstance(cursor, dict) else None
+        if not isinstance(windows, dict):
+            return None
+        resets: list[float] = []
+        for window in windows.values():
+            value = window.get("resets_at") if isinstance(window, dict) else None
+            if isinstance(value, datetime):
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                resets.append(value.timestamp())
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                resets.append(float(value))
+        return max(resets, default=None)
+
+    def _cursor_auto_exhausted_until(self) -> float | None:
+        value = self.state.get_meta(_CURSOR_AUTO_EXHAUSTED_UNTIL)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            if value is not None:
+                self.state.set_meta(_CURSOR_AUTO_EXHAUSTED_UNTIL, None)
+            return None
+        exhausted_until = float(value)
+        if self._clock() >= exhausted_until:
+            self.state.set_meta(_CURSOR_AUTO_EXHAUSTED_UNTIL, None)
+            return None
+        return exhausted_until
+
+    def _reconcile_cursor_auto_exhaustion(self, snapshot: object) -> None:
+        exhausted_until = self._cursor_auto_exhausted_until()
+        if exhausted_until is None:
+            return
+        reset_at = self._cursor_reset_at(snapshot)
+        if reset_at is not None and reset_at > exhausted_until:
+            # A later reset date identifies the next Cursor billing period.
+            self.state.set_meta(_CURSOR_AUTO_EXHAUSTED_UNTIL, None)
+
+    def _remember_cursor_auto_exhaustion(self, snapshot: object | None = None) -> None:
+        if snapshot is None:
+            try:
+                snapshot = adapt_headroom_snapshot(self._headroom_reader())
+            except Exception:
+                snapshot = {}
+        reset_at = self._cursor_reset_at(snapshot)
+        now = self._clock()
+        exhausted_until = (
+            reset_at
+            if reset_at is not None and reset_at > now
+            else now + _CURSOR_AUTO_FALLBACK_SECONDS
+        )
+        self.state.set_meta(_CURSOR_AUTO_EXHAUSTED_UNTIL, exhausted_until)
+
+    def _cursor_auto_out_until(self) -> float | None:
+        return self._cursor_auto_exhausted_until()
 
     def _disabled_for(self, task: TaskSpec, phase: str) -> set[str]:
         disabled: set[str] = set()
@@ -296,6 +359,8 @@ class ProviderAgentRunner:
             return False
         if snapshot is None:
             snapshot = self._snapshot(task)
+        if self._cursor_auto_out_until() is not None:
+            return False
         return all(value is not None and value >= 100 for value in self._cursor_used(snapshot))
 
     def _routing_active(self, task: TaskSpec, phase: str) -> bool:
@@ -336,10 +401,11 @@ class ProviderAgentRunner:
             "claude": self.config.claude.enabled and self.claude is not None,
         }
         # Auto is only the first implementation attempt of a task.
-        auto_allowed = self.config.cursor.auto_when_exhausted and not any(
+        auto_out_until = self._cursor_auto_out_until()
+        auto_allowed = self.config.cursor.auto_when_exhausted and auto_out_until is None and not any(
             self.state.get(task.id).provider_attempts.values()
         )
-        clock = time.time()
+        clock = self._clock()
         implementer = self.state.get_meta(
             f"{task.sprint}.{task.id}.provider.implementer"
         )
@@ -352,7 +418,7 @@ class ProviderAgentRunner:
             implementer_provider=implementer if isinstance(implementer, str) else None,
             disabled_for_task=disabled,
             claude_reserve=self.config.claude.reserve,
-            now=datetime.now(timezone.utc),
+            now=datetime.fromtimestamp(clock, tz=timezone.utc),
             pace=lambda provider, window: full_pace(provider, window, now=clock),
             auto_when_exhausted=auto_allowed,
         )
@@ -371,6 +437,9 @@ class ProviderAgentRunner:
                         else self._cursor_model_class(task)
                     )
                     message += f"; cursor: {self.config.cursor.models.get(cls) or cls}"
+            if auto_out_until is not None:
+                out_date = datetime.fromtimestamp(auto_out_until, tz=timezone.utc).date()
+                message += f"; cursor auto: out until {out_date.isoformat()}"
             log_dir = getattr(self.codex, "log_dir", None)
             if log_dir is not None:
                 write_log(log_dir, f"{task.id}-routing.log", message + "\n")
@@ -739,6 +808,8 @@ class ProviderAgentRunner:
             env=env, model_class_override=model_class, code_map_offered=code_map_offered,
             on_process_start=on_process_start,
         )
+        if model_class == "auto" and result.quota_exhausted:
+            self._remember_cursor_auto_exhaustion()
         if self._should_consume_cursor_attempt(result):
             self._consume_provider_attempt(task, "cursor")
         return result
@@ -785,6 +856,7 @@ class ProviderAgentRunner:
                 self._record_switch(task, switched[0], switched[1], provider)
                 switched = None
             override = None
+            cursor_model_class: str | None = None
             try:
                 if provider == "codex":
                     available, _ = self.codex.availability()
@@ -810,9 +882,10 @@ class ProviderAgentRunner:
                         on_process_start=on_process_start,
                     )
                 else:
+                    cursor_model_class = self._cursor_model_class(task)
                     result = self.cursor.implement(
                         task, workspace, timeout_minutes, attempt, previous_failure,
-                        env=env, model_class_override=self._cursor_model_class(task),
+                        env=env, model_class_override=cursor_model_class,
                         code_map_offered=code_map_offered,
                         on_process_start=on_process_start,
                     )
@@ -822,6 +895,13 @@ class ProviderAgentRunner:
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
                 )
+
+            if (
+                provider == "cursor"
+                and cursor_model_class == "auto"
+                and result.quota_exhausted
+            ):
+                self._remember_cursor_auto_exhaustion()
 
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
