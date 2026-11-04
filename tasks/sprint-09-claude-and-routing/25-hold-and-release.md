@@ -39,6 +39,7 @@ Today the only ways to stop a task are a stop request for the whole sprint (`.ha
 3. `harness status` shows held tasks as `held`.
 4. The stop request and the hold file are both checked before every attempt and every review inside a task's own attempt loop (`_run_task_inner`), not only before a task starts: on Nov 3 2026 a stop request was pending while S9-T18 started its third attempt from inside its loop. A stopped task keeps its state (`RETRY`, attempt count unchanged) so `resume` continues it.
 5. Holding a task that is not in the current sprint, or releasing one that is not held, prints a clear message and changes nothing.
+6. Clarifications (operator, Nov 4 2026, from reviews; these settle decision 2 and are not a conflict to report): (a) While a scheduler for the sprint is running, `release` only updates the hold file (released entry); the running scheduler sets the task to `RETRY` (and applies `--fresh-budget`) itself, so only one process writes `state.json`. With no scheduler running, `release` sets `RETRY` (and the fresh budget) in `state.json` directly. Both count as decision 2. (b) A task stopped by a stop request is never reported as passed: `run-task` prints that it stopped, returns a non-zero exit, and does not resolve its failure record. (c) A `released` entry is used once: it is removed when applied, and an entry for a task that is not held is ignored and removed (it never resets a budget later).
 
 # Acceptance criteria
 
