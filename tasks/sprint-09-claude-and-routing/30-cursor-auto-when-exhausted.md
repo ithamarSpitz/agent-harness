@@ -13,7 +13,6 @@ allowed_paths:
   - harness/provider_runner.py
   - harness.yaml
   - harness/runner.py
-  - tests/harness/test_cursor_runner.py
   - tests/harness/test_cursor_auto_when_exhausted.py
   - tests/harness/test_provider_choice.py
   - tests/harness/test_auto_first.py
