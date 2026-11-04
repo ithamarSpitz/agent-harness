@@ -14,6 +14,12 @@ from .config import HarnessConfig
 from .models import SprintSpec
 from .process_utils import prepare_external_argv, resolve_codex_argv
 from .state import StateStore
+from .winplatform import disable_wmi_queries
+
+
+def _platform_string() -> str:
+    disable_wmi_queries()
+    return platform.platform()
 
 
 def _sha256_file(path: Path) -> str | None:
@@ -133,7 +139,7 @@ class RunManifestManager:
             "integration_branch": integration_branch,
             "harness_version": __version__,
             "python": platform.python_version(),
-            "platform": platform.platform(),
+            "platform": _platform_string(),
             "cursor_version": cursor_version,
             "codex_version": codex_version,
             "models": {"codex": config.codex.implementation_sequence, "cursor": config.cursor.models},
