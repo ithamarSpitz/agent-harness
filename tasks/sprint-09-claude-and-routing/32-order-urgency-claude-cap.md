@@ -59,6 +59,8 @@ Today `choose_provider` (`harness/routing.py`) picks the provider with the highe
 12. **Implementer record.** After a successful implementation call, record the provider in the meta key `<sprint>.<task>.provider.implementer` (as S9-T10 does on its routing path) on every path, so the review rule (decision 6) always knows it.
 13. **"Auto"** always means the resolved model `auto` (for example `worker: auto`), never a model-class name.
 14. **Keep existing behavior:** when a chosen provider turns out unavailable, disable it for the call and choose again; routing choices are logged to the run log only (never written to `.harness/usage.jsonl` or the outcomes log, which hold provider calls only); plan-repair calls keep their current behavior; tests whose setup means a single provider (for example `tests/harness/test_worktree_guard.py`) disable the other providers in their config.
+15. **Board reason** (operator, Nov 4 2026, settles the conflict between decision 14 and S9-T12): each recorded routing choice also stores its reason in the meta key `<sprint>.<task>.board.routing_reason` (the board reads that key, `harness/board.py` `_meta_text(..., board.routing_reason)`), so the board's reason column keeps working while routing choices no longer go to `.harness/usage.jsonl`. Leave `harness/board.py` unchanged (its usage-file fallback simply finds nothing new). A test checks the meta key is set after a real routing choice and that `harness.board` shows that reason.
+16. A Claude weekly window with an unknown reset time gets the strictest weekly cap (as if 7 days are left), not 100%. A test covers it.
 
 # Scenarios (source of truth; each one is a test in `tests/harness/test_routing_scenarios.py`)
 
