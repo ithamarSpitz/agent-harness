@@ -2,6 +2,14 @@
 
 Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](README.md) is the short operator guide.
 
+## Sprint S9 — Claude Code, headroom routing, impact review, and model outcomes
+
+- Claude Code provider with implementation/review ladders, quota/error handling, Playwright support, and configurable five-hour/weekly reserves.
+- Machine-wide headroom routing by urgency and expiring-quota waste, Cursor Auto only at 100%/100%, and reviews assigned away from the implementer when possible.
+- Required review impact analysis with outside-diff caller/importer context and a grep fallback.
+- Machine-wide `HARNESS_HOME` outcomes, per-call verification/result fields, final task records, and `harness models report|import`.
+- Operator `hold`/task `release`, per-attempt brief reload, and agent-reported blocks that stop retries.
+
 ## Sprint S8 — Memory-aware scheduling, live board and console, safer execution
 
 - Live ANSI board for `run`/`resume`, attach-only `harness watch`, persistent event feed, `--no-board`, and an interactive console for inspection, task queueing, retry, and drain-and-pause stop requests.

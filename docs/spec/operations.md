@@ -1,6 +1,33 @@
 # Operations
 
-Post-sprint release steps and enqueueing work while a sprint is already running.
+Machine-wide state, task control, post-sprint release, and enqueueing work while a sprint is already running.
+
+## Machine-wide harness home and records
+
+`HARNESS_HOME` selects the machine-wide harness directory. When unset it is `~/.harness`. This is separate from each project's runtime `.harness/`.
+
+| File | Purpose |
+| --- | --- |
+| `agents.json` (with `agents.lock`) | Cross-process ledger of live agents and waiting projects, used for fair memory admission. Dead processes are pruned; corruption or lock/I/O failure warns and fails open. |
+| `outcomes.jsonl` (with `outcomes.lock`) | Append-only, cross-project model outcomes used by `harness models report`. A shared-log failure warns once and never fails a task. |
+
+Each provider call is still written to project-local `.harness/usage.jsonl`, and a normalized copy is appended to the shared outcomes log. Per-call fields are: `project`, `sprint`, `task_id`, `model_class`, `provider`, `model`, `effort`, `phase`, `attempt`, `ok`, `verification_ok`, `review_verdict`, `finding_count`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_seconds`, and `recorded_at`. Unavailable values are JSON null.
+
+Verification is a first-class usage call with provider `harness`, model `verification`, phase `verification`, attempt, `ok`, `verification_ok`, and duration. Final task records in the shared log have `event_type: task_final`, final status, implementation-attempt count, the provider/model/effort attempt list, passing attempt when known, total tokens, and total call duration.
+
+`harness models report [--project PATH] [--since YYYY-MM-DD]` aggregates shared calls and task outcomes by provider/model/effort/phase. `harness models import PROJECT [PROJECT ...]` imports legacy project-local usage logs, marks imported rows, and deduplicates repeated imports. Tests redirect or disable both ledger and outcomes folders; they never read or write the real home folder.
+
+## Holding and releasing one task
+
+`harness hold TASK` records the task in the project runtime `.harness/hold-request`. The scheduler checks holds before every new agent call, after implementation/review calls, and immediately before commit. A held task is parked as `BLOCKED` with `held by operator`; it is not committed, and a hold observed with a quota/capacity result wins over the wait. Pending tasks do not start while held. Passed tasks cannot be held.
+
+`harness release TASK [--fresh-budget]` removes the hold. With no live scheduler it changes a held task to `RETRY` immediately; a live scheduler applies the release without rewriting its state file. `--fresh-budget` resets attempt, per-provider attempts, and stall counts only when the hold actually took effect. Releasing before an in-flight call observes the hold cancels it and ignores the fresh-budget request. The existing `harness release SPRINT` behavior below remains available; the command resolves whether its argument is a sprint or held task.
+
+## Brief reload and agent-reported blocks
+
+Immediately before every implementation attempt, the scheduler rereads the authoritative project brief. It refreshes `allowed_paths`, `verification`, `timeout_minutes`, `review`, `allow_protected`, and `context`. Changes to id, stage, or dependencies are logged and deferred until a new start. Invalid/unreadable frontmatter warns and retains the last valid settings.
+
+After an implementation call, a `STATUS` label (case-insensitive, optional colon) whose value is exactly `blocked` on that line or the next makes the task `BLOCKED`, even if the call succeeded or later verification would fail. The harness stores the reported `OPEN_ISSUES` body as the task error and does not spend further retries; if that section is missing or empty it stores `Agent reported blocked without OPEN_ISSUES details`.
 
 ## Release
 
