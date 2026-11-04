@@ -593,6 +593,11 @@ sprints:
         depends_on:
         - S9-T30
         - S9-T31
+      S9-T33:
+        file: tasks/sprint-09-claude-and-routing/33-board-headroom-line.md
+        stage: 6
+        depends_on:
+        - S9-T12
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
         stage: 9
@@ -615,6 +620,7 @@ sprints:
         - S9-T30
         - S9-T31
         - S9-T32
+        - S9-T33
         - S9-T7
         - S9-T9
         - S9-T11

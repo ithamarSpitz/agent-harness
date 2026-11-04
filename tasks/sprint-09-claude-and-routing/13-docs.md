@@ -24,6 +24,7 @@ depends_on:
   - S9-T30
   - S9-T31
   - S9-T32
+  - S9-T33
   - S9-T7
   - S9-T9
   - S9-T11

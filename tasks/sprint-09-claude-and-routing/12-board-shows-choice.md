@@ -27,12 +27,13 @@ The live board (S8) shows, for each running agent, which provider and model it i
 # Decisions (do not reopen)
 
 1. `BoardSnapshot` task rows get an optional `routing_reason`; the row shows provider/model as today and, on a second indented line, the reason, cut to the width.
-2. The header shows each provider's headroom in one short line, for example `codex 5h 100% (17:14) · claude 5h 58% wk 22% · cursor pool 100%`.
+2. The header headroom line moved to S9-T33 (operator split, Nov 4 2026, after three review rounds on it). This task does not add it; if this worktree already has headroom-header code (`BoardSnapshot.headroom`, `_format_headroom`, `_cached_headroom` and helpers, and their tests), remove it.
 
 # Acceptance criteria
 
-1. Fixed snapshots render the reason line and the headroom line within widths 60 and 120.
-2. Snapshots without the new fields render exactly as before.
+1. Fixed snapshots render the reason line within widths 60 and 120 (cut to the width, never wrapping).
+2. Snapshots without the new field render exactly as before.
+3. No header headroom line is added by this task.
 
 # Context
 
