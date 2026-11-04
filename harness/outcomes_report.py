@@ -66,6 +66,53 @@ def load_outcome_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _import_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the stable identity used when importing historical call records."""
+    return (
+        record.get("project"),
+        record.get("task_id", record.get("task")),
+        record.get("recorded_at"),
+        record.get("phase"),
+        record.get("attempt"),
+    )
+
+
+def import_usage_records(
+    projects: list[Path], path: Path | None = None
+) -> int:
+    """Import each project's legacy usage log into the shared outcomes log once."""
+    from .outcomes import _locked
+
+    destination = path if path is not None else default_outcomes_path()
+    candidates: list[dict[str, Any]] = []
+    for project in projects:
+        project_path = project.resolve()
+        usage_path = project_path / ".harness" / "usage.jsonl"
+        for record in load_outcome_records(usage_path):
+            imported = dict(record)
+            imported["project"] = str(project_path)
+            imported["imported"] = True
+            candidates.append(imported)
+
+    if not candidates:
+        return 0
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = destination.with_name("outcomes.lock")
+    imported_count = 0
+    with _locked(lock_path):
+        known = {_import_key(record) for record in load_outcome_records(destination)}
+        with destination.open("a", encoding="utf-8") as output:
+            for record in candidates:
+                key = _import_key(record)
+                if key in known:
+                    continue
+                output.write(json.dumps(record, sort_keys=True) + "\n")
+                known.add(key)
+                imported_count += 1
+    return imported_count
+
+
 def _field(value: Any) -> str:
     if value is None or value == "":
         return UNKNOWN

@@ -44,7 +44,7 @@ from .validation import ProjectValidator
 from .init_project import run_init
 from .limits import run_limits
 from .machine_setup import run_setup_machine
-from .outcomes_report import render_models_report
+from .outcomes_report import import_usage_records, render_models_report
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
 from .self_host import ensure_frozen_copy, run_resume_with_frozen_copy
 from .task_queue import TaskQueueError, TaskQueueManager
@@ -979,6 +979,13 @@ def cmd_models_report(
     return 0
 
 
+def cmd_models_import(projects: list[str]) -> int:
+    count = import_usage_records([Path(project) for project in projects])
+    noun = "record" if count == 1 else "records"
+    print(f"Imported {count} {noun}.")
+    return 0
+
+
 def cmd_quota(runtime: Runtime, action: str, value: str | None = None) -> int:
     if action == "status":
         status = runtime.quota.status()
@@ -1240,6 +1247,8 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="Include records on or after YYYY-MM-DD",
     )
+    models_import = models_sub.add_parser("import")
+    models_import.add_argument("projects", nargs="+", metavar="PROJECT")
     return p
 
 
@@ -1263,6 +1272,8 @@ def main(argv: list[str] | None = None) -> int:
                 project=getattr(args, "project", None),
                 since=getattr(args, "since", None),
             )
+        if args.models_action == "import":
+            return cmd_models_import(args.projects)
         print(f"Unknown models action: {args.models_action}", file=sys.stderr)
         return 2
     roadmap_path = (root / args.roadmap).resolve()
