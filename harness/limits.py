@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import shutil
@@ -15,10 +16,16 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from . import __version__
+from .agy_usage import AgyBucket, fetch_agy_usage
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
+
+if TYPE_CHECKING:
+    from .config import HarnessConfig
+
+LOGGER = logging.getLogger(__name__)
 
 CURSOR_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
@@ -68,6 +75,57 @@ def default_cursor_state_db() -> Path:
 
 
 UrlOpener = Callable[..., Any]
+AgyUsageSource = Callable[..., list[AgyBucket]]
+
+
+_AGY_CONFIG_WARNED: set[tuple[str, str]] = set()
+_AGY_CONFIG_WARNED_LOCK = threading.Lock()
+
+
+def _agy_settings(
+    config: HarnessConfig | None = None,
+    *,
+    root: Path | None = None,
+    config_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Return ``(enabled, command)`` for Antigravity.
+
+    An already loaded ``config`` wins. Otherwise ``config_path`` is read, or
+    ``harness.yaml`` in ``root`` (default: the current folder). A missing file
+    means Antigravity is off. A file that exists but fails to load logs one
+    warning naming the error and also leaves Antigravity off.
+    """
+
+    if config is not None:
+        return bool(config.agy.enabled), str(config.agy.command or "agy")
+    if config_path is None:
+        try:
+            base = Path(root) if root is not None else Path.cwd()
+        except OSError:
+            return False, "agy"
+        config_path = base / "harness.yaml"
+    path = Path(config_path)
+    try:
+        if not path.is_file():
+            return False, "agy"
+        from .config import HarnessConfig as _HarnessConfig
+
+        loaded = _HarnessConfig.load(path)
+    except Exception as exc:
+        text = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        key = (str(path), text)
+        with _AGY_CONFIG_WARNED_LOCK:
+            first = key not in _AGY_CONFIG_WARNED
+            _AGY_CONFIG_WARNED.add(key)
+        if first:
+            LOGGER.warning(
+                "Could not load %s (%s: %s); Antigravity is treated as disabled.",
+                path,
+                exc.__class__.__name__,
+                text,
+            )
+        return False, "agy"
+    return bool(loaded.agy.enabled), str(loaded.agy.command or "agy")
 
 
 class _ClaudeNoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -826,6 +884,44 @@ def load_claude(
         return _load_claude_status_line(paths, now=now)
 
 
+def load_agy(
+    *,
+    command: str = "agy",
+    source: AgyUsageSource = fetch_agy_usage,
+    now: datetime | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    now = now or datetime.now().astimezone()
+    try:
+        buckets = source(command=command)
+        if not buckets:
+            raise ValueError("no quota pools returned")
+    except Exception as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        return [f"Antigravity: usage unavailable ({reason})"], {"error": reason}
+
+    lines = ["Antigravity"]
+    payload: list[dict[str, Any]] = []
+    for bucket in buckets:
+        percent_left = bucket.remaining_fraction * 100
+        resets_at = int(bucket.reset_time.timestamp())
+        reset_label = format_local_day_time(bucket.reset_time)
+        remaining = max(0, int((bucket.reset_time - now).total_seconds()))
+        lines.append(
+            f"  {bucket.group_name}: {percent_left:.0f}% left, resets "
+            f"{reset_label} ({_format_duration_until(seconds=remaining)})"
+        )
+        payload.append(
+            {
+                "pool_id": bucket.pool_id,
+                "group_name": bucket.group_name,
+                "window": bucket.window,
+                "remaining_percent": percent_left,
+                "resets_at": resets_at,
+            }
+        )
+    return lines, {"pools": payload}
+
+
 def render_limits(
     paths: LimitsPaths,
     *,
@@ -834,6 +930,9 @@ def render_limits(
     opener: UrlOpener | None = None,
     codex_command: str = "codex",
     codex_live_timeout: float = 20.0,
+    agy_enabled: bool = False,
+    agy_command: str = "agy",
+    agy_source: AgyUsageSource = fetch_agy_usage,
 ) -> str:
     now = now or datetime.now().astimezone()
     codex_lines, codex_json = load_codex(
@@ -844,13 +943,26 @@ def render_limits(
     )
     cursor_lines, cursor_json = load_cursor(paths, now=now, opener=opener)
     claude_lines, claude_json = load_claude(paths, now=now)
-    if as_json:
-        return json.dumps(
-            {"codex": codex_json, "cursor": cursor_json, "claude": claude_json},
-            indent=2,
-            sort_keys=True,
+    agy_lines: list[str] | None = None
+    agy_json: dict[str, Any] | None = None
+    if agy_enabled:
+        agy_lines, agy_json = load_agy(
+            command=agy_command,
+            source=agy_source,
+            now=now,
         )
+    if as_json:
+        payload: dict[str, Any] = {
+            "codex": codex_json,
+            "cursor": cursor_json,
+            "claude": claude_json,
+        }
+        if agy_json is not None:
+            payload["agy"] = agy_json
+        return json.dumps(payload, indent=2, sort_keys=True)
     blocks = ["\n".join(codex_lines), "\n".join(cursor_lines), "\n".join(claude_lines)]
+    if agy_lines is not None:
+        blocks.append("\n".join(agy_lines))
     return "\n\n".join(blocks)
 
 
@@ -861,8 +973,22 @@ def run_limits(
     opener: UrlOpener | None = None,
     codex_command: str = "codex",
     codex_live_timeout: float = 20.0,
+    agy_enabled: bool | None = None,
+    agy_command: str | None = None,
+    agy_source: AgyUsageSource = fetch_agy_usage,
+    config: HarnessConfig | None = None,
+    root: Path | None = None,
+    config_path: Path | None = None,
 ) -> int:
     paths = paths or LimitsPaths.from_env()
+    if agy_enabled is None or agy_command is None:
+        configured_enabled, configured_command = _agy_settings(
+            config, root=root, config_path=config_path
+        )
+        if agy_enabled is None:
+            agy_enabled = configured_enabled
+        if agy_command is None:
+            agy_command = configured_command
     print(
         render_limits(
             paths,
@@ -870,6 +996,9 @@ def run_limits(
             opener=opener,
             codex_command=codex_command,
             codex_live_timeout=codex_live_timeout,
+            agy_enabled=agy_enabled,
+            agy_command=agy_command,
+            agy_source=agy_source,
         )
     )
     return 0
