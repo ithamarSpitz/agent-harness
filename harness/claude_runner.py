@@ -28,6 +28,7 @@ _SHELL_TOOL_NAMES = frozenset({"bash", "powershell", "shell"})
 # may extend these defaults without making Claude depend on Cursor's patterns.
 CLAUDE_QUOTA_PATTERNS = (
     "usage limit",
+    "usage_limit_reached",
     "limit reached",
     "rate_limit",
     "rate limit",
@@ -35,6 +36,8 @@ CLAUDE_QUOTA_PATTERNS = (
     "status code 429",
     '"status_code": 429',
     '"status_code":429',
+    '"api_error_status": 429',
+    '"api_error_status":429',
 )
 CLAUDE_NETWORK_PATTERNS = (
     "network error",
@@ -308,6 +311,36 @@ class ClaudeAgentRunner:
         return any(pattern.casefold() in lowered for pattern in CLAUDE_QUOTA_PATTERNS)
 
     @staticmethod
+    def _final_result_has_quota_fields(raw_output: str) -> bool:
+        """Classify quota from Claude's structured final result fields."""
+        for raw in raw_output.splitlines():
+            try:
+                event = json.loads(raw.strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "result":
+                continue
+
+            api_error = event.get("api_error")
+            if isinstance(api_error, str):
+                normalized_error = api_error.casefold()
+                if "usage_limit" in normalized_error or "rate_limit" in normalized_error:
+                    return True
+
+            api_error_status = event.get("api_error_status")
+            if api_error_status == 429 or (
+                isinstance(api_error_status, str) and api_error_status.strip() == "429"
+            ):
+                return True
+
+            result_text = event.get("result")
+            if isinstance(result_text, str):
+                normalized_result = result_text.casefold()
+                if "hit your" in normalized_result and "limit" in normalized_result:
+                    return True
+        return False
+
+    @staticmethod
     def _matches_patterns(output: str, patterns: tuple[str, ...]) -> bool:
         lowered = output.casefold()
         return any(pattern.casefold() in lowered for pattern in patterns)
@@ -526,8 +559,9 @@ class ClaudeAgentRunner:
                 auth_failure = False
                 waiting_cause = "timeout"
             else:
-                quota_exhausted = classify_failure and self._looks_like_quota_exhaustion(
-                    classification_text
+                quota_exhausted = classify_failure and (
+                    self._final_result_has_quota_fields(output)
+                    or self._looks_like_quota_exhaustion(classification_text)
                 )
                 auth_failure = (
                     classify_failure
