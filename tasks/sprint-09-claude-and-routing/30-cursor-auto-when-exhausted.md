@@ -12,6 +12,8 @@ allowed_paths:
   - harness/routing.py
   - harness/provider_runner.py
   - harness.yaml
+  - harness/runner.py
+  - tests/harness/test_cursor_runner.py
   - tests/harness/test_cursor_auto_when_exhausted.py
   - tests/harness/test_provider_choice.py
   - tests/harness/test_auto_first.py
@@ -52,6 +54,7 @@ Before Nov 2 2026 this repo's `harness.yaml` had named Cursor models: `worker: c
 8. A real Cursor call that still reports a usage limit is handled as today (quota-disable for the task).
 9. Log the choice: `cursor: auto (both pools at 100%)` or `cursor: <model>` in the existing routing log line.
 10. With `auto_when_exhausted` off (the default), behavior is unchanged, so existing tests keep passing.
+11. How Auto reaches Cursor (operator, Nov 4 2026, settles reviews of attempts 3 and 4): `cursor.models` stays exactly as decision 2 (no `auto` key, and `auto` is not a declarable task model class in validation). When the provider runner runs a Cursor implementation as Auto, it passes the model override `auto` to the Cursor runner, and `CursorAgentRunner` (`harness/runner.py`) sends `--model auto` for that override even though `auto` is not in `cursor.models`. A test in `tests/harness/test_cursor_runner.py` checks the real command line contains `--model auto` in that case and the named model otherwise.
 
 # Acceptance criteria
 
