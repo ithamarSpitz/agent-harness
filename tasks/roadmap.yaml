@@ -618,3 +618,68 @@ sprints:
         - S9-T9
         - S9-T11
         - S9-T12
+  S10-antigravity:
+    name: Google Antigravity (agy) as a provider, live quota from agy /usage
+    tasks:
+      S10-T1:
+        file: tasks/sprint-10-antigravity/01-agy-config.md
+        stage: 1
+        depends_on: []
+      S10-T2:
+        file: tasks/sprint-10-antigravity/02-agy-usage-parser.md
+        stage: 1
+        depends_on: []
+      S10-T3:
+        file: tasks/sprint-10-antigravity/03-agy-permissions.md
+        stage: 1
+        depends_on: []
+      S10-T4:
+        file: tasks/sprint-10-antigravity/04-agy-runner.md
+        stage: 2
+        depends_on:
+        - S10-T1
+        - S10-T3
+      S10-T5:
+        file: tasks/sprint-10-antigravity/05-agy-quota.md
+        stage: 3
+        depends_on:
+        - S10-T4
+      S10-T6:
+        file: tasks/sprint-10-antigravity/06-agy-limits-headroom.md
+        stage: 2
+        depends_on:
+        - S10-T2
+      S10-T7:
+        file: tasks/sprint-10-antigravity/07-wire-agy.md
+        stage: 4
+        depends_on:
+        - S10-T4
+        - S10-T5
+        - S10-T6
+      S10-T8:
+        file: tasks/sprint-10-antigravity/08-agy-playwright.md
+        stage: 4
+        depends_on:
+        - S10-T5
+      S10-T9:
+        file: tasks/sprint-10-antigravity/09-docs.md
+        stage: 5
+        depends_on:
+        - S10-T1
+        - S10-T2
+        - S10-T3
+        - S10-T4
+        - S10-T5
+        - S10-T6
+        - S10-T7
+        - S10-T8
+        - S10-T10
+        - S10-T11
+      S10-T10:
+        file: tasks/sprint-10-antigravity/10-claude-limit-is-quota.md
+        stage: 1
+        depends_on: []
+      S10-T11:
+        file: tasks/sprint-10-antigravity/11-auto-quota-memory.md
+        stage: 1
+        depends_on: []
