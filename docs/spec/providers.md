@@ -1,6 +1,6 @@
 # Providers
 
-This document describes how the harness chooses Codex vs Cursor, switches providers, classifies failures, and pauses for quota or capacity. `SPEC.md` links the other specification parts.
+This document describes how the harness chooses between Codex, Cursor and Claude Code, switches providers, classifies failures, and pauses for quota or capacity. `SPEC.md` links the other specification parts.
 
 ## Providers and fallback
 
@@ -8,35 +8,69 @@ This document describes how the harness chooses Codex vs Cursor, switches provid
 
 | Config | Default | Role |
 | --- | --- | --- |
-| `providers.priority` | `["codex", "cursor"]` | First **enabled** entry wins for each phase (`implement`, `review`, `plan_repair`). |
+| `providers.priority` | `["codex", "cursor"]` | Base order for headroom routing (see below). Enabled providers omitted from the list are appended after it. Add `"claude"` to place Claude explicitly. |
 | `codex.enabled` | `false` | Codex CLI integration. |
 | `cursor.enabled` | `true` | Cursor CLI integration. |
+| `claude.enabled` | `false` | Claude Code CLI integration. |
 
-If the priority list names a disabled provider, the harness skips it and tries the next. If nothing is enabled, agent calls fail with an auth-style error.
+Disabled providers are never chosen. If nothing is enabled or usable, agent calls fail with an auth-style error or the scheduler follows its wait behavior (see "Headroom routing").
 
 ### What each provider runs
 
-| Phase | Codex | Cursor |
-| --- | --- | --- |
-| Implementation | `codex.implementation_sequence` entry by Codex attempt index (model + optional `reasoning_effort` per entry) | `cursor.models[<class>]` where class comes from `retry.sequence` or the task’s `model_class` |
-| Review | `codex.review_model` | `cursor.models[task.review_model_class or "reviewer"]`, `--mode=ask` |
-| Plan repair | `codex.planner_model` | `cursor.models[planner_model_class]` (CLI default class `escalation` when not overridden) |
+| Phase | Codex | Cursor | Claude Code |
+| --- | --- | --- | --- |
+| Implementation | `codex.implementation_sequence` entry by Codex attempt index (model + optional `reasoning_effort` per entry) | `cursor.models[<class>]` where class comes from `retry.sequence` or the task’s `model_class` | `claude.implementation_sequence` entry by Claude attempt index (default `sonnet/medium`, `sonnet/high`, `opus/high`); an explicit escalation model class selects `claude.escalation_model` / `claude.escalation_effort` |
+| Review | `codex.review_model` | `cursor.models[task.review_model_class or "reviewer"]`, `--mode=ask` | `claude.review_model` / `claude.review_effort` (default `sonnet` / `high`) |
+| Plan repair | `codex.planner_model` | `cursor.models[planner_model_class]` (CLI default class `escalation` when not overridden) | Claude review profile; with `claude.enabled`, plan repair uses headroom routing, otherwise it keeps the Codex/Cursor behavior above |
+
+Claude runs non-interactively with `stream-json`, the selected model and effort, and `claude.permission_mode` (default `bypassPermissions`).
+
+**Claude and Playwright:** For implementation and review, Claude receives a strict temporary MCP configuration. With `ui_review.enabled` it contains only the configured Playwright MCP server (`npx` with `ui_review.playwright_mcp_package`); otherwise it is empty so user MCP servers are not loaded. Plan repair does not receive this configuration.
 
 **Codex probe (availability):** `codex --version`, then `codex login status`. Auth is OK when exit code is 0 and output contains `codex.auth_required_substring` (default `Logged in using ChatGPT`). Result is cached until `refresh=True`.
 
 **Cursor headless worktrees:** For a verified harness worktree under `.harness/worktrees/` (registered Git worktree), implementation calls add `--trust` and `--force` when `cursor.trust_harness_worktrees` is true (default). Review and plan repair do not get `--force`.
 
+### Headroom routing
+
+Implementation and review calls are routed by `choose_provider` (`harness/routing.py`) in **every** project, from the age-aware, machine-wide headroom snapshot (the same one shown on the live board). With no headroom data the result is exactly `providers.priority` order. The policy excludes disabled providers and providers disabled for the task, then applies these rules:
+
+1. Start with `providers.priority`, followed by enabled providers omitted from it. The S9 routing scenarios use the base order agy, Codex, Cursor, Claude; `choose_provider` itself works on whatever provider names are in `priority`/`enabled`, and `agy` appears only in those scenario tests and the board, not as a runner in this repository.
+2. **Cursor Auto first:** on a task's first implementation attempt only, if `cursor.auto_when_exhausted` is true and both known Cursor pools are at 100% or more, choose Cursor Auto before every other provider. Auto is never used for review.
+3. Exclude a provider that has a usage window at 100%, and apply the Claude reserve below.
+4. **Waste and urgency:** the quota that would expire unused is `remaining percent − hours to reset × full pace`. Providers with positive waste are *urgent* and go first, greatest waste first; ties keep configured order. Full pace comes from the S9-T31 pace source (`full_pace`), with routing fallbacks of 30%/hour for five-hour windows, 3%/hour for weekly windows and 1%/hour for monthly windows.
+5. If no provider is urgent, use configured order.
+6. **Review:** the implementing provider is removed when another provider has usable quota, so the reviewer is never the implementing provider when another reviewer exists, and Cursor Auto is never a reviewer. If only the implementer remains usable it may review.
+
+The chosen provider and the routing reason are logged (`<task>-routing.log`) and stored for the board in meta `{sprint}.{task_id}.board.routing_reason`. If no provider is usable, the reason lists which are disabled, exhausted, over the Claude cap or unavailable.
+
+**Claude reserve.** Claude is capped so it stays available when other providers are still out:
+
+- Five-hour used-percent cap: `claude.reserve.min_percent` (60) when another provider returns within `min_hours` (1) hour, rising linearly with the hours until another provider returns, and reaching `max_percent` (90) at `max_hours` (5) or later. A three-hour wait therefore gives a 75% cap.
+- Weekly used-percent cap: 100 minus `weekly_percent_per_day` (7) per day until Claude's weekly reset. An unknown reset uses the strictest value, as though seven days remained.
+- Claude usage at or above either cap is not routed to Claude.
+
+**Five routing scenarios** (order agy, Codex, Cursor, Claude, with the full-pace values above; executable in `tests/harness/test_routing_scenarios.py`):
+
+1. With ordinary headroom and no urgency, agy implements; Codex reviews because agy implemented.
+2. When Codex has 80% left in a five-hour window that resets in one hour, 50% would be wasted, so Codex implements; agy reviews.
+3. When agy and Codex are both urgent, the larger waste wins (agy 40%, Codex 20%); Codex then reviews.
+4. When both Cursor pools are at 100%, Cursor Auto gets the first implementation attempt. It never reviews; agy reviews. If Auto quota-disables Cursor for the task, the next attempt routes to agy.
+5. When only Claude has usage, it runs only under the reserve: with another provider returning in three hours, 50% used is under the 75% cap but 76% waits; if nothing returns for six hours the cap is 90% and 76% may run. When Claude is the only usable reviewer it may review its own implementation.
+
+**Cursor Auto when exhausted.** `cursor.auto_when_exhausted` (default `false`): Cursor uses its configured named models while either pool is below 100%. Only while both pools are known and at 100% does `auto` replace the named model on the task's first implementation attempt (the Auto-first attempt applies only then). Later attempts use normal headroom routing and named Cursor models, and Auto never replaces a review model. With missing headroom, normal provider order and named Cursor models apply.
+
 ### Per-task and per-phase routing
 
-`ProviderAgentRunner` (`manages_model_routing = true` in production) owns provider choice and attempt indices in `runtime.provider_attempts` (`codex`, `cursor`).
+`ProviderAgentRunner` owns provider choice and attempt indices in `runtime.provider_attempts` (`codex`, `cursor`, `claude`).
 
-**Task-wide Codex disable** (metadata `{sprint}.{task_id}.provider.codex.disabled`): set when Codex hits quota, auth, model-unavailable, CLI/auth probe failure, or integration error **and** Cursor fallback is enabled. The **same** agent call then continues on Cursor without entering a waiting status. Value is a reason string (for example `quota:5h`, `auth`, `auth_or_cli_unavailable`).
+**Task-wide Codex disable** (metadata `{sprint}.{task_id}.provider.codex.disabled`): set when Codex hits quota, auth, model-unavailable, CLI/auth probe failure, or integration error **and** Cursor fallback is enabled. The **same** agent call then continues on Cursor without entering a waiting status. Value is a reason string (for example `quota:5h`, `auth`, `auth_or_cli_unavailable`). Claude quota or auth failures similarly set `{sprint}.{task_id}.provider.claude.disabled` so routing selects another provider; launch failures do not spend an implementation attempt.
 
-**Task-wide Cursor disable** (`{sprint}.{task_id}.provider.cursor.disabled`): reserved; cleared with Codex disable on a **new** sprint run manifest, not on `resume`.
+**Task-wide Cursor disable** (`{sprint}.{task_id}.provider.cursor.disabled`): set the same way when Cursor returns quota, auth, model-unavailable or a launch failure and another provider is usable (for example after Cursor Auto hits quota). Cleared with the Codex disable on a **new** sprint run manifest, not on `resume`. The Claude disable (`...provider.claude.disabled`) is not cleared by a new manifest; like the others, quota-reason disables of any provider are cleared when the task leaves `WAITING_QUOTA`.
 
-**Per-phase provider disable** (`{sprint}.{task_id}.provider.{provider}.disabled.{phase}`): after **three** stall/timeout events for the same phase and provider, `fallback_after_stalls` may disable that provider for that phase only and record a switch to the other provider (Codex→Cursor if Cursor enabled; Cursor→Codex only if a fresh Codex availability probe succeeds). Unlike Codex quota/auth fallback, this is **not** a same-call continue: `_handle_agent_wait` still pauses with `WAITING_TIMEOUT`, `waiting_provider` stays the stalled provider, and the alternate provider runs only on the next `harness run` / `harness resume` (with `capacity.policy: wait`, after `retry_interval_minutes`).
+**Per-phase provider disable** (`{sprint}.{task_id}.provider.{provider}.disabled.{phase}`): after **three** stall/timeout events for the same phase and provider, `fallback_after_stalls` may disable that provider for that phase only and record a switch to the other provider (to whichever provider headroom routing then picks, with the phase-local disable applied; a Codex pick requires a fresh availability probe to succeed). Unlike Codex quota/auth fallback, this is **not** a same-call continue: `_handle_agent_wait` still pauses with `WAITING_TIMEOUT`, `waiting_provider` stays the stalled provider, and the alternate provider runs only on the next `harness run` / `harness resume` (with `capacity.policy: wait`, after `retry_interval_minutes`).
 
-Each **new** run manifest clears task-wide Codex/Cursor disable keys so every task probes Codex again. **Resume** preserves prior fallback.
+Each **new** run manifest clears task-wide Codex/Cursor disable keys so every task probes Codex again. **Resume** preserves prior fallback. Headroom routing also clears quota-reason disables when a task leaves `WAITING_QUOTA`.
 
 ### Codex vs Cursor on failure (same call)
 
@@ -49,6 +83,8 @@ Each **new** run manifest clears task-wide Codex/Cursor disable keys so every ta
 
 If Codex quota/auth/model failure occurs and Cursor is **disabled**, the harness does **not** fall back; quota exhaustion can still lead to `WAITING_QUOTA` when the returned result has `quota_exhausted`.
 
+The implement loop generalizes this to every provider: when Codex, Cursor or Claude returns quota, auth, model-unavailable or a launch failure and another candidate is still usable, the failing provider is disabled for the task (reason such as `quota:5h`) and the same call continues on the next routed provider. With no other candidate the result is returned and the normal wait/retry handling applies. Claude failures are classified into quota, authentication, network, provider-busy, provider-error and timeout/stall results (quota phrases accept straight and typographic apostrophes); timeout or stall takes precedence and becomes `WAITING_TIMEOUT`, busy becomes capacity exhaustion, network and provider errors are transient waits, and a nonzero exit or reported stream error without a classified wait is an ordinary Claude failure.
+
 ### Implementation attempt budget
 
 With `ProviderAgentRunner`, the implement loop continues while `runtime.attempt < max_attempts` **and** `has_implementation_budget` is true.
@@ -59,19 +95,19 @@ With `ProviderAgentRunner`, the implement loop continues while `runtime.attempt 
 | --- | --- |
 | CLI `--model-class` | **1** |
 | Task sets `max_attempts` | that integer (not 1) |
-| Otherwise | `max_implementation_attempts()` = `len(codex.implementation_sequence) + max(1, len(retry.sequence))` |
+| Otherwise | `max_implementation_attempts()` = `len(codex.implementation_sequence) + max(1, len(retry.sequence))`, plus `len(claude.implementation_sequence)` when `claude.enabled` |
 
-`max_implementation_attempts()` always returns that sum. It does not read `task.max_attempts` or `--model-class`. The implement loop also requires `has_implementation_budget` for the **active** provider, so the Cursor half of that sum is not used while Codex is still preferred.
+`max_implementation_attempts()` always returns that sum. It does not read `task.max_attempts` or `--model-class`.
 
 **Live implement-call cap** (`has_implementation_budget`):
 
 - `--model-class`: one Cursor call (`provider_attempts["cursor"] < 1`). Not `len(retry.sequence)`.
-- Active provider Codex: only `codex.implementation_sequence`. Ordinary failures consume one Codex entry and stay on Codex. Sequence exhaustion does **not** fall through to Cursor: if Codex is still enabled, budget is false and the task is **blocked**. Cursor is never started on that path.
-- Active provider Cursor (Codex disabled for the task, or Codex not enabled / not preferred — **not** the `--model-class` branch above): up to `max(1, len(retry.sequence))` Cursor-side attempts. Model class uses effective sequence `retry.sequence` if non-empty, otherwise `[task.model_class]`; index `i` (from `provider_attempts["cursor"]`) picks `sequence[min(i, len(sequence) - 1)]`. With default empty `retry.sequence`, that is one attempt at the task’s `model_class`.
+- Otherwise headroom routing decides. A provider whose own budget is used up is treated as unavailable for this check: Codex when `provider_attempts["codex"]` reaches `len(codex.implementation_sequence)`, Cursor when it reaches `max(1, len(retry.sequence))`, Claude when it reaches `len(claude.implementation_sequence)`. The task has budget while `choose_provider` still returns a provider from the rest. Ordinary failures consume one attempt of the provider that ran; the next attempt is routed again, so exhausting one provider's sequence falls through to another usable provider and the task is blocked only when none remains.
+- Cursor model class uses effective sequence `retry.sequence` if non-empty, otherwise `[task.model_class]`; index `i` (from `provider_attempts["cursor"]`) picks `sequence[min(i, len(sequence) - 1)]`. With default empty `retry.sequence`, that is one attempt at the task’s `model_class`. With `cursor.auto_when_exhausted` and both pools at 100%, the first attempt uses `auto` instead.
 
-Without provider routing (`manages_model_routing` false), `_defaults` uses `len(retry.sequence)` if that list is non-empty, otherwise `execution.default_max_attempts` (default `2`), and per-attempt `model_class` from the task. Production always installs `ProviderAgentRunner`.
+Implementation and review always go through headroom routing, in every project; plan repair does so only when `claude.enabled`. The legacy `execution.default_max_attempts` path (`len(retry.sequence)` if non-empty, otherwise `2`) remains only for runners that do not manage model routing.
 
-**Manual `--model-class`** (on `harness run-task`, `harness rerun-blocker`, etc.): forces **Cursor** only, single attempt, no automatic Codex/Cursor sequence for that invocation.
+**Manual `--model-class`** (on `harness run-task`, `harness rerun-blocker`, etc.): forces **Cursor** only, single attempt, no automatic provider sequence for that invocation.
 
 ### Stall fallback vs block
 
@@ -98,7 +134,7 @@ Account **quota** and transient **capacity** are separate. The scheduler records
 | `WAITING_PROVIDER_ERROR` | Other transient provider/server errors | either |
 | `WAITING_TIMEOUT` | Hard timeout or stall watchdog | either |
 
-Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`codex` | `cursor`). Sprint-level meta `{sprint_id}.run_status` mirrors the pause for manifests.
+Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`codex` | `cursor` | `claude`). Sprint-level meta `{sprint_id}.run_status` mirrors the pause for manifests.
 
 ### Cause detection
 
@@ -139,7 +175,7 @@ Runtime fields: `waiting_phase` (`implement` | `review`), `waiting_provider` (`c
 | `quota.keep_awake` / `capacity.keep_awake` | `true` | Windows keep-awake during quota sleep | Same during capacity sleep |
 | `quota.teardown_environment_while_waiting` / `capacity.teardown_environment_while_waiting` | `true` | Tear down per-task Docker when pausing | Same |
 
-**Reset time:** `quota.reset_at` in `harness.yaml`, or runtime override in state meta `quota.reset_at_override` (set/cleared via CLI). `QuotaManager.configured_reset_at()` prefers the override, then yaml, else unknown.
+**Reset time:** `quota.reset_at` in `harness.yaml`, or runtime override in state meta `quota.reset_at_override` (set/cleared via CLI). `QuotaManager.configured_reset_at()` prefers the override, then yaml, else unknown. When the configured reset is unknown or already past, the quota sleep ends at the earliest reset of the live exhausted windows (latest full-window reset per provider) plus a short grace, and otherwise falls back to `quota.probe_interval_minutes`.
 
 **Automatic resume:** Only inside an active `harness run` or `harness resume` loop when `quota.policy` / `capacity.policy` is `wait`: after sleep, the loop calls `run_sprint` again. Ctrl+C is safe; manifest may show `PAUSED_BY_USER`. There is no background daemon. Focused `harness run-task` (including via `harness rerun-blocker` on a blocked task) records `QUOTA_WAIT` / `CAPACITY_WAIT` and exits **4** / **5** without sleeping, regardless of policy.
 
@@ -183,4 +219,4 @@ Codex also uses `codex.auth_patterns` and `codex.model_unavailable_patterns` for
 - Cursor pattern classification runs before the timeout override; a timed-out or stalled call is always treated as `WAITING_TIMEOUT` regardless of network-like output in the log.
 - Codex only sets `waiting_cause: timeout` when the hard timeout or stall watchdog fired. Output that merely matches `timeout` / `timed out` in `codex.provider_error_patterns` is classified as `provider_error` → `WAITING_PROVIDER_ERROR`, not `WAITING_TIMEOUT`.
 - Codex `_classify` checks auth and model-unavailable patterns before the timeout branch, so auth-shaped text in diagnostics can trigger same-call Cursor fallback (when enabled) instead of a capacity wait even when the call also timed out.
-- Plan repair (`PlanChangeManager.propose` via `harness plan-change propose`) uses the same Codex/Cursor routing as the table above, but `quota_exhausted`, `capacity_exhausted`, and other non-ok results raise `RuntimeError`. They do not set `WAITING_*`, sleep, or resume. The wait statuses in this document apply to implement and review only.
+- Plan repair (`PlanChangeManager.propose` via `harness plan-change propose`) uses the same Codex/Cursor routing as the table above (headroom routing when `claude.enabled`), but `quota_exhausted`, `capacity_exhausted`, and other non-ok results raise `RuntimeError`. They do not set `WAITING_*`, sleep, or resume. The wait statuses in this document apply to implement and review only.

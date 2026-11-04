@@ -4,9 +4,9 @@ This document is the entry point for how the harness behaves today, as implement
 
 ## Purpose
 
-The harness orchestrates coding agents (Cursor CLI and optionally OpenAI Codex CLI) against any Git project. Work is expressed as a **roadmap of task briefs** with mechanical verification and optional independent review. Each task runs in an isolated **Git worktree**; successful task commits merge into the **integration checkout** (the branch you run from) only after every active task in a **stage** reaches `PASSED`. Stages are **atomic**: merge or stage-verification failure rolls the integration checkout back to the pre-stage checkpoint. Agents do not commit or merge; the harness does.
+The harness orchestrates coding agents (Cursor CLI and optionally OpenAI Codex CLI and Claude Code) against any Git project. Work is expressed as a **roadmap of task briefs** with mechanical verification and optional independent review. Each task runs in an isolated **Git worktree**; successful task commits merge into the **integration checkout** (the branch you run from) only after every active task in a **stage** reaches `PASSED`. Stages are **atomic**: merge or stage-verification failure rolls the integration checkout back to the pre-stage checkpoint. Agents do not commit or merge; the harness does.
 
-Core ideas: plan as data (`tasks/roadmap.yaml` and briefs), parallel tasks within a stage when `allowed_paths` do not conflict, retry and **provider-specific** routing (Codex sequences vs Cursor model classes) with fallback where implemented, and human-gated **plan repair** when blocked work indicates a plan gap.
+Core ideas: plan as data (`tasks/roadmap.yaml` and briefs), parallel tasks within a stage when `allowed_paths` do not conflict, headroom-aware routing across Codex, Cursor, and Claude ladders, and human-gated **plan repair** when blocked work indicates a plan gap.
 
 ## Concepts
 
@@ -20,7 +20,7 @@ Core ideas: plan as data (`tasks/roadmap.yaml` and briefs), parallel tasks withi
 | **Brief / frontmatter** | Markdown with YAML frontmatter parsed for scheduling and prompts. Roadmap rows merge with brief frontmatter (roadmap wins on overlap when loading from roadmap). |
 | **Worktree** | Per-task directory under `.harness/worktrees/<task-id>/` on branch `agent/<task-id>`, from the stage base commit. |
 | **Integration checkout** | Main repo at `--root` on a named branch (not detached HEAD). Stage merges land here. |
-| **Runtime directory** | `.harness/` (gitignored): state, logs, queue, worktrees, code-map build, failures, manifests, usage, plan revisions. |
+| **Runtime directory** | Project-local `.harness/` (gitignored): state, logs, queue, worktrees, code-map build, failures, manifests, usage, plan revisions. Machine-wide ledger and outcomes live under `HARNESS_HOME` (default `~/.harness`). |
 
 State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 
@@ -29,10 +29,10 @@ State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 | Part | Contents |
 | --- | --- |
 | [Task lifecycle and stage barrier](docs/spec/lifecycle.md) | Statuses, transitions, retries, integration barrier, recovery commands. |
-| [Providers, quota, and capacity](docs/spec/providers.md) | Provider priority, Codex vs Cursor rules, waits and fallback. |
-| [Review and code map](docs/spec/review.md) | Independent review, UI check, optional Graphify code map. |
-| [Operations](docs/spec/operations.md) | Post-sprint release, enqueueing tasks during a run. |
-| [Configuration](docs/spec/configuration.md) | `harness.yaml` keys and task brief frontmatter. |
+| [Providers, quota, and capacity](docs/spec/providers.md) | Claude Code, headroom/urgency routing, Cursor Auto, reserves, waits, and fallback. |
+| [Review and code map](docs/spec/review.md) | Independent cross-provider review, required impact analysis, UI check, optional Graphify code map. |
+| [Operations](docs/spec/operations.md) | `HARNESS_HOME`, usage/outcome records, hold/release, brief reload, post-sprint release, and live task enqueueing. |
+| [Configuration](docs/spec/configuration.md) | All `harness.yaml` keys, including Claude and Cursor Auto, plus task brief frontmatter. |
 
 ## Guarantees
 

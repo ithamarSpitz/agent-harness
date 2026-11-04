@@ -25,20 +25,27 @@ The harness builds a text prompt (`review_prompt`) and sends it to the selected 
 | Diff | Instruction to review the working tree diff against worktree `base_ref` (the agent runs Git in the worktree). |
 | Verification | Full mechanical verification summary from the just-passed run (or the fixed resume message when verification was skipped). |
 | Code map | Optional paragraph when a map was copied into the worktree (see Code map). |
+| Outside-diff users | A generated **Code outside the diff that uses what changed:** list for changed Python functions, classes, and methods. |
+| Impact instructions | A required pre-verdict impact check and a required post-verdict `IMPACT:` section. |
 | UI check | Optional instructions when `ui_review.enabled` (see Reviewer UI check). |
 
-Agent logs: Cursor writes `{task-id}-review.log`; Codex writes `{task-id}-review-codex.log` under the harness log directory.
+Before deciding its verdict, the reviewer must list every changed function, class, config key, CLI command, or output format; find users outside the diff; and check that those users still behave correctly. After the verdict it must write an `IMPACT:` section listing each changed item and the users checked, or `none outside the diff`. The scheduler's pass decision still uses the exact `VERDICT: PASS` line.
 
-### Provider choice (Codex vs Cursor)
+The harness precomputes the outside-diff list. It identifies changed Python symbols from diff ranges (and definitions in untracked Python files), then reads Graphify relations `calls`, `imports_from`, `uses`, and `references`, excluding every changed file. Each entry is `path:line -> qualified symbol`, capped at five users per symbol and 40 lines overall. If the graph is absent or unreadable, it runs word-boundary `git grep` over Python files, excludes changed files, and labels the prompt `no code map, used grep` or `code map unreadable, used grep`. Collection never blocks review; no matches becomes `none found`.
 
-`ProviderAgentRunner.review` uses the same preference order as implementation (`providers` config):
+Agent logs use provider-specific names under the harness log directory, including `{task-id}-review.log` for Cursor, `{task-id}-review-codex.log` for Codex, and `{task-id}-review-claude.log` for Claude.
+
+### Provider choice
+
+`ProviderAgentRunner.review` uses headroom routing:
 
 | Provider | Review model |
 | --- | --- |
-| Codex (when preferred and available) | `codex.review_model` (default `"gpt-5.6-sol"`). |
-| Cursor (fallback or when Codex disabled/unavailable) | `cursor.models[review_model_class or "reviewer"]`. Task brief `review_model_class` overrides the class name when set. |
+| Codex | `codex.review_model` (default `"gpt-5.6-sol"`). |
+| Cursor | `cursor.models[review_model_class or "reviewer"]`. |
+| Claude | `claude.review_model` with `claude.review_effort` (defaults `sonnet/high`). |
 
-Codex quota/auth/model-unavailable failures disable Codex for that task and fall back to Cursor when `cursor.enabled`. Capacity/transient waits do not disable Codex. Cursor review never receives `--force` (read-only headless call except Codex sandbox when UI review is enabled; see below).
+When more than one provider is usable, routing removes the provider that implemented the task, so the reviewer is never the implementer once another reviewer exists. When it is the only provider with usage, the implementer may review. Cursor Auto is implementation-only and never reviews. Provider quota/auth failures can disable that provider for the task and reroute; transient capacity waits do not.
 
 ### Verdict parsing
 
@@ -117,10 +124,10 @@ The harness does not parse `UI_CHECK` lines for pass/fail; only the `VERDICT` li
 
 ### Provider differences
 
-| Topic | Cursor | Codex |
-| --- | --- | --- |
-| Playwright MCP | Relies on reviewer MCP config; harness adds `--approve-mcps` to the agent argv when `agent --help` mentions that flag. | Injects `mcp_servers.playwright` via `npx` and `playwright_mcp_package` on review calls. |
-| Sandbox / writes | Review stays read-only (no `--force`). | `read_only=not ui_review.enabled`. Off: `_effective_sandbox` returns `"read-only"`. On: same writable sandbox as implementation so the reviewer can run start commands — `codex.windows_implementation_sandbox` on Windows when that key is set, otherwise `codex.sandbox` (default `"workspace-write"`). |
+| Topic | Cursor | Codex | Claude |
+| --- | --- | --- | --- |
+| Playwright MCP | Relies on reviewer MCP config; harness adds `--approve-mcps` when supported. | Injects only `mcp_servers.playwright` via `npx`. | Uses a strict temporary MCP config containing only the same Playwright server. |
+| Permissions | Review stays unforced (no `--force`). | Read-only when UI review is off; with UI review it uses the configured writable sandbox so start commands can run. | Uses `claude.permission_mode`; the review edit snapshot still forbids retained file changes. |
 
 ### Worktree edit detection
 

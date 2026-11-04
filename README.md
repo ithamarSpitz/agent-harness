@@ -1,6 +1,6 @@
 # Agent Harness
 
-A small orchestrator that runs Codex and Cursor coding agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
+A small orchestrator that runs Codex, Cursor, and Claude Code agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
 
 ## Install on a new computer
 
@@ -12,6 +12,7 @@ Install and authenticate these yourself before using the harness:
 - **GitHub CLI** (`gh`) — run `gh auth login`
 - **Codex CLI** — run `codex login`
 - **Cursor CLI** (`agent`) — run `agent login`
+- **Claude Code** (optional) — install and authenticate `claude`
 
 Clone this repository, then from the repo root run:
 
@@ -33,7 +34,16 @@ Check the environment:
 harness doctor --full
 ```
 
-Provider enablement is in `harness.yaml` (`codex.enabled`, `cursor.enabled`). See [SPEC.md](SPEC.md) for routing, fallback, and trust rules.
+Provider enablement is in `harness.yaml` (`codex.enabled`, `cursor.enabled`, `claude.enabled`). To enable Claude:
+
+```yaml
+claude:
+  enabled: true
+providers:
+  priority: [codex, cursor, claude]
+```
+
+The default Claude ladder is Sonnet medium, Sonnet high, then Opus high. Current headroom chooses among enabled providers on every call; reviews use another provider when available. See [SPEC.md](SPEC.md) for routing and reserve rules.
 
 ## Start a new project
 
@@ -146,6 +156,7 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `run SPRINT [--dry-run] [--no-board]` | Execute a sprint (or print the plan only). |
 | `resume SPRINT [--no-board]` | Continue an in-progress or paused sprint. |
 | `release SPRINT` | Run configured release commands after success. |
+| `hold TASK` / `release TASK [--fresh-budget]` | Park one task / let it continue, optionally with a fresh attempt budget. |
 | `run-task TASK_ID [--model-class CLASS] [--fresh-budget]` | Run one task with optional fresh retry budget. |
 | `failure SPRINT` | Show failure report and suggested next command. |
 | `rerun-blocker SPRINT [--task TASK_ID] [--model-class CLASS]` | Focused recovery for a blocked task or stage barrier. |
@@ -161,6 +172,8 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
 | `limits [--json]` | Codex, Cursor, and Claude usage limits (independent blocks). |
+| `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |
+| `models import PROJECT [PROJECT ...]` | Import legacy project usage logs into the shared outcomes log. |
 | `setup-machine` | Post-install machine setup invoked by install scripts. |
 | `doctor [--full]` | Environment and config preflight. |
 | `quota status` | Quota/capacity wait state. |
@@ -178,9 +191,13 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 harness usage
 harness limits
 harness limits --json
+harness models report
+harness models import /path/to/older/project
 ```
 
 `harness limits` does not require `harness.yaml`. Each provider block is independent; partial failures do not hide other services. Details: [SPEC.md](SPEC.md).
+
+Model outcomes are shared at `$HARNESS_HOME/outcomes.jsonl` (default `~/.harness/outcomes.jsonl`); project-local calls remain in `.harness/usage.jsonl`.
 
 Quota waiting and capacity waiting:
 

@@ -42,6 +42,7 @@ Legacy keys are ignored or merged for compatibility: `execution.require_clean_ba
 | `output_format` | `"stream-json"` | CLI output format (enables usage parsing). |
 | `trust_harness_worktrees` | `true` | Pass `--trust` only for Git worktrees under `.harness/worktrees` that the harness can verify as registered worktrees. |
 | `models` | `{}` | Map from model class name to Cursor model id. Every class referenced by tasks or config must appear here or validation fails (plan-repair planner class missing is a warning only; see `plan_repair`). |
+| `auto_when_exhausted` | `false` | On a task's first implementation attempt, use Cursor `auto` instead of named models only while both known Cursor pools are at 100%. Later attempts use named models; Auto never reviews. |
 
 ### `codex`
 
@@ -62,11 +63,33 @@ Codex uses its own CLI flags (`sandbox`, `approval_policy`, `network_access`, pe
 | `auth_required_substring` | `"Logged in using ChatGPT"` | Substring that indicates a successful auth probe. |
 | `short_quota_patterns`, `weekly_quota_patterns`, `quota_patterns`, `busy_patterns`, `network_patterns`, `provider_error_patterns`, `auth_patterns`, `model_unavailable_patterns` | (defaults in `harness/config.py`) | Substrings used to classify Codex CLI output for waits, fallback, and routing. |
 
+### `claude`
+
+Claude Code uses `stream-json` and passes the configured model, effort, and permission mode to the CLI.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Allow Claude Code to participate in provider routing. |
+| `command` | `"claude"` | Claude Code executable. |
+| `implementation_sequence` | `sonnet/medium`, `sonnet/high`, `opus/high` | Successive implementation profiles. Each item has a non-empty `model` and an `effort` of low, medium, high, or max. The list must not be empty. |
+| `review_model` | `"sonnet"` | Model for review and plan repair. |
+| `review_effort` | `"high"` | Effort for review and plan repair. |
+| `escalation_model` | `"opus"` | Model selected by an explicit escalation model class. |
+| `escalation_effort` | `"high"` | Effort selected with `escalation_model`. |
+| `permission_mode` | `"bypassPermissions"` | Value passed to Claude Code `--permission-mode`. |
+| `reserve.min_percent` | `60` | Five-hour used-percent cap when another provider returns within `min_hours`. |
+| `reserve.max_percent` | `90` | Five-hour used-percent cap from `max_hours` onward. |
+| `reserve.min_hours` | `1` | Lower endpoint for the linear five-hour reserve. |
+| `reserve.max_hours` | `5` | Upper endpoint for the linear five-hour reserve; must exceed `min_hours`. |
+| `reserve.weekly_percent_per_day` | `7` | Weekly reserve per day remaining: cap is 100 minus this value times days to reset. |
+
+Reserve percentages must be between 0 and 100, hour/day values must be nonnegative, and `max_percent` must be at least `min_percent`. Legacy `reserve.five_hour_max_used_percent` and `reserve.weekly_max_used_percent` are ignored with a warning.
+
 ### `providers`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `priority` | `["codex", "cursor"]` | Order used by `_preferred_provider` for implement, review, and plan-repair. The first enabled provider for the phase wins; if none match the list, Codex then Cursor are tried as fallbacks. |
+| `priority` | `["codex", "cursor"]` | Base order for headroom routing. Enabled providers omitted from the list are appended. Add `"claude"` to place Claude explicitly. Urgent expiring quota may move a provider ahead of this order. |
 
 ### `retry`
 
@@ -189,8 +212,8 @@ Task briefs use YAML frontmatter between `---` delimiters. `task_spec_from_brief
 | `stage` | `1` | Stage number; a roadmap task row can override the brief value. |
 | `depends_on` | `[]` | Task ids that must be `DONE` before this task starts. |
 | `model_class` | `"worker"` | Cursor model class for implementation when Cursor implements and `retry.sequence` is empty. |
-| `review_model_class` | `null` | Cursor model class for review when Cursor reviews; when unset, Cursor uses `"reviewer"`. Codex review ignores this key and always uses `codex.review_model`. |
-| `max_attempts` | `null` | Caps the attempt budget from `_defaults`. When unset and `ProviderAgentRunner` manages routing, the cap is `len(codex.implementation_sequence) + max(1, len(retry.sequence))`. Live implement calls still require `has_implementation_budget` (Codex vs Cursor rules differ). |
+| `review_model_class` | `null` | Cursor model class for review when Cursor reviews; when unset, Cursor uses `"reviewer"`. Codex and Claude use their provider-specific review profiles instead. |
+| `max_attempts` | `null` | Caps the attempt budget from `_defaults`. When unset, provider routing sums the Codex sequence, Cursor budget, and (when enabled) Claude sequence. Each live call also requires remaining budget for a currently usable provider. |
 | `timeout_minutes` | `null` | Agent timeout; otherwise `execution.default_timeout_minutes`. |
 | `review` | `true` | Primary review switch. Review runs when `review` is true **or** any changed file matches `paths.review_required` (`review_required = task.review or verifier.requires_review(...)`). `paths.review_required` can force review on but cannot turn review off when `review` is true. |
 | `allow_protected` | `false` | Allow edits under `paths.protected`. |
