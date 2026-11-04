@@ -26,13 +26,48 @@ from .usage import UsageRecorder, parse_review_outcome
 
 
 AGY_QUOTA_PATTERNS = (
-    "your ai credits balance is too low to continue",
+    "credits balance is too low",
+    "credits balance isn't enough",
     "ai: out of credits",
     "quota exhausted",
     "resource_exhausted",
-    "rate limit",
+    "out of credits",
 )
-AGY_CAPACITY_PATTERNS = ("model capacity exhausted",)
+AGY_CAPACITY_PATTERNS = ("model capacity exhausted", "rate limit")
+AGY_NETWORK_PATTERNS = (
+    "network error",
+    "connection error",
+    "connection failed",
+    "connection lost",
+    "connection reset",
+    "connection refused",
+    "failed to connect",
+    "unable to connect",
+    "econnrefused",
+    "econnreset",
+    "etimedout",
+    "enotfound",
+    "socket hang up",
+    "dns",
+    "no such host",
+    "temporary failure in name resolution",
+)
+AGY_PROVIDER_ERROR_PATTERNS = (
+    "internal server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "http 5",
+    "status code 5",
+    "status: 5",
+    "5xx",
+)
+AGY_AUTH_PATTERNS = (
+    "not signed in",
+    "login",
+    "authenticate",
+    "oauth",
+)
 _NO_CODE_MAP = (
     "\n\nThe code map is not available for this agy call. Do not run `graphify`.\n"
 )
@@ -206,8 +241,10 @@ class AgyAgentRunner:
 
     @staticmethod
     def _matches(output: str, patterns: Iterable[str]) -> bool:
-        lowered = output.casefold()
-        return any(pattern.casefold() in lowered for pattern in patterns)
+        lowered = output.replace("’", "'").replace("‘", "'").casefold()
+        return any(
+            pattern.replace("’", "'").casefold() in lowered for pattern in patterns
+        )
 
     def _record_usage(
         self,
@@ -417,13 +454,33 @@ class AgyAgentRunner:
         quota_exhausted = call_failed and self._matches(
             classification, AGY_QUOTA_PATTERNS
         )
-        capacity_exhausted = call_failed and self._matches(
-            classification, AGY_CAPACITY_PATTERNS
+        capacity_exhausted = (
+            call_failed
+            and not quota_exhausted
+            and self._matches(classification, AGY_CAPACITY_PATTERNS)
         )
-        if timed_out or stalled:
+        auth_failure = (
+            call_failed
+            and not (timed_out or stalled)
+            and not quota_exhausted
+            and not capacity_exhausted
+            and self._matches(classification, AGY_AUTH_PATTERNS)
+        )
+        waiting_cause: str | None
+        if quota_exhausted:
+            # A cap until the reset beats a timeout: report it as quota.
+            waiting_cause = None
+        elif timed_out or stalled:
             waiting_cause = "timeout"
         elif capacity_exhausted:
             waiting_cause = "provider_busy"
+        elif call_failed and not quota_exhausted and not auth_failure:
+            if self._matches(classification, AGY_NETWORK_PATTERNS):
+                waiting_cause = "network"
+            elif self._matches(classification, AGY_PROVIDER_ERROR_PATTERNS):
+                waiting_cause = "provider_error"
+            else:
+                waiting_cause = None
         else:
             waiting_cause = None
         ok = (
@@ -434,6 +491,8 @@ class AgyAgentRunner:
             and not denied
             and not quota_exhausted
             and not capacity_exhausted
+            and waiting_cause is None
+            and not auth_failure
         )
         if denied:
             error = "Agy denied actions: " + ", ".join(denied)
@@ -441,6 +500,10 @@ class AgyAgentRunner:
             error = "Agy usage quota exhausted"
         elif capacity_exhausted:
             error = "Agy provider capacity temporarily exhausted"
+        elif auth_failure:
+            error = diagnostics or "Agy authentication unavailable"
+        elif waiting_cause in {"network", "provider_error"}:
+            error = f"Agy {waiting_cause.replace('_', ' ')} failure"
         elif status != "SUCCESS" and not timed_out and not stalled:
             error = diagnostics or f"Agy reported status {status or 'missing'}"
         elif return_code != 0 and not timed_out and not stalled:
@@ -457,8 +520,10 @@ class AgyAgentRunner:
             quota_exhausted=quota_exhausted,
             quota_scope=self._pool_for_model(model) if quota_exhausted else None,
             capacity_exhausted=capacity_exhausted,
-            transient_error=waiting_cause in {"provider_busy", "timeout"},
+            transient_error=waiting_cause
+            in {"provider_busy", "network", "provider_error", "timeout"},
             waiting_cause=waiting_cause,
+            auth_failure=auth_failure,
             provider="agy",
             input_tokens=usage.get("input_tokens"),
             cached_input_tokens=usage.get("cache_read_tokens"),
@@ -487,9 +552,51 @@ class AgyAgentRunner:
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
         del code_map_offered
+        effective_class = model_class_override or task.model_class
+        exhausted = set(exhausted_pools)
+        while True:
+            result = self._implement_once(
+                task, workspace, timeout_minutes, attempt, previous_failure,
+                env=env, model_class=effective_class, base_sha=base_sha,
+                exhausted_pools=exhausted, on_process_start=on_process_start,
+            )
+            pool = result.quota_scope
+            if (
+                not result.quota_exhausted
+                or pool is None
+                or pool in exhausted
+                or (effective_class or "").strip().casefold() == "escalation"
+            ):
+                return result
+            exhausted.add(pool)
+            if not self._has_entry_outside(attempt, exhausted):
+                return result
+
+    def _has_entry_outside(self, attempt: int, exhausted: set[str]) -> bool:
+        sequence = self.config.agy.implementation_sequence
+        start = min(max(0, int(attempt) - 1), len(sequence) - 1)
+        return any(
+            self._pool_for_model(str(entry["model"])) not in exhausted
+            for entry in sequence[start:]
+        )
+
+    def _implement_once(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        timeout_minutes: int,
+        attempt: int,
+        previous_failure: str | None,
+        *,
+        env: dict[str, str] | None,
+        model_class: str | None,
+        base_sha: str | None,
+        exhausted_pools: Iterable[str],
+        on_process_start: Callable[[int], None] | None,
+    ) -> AgentResult:
         model, effort = self._implementation_profile(
             attempt,
-            model_class=model_class_override or task.model_class,
+            model_class=model_class,
             exhausted_pools=exhausted_pools,
         )
         settings = build_settings(
