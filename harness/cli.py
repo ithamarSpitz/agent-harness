@@ -5,6 +5,7 @@ import inspect
 import json
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,7 +38,15 @@ from .claude_runner import ClaudeAgentRunner
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .process_utils import prepare_external_argv, split_command
 from .runner import CursorAgentRunner
-from .scheduler import Scheduler
+from .scheduler import (
+    Scheduler,
+    apply_release,
+    hold_request_path,
+    read_hold_request,
+    reset_implementation_budget,
+    scheduler_is_running,
+    update_hold_request,
+)
 from .state import StateStore
 from .usage import UsageRecorder
 from .validation import ProjectValidator
@@ -151,6 +160,7 @@ def cmd_status(
 ) -> int:
     queue = TaskQueueManager(roadmap.root, runtime_root or (roadmap.root / ".harness"), state)
     sprint_ids = [sprint_id] if sprint_id else list(roadmap.sprints)
+    held_ids = set(read_hold_request(hold_request_path(runtime_root or (roadmap.root / ".harness"))))
     for sid in sprint_ids:
         sprint = roadmap.sprint(sid)
         queue.merge_added_tasks_from_state(sprint)
@@ -174,12 +184,13 @@ def cmd_status(
             print(f"  Stage {stage}")
             for task in sorted((t for t in sprint.tasks.values() if t.stage == stage), key=lambda x: x.id):
                 rt = state.get(task.id)
+                label = "held" if task.id in held_ids else rt.status.value
                 suffix = f" attempt={rt.attempt}" if rt.attempt else ""
                 if rt.added:
                     suffix += " (added)"
                 if rt.last_error:
                     suffix += f" error={rt.last_error.splitlines()[0][:100]}"
-                print(f"    {rt.status.value:10} {task.id}{suffix}")
+                print(f"    {label:10} {task.id}{suffix}")
         for task_id, reason in queue.rejected_entries(sid):
             short = reason.splitlines()[0][:100]
             print(f"    REJECTED   {task_id} {short}")
@@ -607,10 +618,13 @@ def _cmd_run_live(
                     print(runtime.failures.render(record), file=sys.stderr)
                 return 3
 
-        if use_board:
-            with suppress_progress_stdout(real_stdout):
-                return _run_loop()
-        return _run_loop()
+        run_ownership = getattr(runtime.scheduler, "run_ownership", None)
+        ownership = run_ownership(sprint_id) if callable(run_ownership) else nullcontext()
+        with ownership:
+            if use_board:
+                with suppress_progress_stdout(real_stdout):
+                    return _run_loop()
+            return _run_loop()
     except KeyboardInterrupt:
         runtime.manifests.set_status(sprint_id, "PAUSED_BY_USER")
         print("Run interrupted safely; state is persisted. Use `resume` to continue.", file=sys.stderr)
@@ -638,9 +652,60 @@ def _cmd_run_live(
 
 def _reset_implementation_budget(task_runtime: TaskRuntime) -> None:
     """Clear attempt and per-provider counters so the next run has a real implement budget."""
-    task_runtime.attempt = 0
-    task_runtime.provider_attempts = {}
-    task_runtime.stall_counts = {}
+    reset_implementation_budget(task_runtime)
+
+
+def _held_task_for_command(runtime: Runtime, task_id: str):
+    """Resolve a task for hold/release; print a message and return None when unusable."""
+    try:
+        task = _resolve_task(runtime, task_id)
+    except RoadmapError:
+        print(f"Unknown task {task_id}; nothing changed.")
+        return None
+    active = find_active_sprint_id(runtime.roadmap, runtime.state)
+    if active is not None and task.sprint != active:
+        print(f"{task_id} is not in the current sprint ({active}); nothing changed.")
+        return None
+    return task
+
+
+def cmd_hold(runtime: Runtime, task_id: str) -> int:
+    task = _held_task_for_command(runtime, task_id)
+    if task is None:
+        return 2
+    path = hold_request_path(runtime.root / ".harness")
+    if task_id in read_hold_request(path):
+        print(f"{task_id} is already held; nothing changed.")
+        return 0
+    current = runtime.state.get(task_id).status
+    if current in {TaskStatus.DONE, TaskStatus.PASSED, TaskStatus.MERGING}:
+        print(f"{task_id} is {current.value}; nothing changed.")
+        return 2
+    update_hold_request(path, add=task_id)
+    print(f"{task_id} held: it starts no new attempt or review; release with `harness release {task_id}`.")
+    return 0
+
+
+def cmd_release_task(runtime: Runtime, task_id: str, *, fresh_budget: bool = False) -> int:
+    task = _held_task_for_command(runtime, task_id)
+    if task is None:
+        return 2
+    path = hold_request_path(runtime.root / ".harness")
+    if task_id not in read_hold_request(path):
+        print(f"{task_id} is not held; nothing changed.")
+        return 2
+    if scheduler_is_running(runtime.root / ".harness", task.sprint):
+        # A scheduler owns state.json: only leave a `released` entry, which it
+        # applies (RETRY and the fresh budget) itself.  Saving this process's
+        # snapshot would overwrite the scheduler's progress on other tasks.
+        update_hold_request(path, remove=task_id, release_fresh_budget=fresh_budget)
+    else:
+        # No live scheduler owns state.json: apply the release directly.  A
+        # persisted active run id is not proof of liveness after a stop/failure.
+        update_hold_request(path, remove=task_id)
+        apply_release(runtime.state, task_id, fresh_budget=fresh_budget)
+    print(f"{task_id} released" + (" with a fresh budget" if fresh_budget else "") + ".")
+    return 0
 
 
 def cmd_retry(state: StateStore, task_id: str) -> int:
@@ -788,6 +853,13 @@ def cmd_run_task(
         outcome = runtime.scheduler._run_task(
             task, base_commit, model_class_override=model_class
         )  # intentional focused/debugging entrypoint
+    if outcome.stopped:
+        print(
+            f"{task_id} was not run: a stop request is pending; state preserved "
+            f"(run `harness resume {task.sprint}` to continue).",
+            file=sys.stderr,
+        )
+        return 3
     if outcome.ok:
         runtime.failures.resolve_task(task.sprint, task_id)
         print(f"{task_id} is PASSED in its worktree; run `harness resume {task.sprint}` to continue from this stage.")
@@ -1150,7 +1222,11 @@ def parser() -> argparse.ArgumentParser:
     rs.add_argument("--no-board", action="store_true")
 
     rel = sub.add_parser("release")
-    rel.add_argument("sprint")
+    rel.add_argument("sprint", help="Sprint id (release) or held task id (hold/release)")
+    rel.add_argument("--fresh-budget", action="store_true")
+
+    hold = sub.add_parser("hold")
+    hold.add_argument("task")
 
     rt = sub.add_parser("run-task")
     rt.add_argument("task")
@@ -1305,7 +1381,14 @@ def main(argv: list[str] | None = None) -> int:
                 (root / args.brief).resolve(),
                 stage_choice=args.stage,
             )
+        if args.command == "hold":
+            return cmd_hold(runtime, args.task)
         if args.command == "release":
+            if args.sprint not in runtime.roadmap.sprints:
+                return cmd_release_task(runtime, args.sprint, fresh_budget=args.fresh_budget)
+            if args.fresh_budget:
+                print("--fresh-budget applies to a held task, not a sprint.", file=sys.stderr)
+                return 2
             return cmd_release(runtime, args.sprint)
         if args.command == "graph":
             return cmd_graph(runtime.roadmap, args.sprint)

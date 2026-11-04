@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .admission import Admission, can_start
-from .agent_ledger import LedgerStore
+from .agent_ledger import LedgerStore, _process_alive
 from .code_map import CodeMapBuilder
 from .config import HarnessConfig
 from .environment import EnvironmentManager
@@ -87,6 +87,165 @@ class TaskOutcome:
     resource_paused: bool = False
     waiting_status: TaskStatus | None = None
     provider: str | None = None
+    held: bool = False
+    stopped: bool = False
+
+
+HELD_BY_OPERATOR = "held by operator"
+
+
+def hold_request_path(runtime_root: Path) -> Path:
+    return runtime_root / "hold-request"
+
+
+def scheduler_owner_path(runtime_root: Path) -> Path:
+    return runtime_root / "scheduler-owner"
+
+
+def scheduler_is_running(runtime_root: Path, sprint_id: str) -> bool:
+    """Return whether the scheduler owner recorded for ``sprint_id`` is alive."""
+    try:
+        payload = json.loads(scheduler_owner_path(runtime_root).read_text(encoding="utf-8"))
+        pid = payload.get("pid")
+        return (
+            isinstance(payload, dict)
+            and payload.get("sprint") == sprint_id
+            and isinstance(pid, int)
+            and _process_alive(pid)
+        )
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        return False
+
+
+def _read_hold_payload(path: Path) -> dict[str, Any]:
+    # On Windows a concurrent os.replace briefly denies access; retry instead of
+    # reading that as "nothing held", which would release a held task.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except PermissionError:
+            if time.monotonic() > deadline:
+                return {}
+            time.sleep(0.02)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_hold_request(path: Path) -> list[str]:
+    tasks = _read_hold_payload(path).get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    return [str(t) for t in tasks]
+
+
+def read_released_requests(path: Path) -> dict[str, bool]:
+    """Releases written for a running scheduler: task id -> fresh_budget."""
+    released = _read_hold_payload(path).get("released")
+    if not isinstance(released, dict):
+        return {}
+    return {
+        str(k): bool(v.get("fresh_budget")) if isinstance(v, dict) else False
+        for k, v in released.items()
+    }
+
+
+@contextmanager
+def _hold_file_lock(path: Path) -> Iterator[None]:
+    lock = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except (FileExistsError, PermissionError):
+            # Windows reports a lock file that is being deleted as PermissionError.
+            try:
+                if time.time() - lock.stat().st_mtime > 30.0:
+                    lock.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Could not lock {path}")
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def update_hold_request(
+    path: Path,
+    *,
+    add: str | None = None,
+    remove: str | None = None,
+    release_fresh_budget: bool | None = None,
+    consume_released: str | None = None,
+) -> list[str]:
+    """Atomically edit the hold file; safe for concurrent writers. Returns held ids."""
+    with _hold_file_lock(path):
+        payload = _read_hold_payload(path)
+        tasks = read_hold_request(path)
+        released = {k: {"fresh_budget": v} for k, v in read_released_requests(path).items()}
+        if add is not None:
+            if add not in tasks:
+                tasks.append(add)
+            released.pop(add, None)
+        if remove is not None:
+            tasks = [t for t in tasks if t != remove]
+            if release_fresh_budget is not None:
+                released[remove] = {"fresh_budget": release_fresh_budget}
+        if consume_released is not None:
+            released.pop(consume_released, None)
+        payload["tasks"] = tasks
+        if released:
+            payload["released"] = released
+        else:
+            payload.pop("released", None)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        _replace_with_retry(tmp, path)
+        return tasks
+
+
+def _replace_with_retry(src: Path, dst: Path, *, timeout_seconds: float = 5.0) -> None:
+    """``os.replace`` that tolerates a lock-free reader holding ``dst`` open (Windows)."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.02)
+
+
+def reset_implementation_budget(task_runtime: Any) -> None:
+    """Clear attempt and per-provider counters so the next run has a real implement budget."""
+    task_runtime.attempt = 0
+    task_runtime.provider_attempts = {}
+    task_runtime.stall_counts = {}
+
+
+def apply_release(state: StateStore, task_id: str, *, fresh_budget: bool) -> None:
+    """Put a held task back to RETRY; ``fresh_budget`` mirrors ``run-task --fresh-budget``."""
+    from .provider_runner import clear_task_quota_disables
+
+    rt = state.get(task_id)
+    rt.status = TaskStatus.RETRY
+    rt.last_error = None
+    if fresh_budget:
+        rt.review_feedback = None
+        rt.commit = None
+        reset_implementation_budget(rt)
+        clear_task_quota_disables(state, task_id)
+    state.save()
 
 
 class Scheduler:
@@ -128,6 +287,9 @@ class Scheduler:
         )
         self._memory_estimate_lock = threading.Lock()
         self._runtime_root = verifier.log_dir.parent
+        self._scheduler_owner_lock = threading.RLock()
+        self._scheduler_owner_depth = 0
+        self._scheduler_owner_sprint: str | None = None
         runner_usage = getattr(runner, "usage", None)
         self.usage = (
             runner_usage
@@ -249,6 +411,97 @@ class Scheduler:
         if not isinstance(payload, dict):
             return False
         return payload.get("sprint") == sprint_id
+
+    def _hold_request_path(self) -> Path:
+        return hold_request_path(self._runtime_root)
+
+    @contextmanager
+    def run_ownership(self, sprint_id: str) -> Iterator[None]:
+        """Advertise live state ownership, including waits between scheduler passes."""
+        owner_path = scheduler_owner_path(self._runtime_root)
+        with self._scheduler_owner_lock:
+            if self._scheduler_owner_depth == 0:
+                owner_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {"sprint": sprint_id, "pid": os.getpid()}
+                tmp = owner_path.with_name(
+                    f".{owner_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+                )
+                tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                _replace_with_retry(tmp, owner_path)
+                self._scheduler_owner_sprint = sprint_id
+            elif self._scheduler_owner_sprint != sprint_id:
+                raise RuntimeError(
+                    f"Scheduler already owns {self._scheduler_owner_sprint}; cannot also run {sprint_id}"
+                )
+            self._scheduler_owner_depth += 1
+        try:
+            yield
+        finally:
+            with self._scheduler_owner_lock:
+                self._scheduler_owner_depth -= 1
+                if self._scheduler_owner_depth == 0:
+                    try:
+                        payload = json.loads(owner_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                        payload = {}
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("sprint") == sprint_id
+                        and payload.get("pid") == os.getpid()
+                    ):
+                        owner_path.unlink(missing_ok=True)
+                    self._scheduler_owner_sprint = None
+
+    def _held_task_ids(self) -> set[str]:
+        return set(read_hold_request(self._hold_request_path()))
+
+    def _mark_held(self, task: TaskSpec, worktree: Path | None = None) -> TaskOutcome:
+        """BLOCKED/held by operator, keeping worktree and attempt count; no failure record."""
+        runtime = self.state.get(task.id)
+        runtime.last_error = HELD_BY_OPERATOR
+        self._set_task_status(task, runtime, TaskStatus.BLOCKED)
+        self.state.save()
+        if worktree is not None:
+            self.environment.teardown_task(task, worktree, blocked=True)
+        return TaskOutcome(task.id, False, HELD_BY_OPERATOR, held=True)
+
+    def _interrupt_outcome(
+        self, task: TaskSpec, worktree: Path | None
+    ) -> TaskOutcome | None:
+        """Stop, hold, or in-flight release before a new agent call starts."""
+        runtime = self.state.get(task.id)
+        if self._stop_request_for_sprint(task.sprint):
+            if runtime.status in {
+                TaskStatus.IMPLEMENTING,
+                TaskStatus.CHECKING,
+                TaskStatus.REVIEWING,
+            }:
+                self._set_task_status(task, runtime, TaskStatus.RETRY)
+                self.state.save()
+            return TaskOutcome(task.id, True, stopped=True)
+        return self._hold_outcome(task, worktree)
+
+    def _hold_outcome(
+        self, task: TaskSpec, worktree: Path | None
+    ) -> TaskOutcome | None:
+        """Park an observed hold, or cancel one released before it took effect."""
+        hold_path = self._hold_request_path()
+        payload = _read_hold_payload(hold_path)
+        tasks = payload.get("tasks")
+        held = {str(value) for value in tasks} if isinstance(tasks, list) else set()
+        released = payload.get("released")
+        released_ids = {str(value) for value in released} if isinstance(released, dict) else set()
+        if task.id in held:
+            return self._mark_held(task, worktree)
+        if task.id in released_ids:
+            update_hold_request(hold_path, consume_released=task.id)
+            LOGGER.info(
+                "%s was released before its hold took effect; continuing the current call "
+                "and ignoring the fresh-budget request",
+                task.id,
+            )
+            self._append_event(task.sprint, f"{task.id} hold cancelled before it took effect")
+        return None
 
     def _record_stop_pause(self, sprint: SprintSpec, stage: int, tasks: list[TaskSpec]) -> None:
         task_ids = sorted(
@@ -1018,6 +1271,9 @@ class Scheduler:
             review_required = task.review or self.verifier.requires_review(verification.changed_files)
 
         if review_required:
+            interrupted = self._interrupt_outcome(task, worktree)
+            if interrupted is not None:
+                return interrupted
             self._set_task_status(task, runtime, TaskStatus.REVIEWING)
             self.state.save()
             with self._process_sampler(observed_peaks) as on_process_start:
@@ -1026,6 +1282,11 @@ class Scheduler:
                     env=task_env, code_map_offered=code_map_offered,
                     on_process_start=on_process_start,
                 )
+            # Observe a hold after the call before handling its result. A release
+            # that arrived first cancels the unapplied hold and continues here.
+            held = self._hold_outcome(task, worktree)
+            if held is not None:
+                return held
             if self._is_resource_launch_failure(review):
                 return self._requeue_resource_launch_failure(
                     task, worktree, review, phase="review", decrement_attempt=False
@@ -1035,12 +1296,18 @@ class Scheduler:
                 if self._launch_fallback_available(task, review.provider):
                     self._disable_provider_for_launch_failure(task, review.provider)
                     # Re-enter review on the alternate provider without another implement call.
+                    interrupted = self._interrupt_outcome(task, worktree)
+                    if interrupted is not None:
+                        return interrupted
                     with self._process_sampler(observed_peaks) as on_process_start:
                         review = self.runner.review(
                             task, worktree, base_ref, verification_summary, timeout,
                             env=task_env, code_map_offered=code_map_offered,
                             on_process_start=on_process_start,
                         )
+                    held = self._hold_outcome(task, worktree)
+                    if held is not None:
+                        return held
                     if self._is_launch_failure(review) or self._is_resource_launch_failure(review):
                         if self._is_resource_launch_failure(review):
                             return self._requeue_resource_launch_failure(
@@ -1069,6 +1336,11 @@ class Scheduler:
                 runtime.last_error = feedback
                 self.state.save()
                 return None
+
+        # Re-check immediately before commit for a hold issued after review.
+        held = self._hold_outcome(task, worktree)
+        if held is not None:
+            return held
 
         try:
             runtime.commit = self.worktrees.commit_all(worktree, task.id)
@@ -1196,6 +1468,9 @@ class Scheduler:
             not getattr(self.runner, "manages_model_routing", False)
             or self.runner.has_implementation_budget(task, model_class_override=model_class_override)
         ):
+            interrupted = self._interrupt_outcome(task, worktree)
+            if interrupted is not None:
+                return interrupted
             self._reload_attempt_brief(task)
             _, timeout = self._defaults(task, model_class_override=model_class_override)
             runtime.attempt += 1
@@ -1222,6 +1497,11 @@ class Scheduler:
                     code_map_offered=code_map_offered,
                     on_process_start=on_process_start,
                 )
+            # Preserve the completed call's attempt count, but do not let a wait
+            # or launch result hide a hold that arrived while it ran.
+            held = self._hold_outcome(task, worktree)
+            if held is not None:
+                return held
             if self._is_resource_launch_failure(result):
                 return self._requeue_resource_launch_failure(
                     task, worktree, result, phase="implement", decrement_attempt=True
@@ -1446,10 +1726,16 @@ class Scheduler:
         poll_seconds = max(1, self.config.execution.watchdog_poll_seconds)
         dry_run_seen: set[int] = set()
         self._memory_fallback_logged = False
-        try:
-            return self._run_sprint_inner(sprint, dry_run=dry_run, poll_seconds=poll_seconds, dry_run_seen=dry_run_seen)
-        finally:
-            self._set_ready_waiting(0)
+        with self.run_ownership(sprint.id):
+            try:
+                return self._run_sprint_inner(
+                    sprint,
+                    dry_run=dry_run,
+                    poll_seconds=poll_seconds,
+                    dry_run_seen=dry_run_seen,
+                )
+            finally:
+                self._set_ready_waiting(0)
 
     def _run_sprint_inner(
         self,
@@ -1530,6 +1816,8 @@ class Scheduler:
                 capacity_retries: dict[str, tuple[TaskSpec, float, TaskOutcome]] = {}
                 retry_seconds = max(1.0, self.config.capacity.retry_interval_minutes * 60.0)
                 stop_requested = False
+                held_tasks: dict[str, TaskSpec] = {}
+                last_held_notice: tuple[str, ...] = ()
                 # Print/log each admission wait reason once until a task starts
                 # or the reason text changes (exact match).
                 last_memory_wait_reason: str | None = None
@@ -1537,6 +1825,7 @@ class Scheduler:
                 def collect_completed(
                     completed: set[concurrent.futures.Future],
                 ) -> None:
+                    nonlocal stop_requested
                     for future in completed:
                         task = futures.pop(future)
                         outcome = future.result()
@@ -1546,14 +1835,67 @@ class Scheduler:
                                 self._clock() + retry_seconds,
                                 outcome,
                             )
+                        elif outcome.held:
+                            held_tasks[task.id] = task
+                        elif outcome.stopped:
+                            # The task saw the stop request; honor it even if a
+                            # later read of the stop file fails transiently, so
+                            # the stage never integrates a task left in RETRY.
+                            stop_requested = True
                         else:
                             outcomes.append(outcome)
+
+                def release_held() -> None:
+                    if not held_tasks:
+                        return
+                    hold_path = self._hold_request_path()
+                    holds = set(read_hold_request(hold_path))
+                    released = read_released_requests(hold_path)
+                    for task_id, held in list(held_tasks.items()):
+                        if task_id in holds:
+                            continue
+                        if self.state.get(task_id).status not in {
+                            TaskStatus.BLOCKED,
+                            TaskStatus.RETRY,
+                        }:
+                            del held_tasks[task_id]
+                            continue
+                        apply_release(
+                            self.state, task_id, fresh_budget=released.get(task_id, False)
+                        )
+                        self._append_event(sprint.id, f"{task_id} released")
+                        update_hold_request(hold_path, consume_released=task_id)
+                        del held_tasks[task_id]
+                        if held not in unfinished:
+                            unfinished.append(held)
+                        pending.append(held)
 
                 def try_start_one(task: TaskSpec) -> bool:
                     nonlocal stop_requested, last_memory_wait_reason
                     if self._stop_request_for_sprint(sprint.id):
                         stop_requested = True
                         return False
+                    hold_path = self._hold_request_path()
+                    if task.id in set(read_hold_request(hold_path)):
+                        self._mark_held(task)
+                        held_tasks[task.id] = task
+                        return True
+                    released_now = read_released_requests(hold_path)
+                    if task.id in released_now:
+                        # A task still parked as held (released while this
+                        # scheduler was not running, e.g. on resume) is released
+                        # here, once.  For any other task the entry is ignored
+                        # and removed so it never resets a budget later.
+                        runtime = self.state.get(task.id)
+                        if (
+                            runtime.status == TaskStatus.BLOCKED
+                            and runtime.last_error == HELD_BY_OPERATOR
+                        ):
+                            apply_release(
+                                self.state, task.id, fresh_budget=released_now[task.id]
+                            )
+                            self._append_event(sprint.id, f"{task.id} released")
+                        update_hold_request(hold_path, consume_released=task.id)
                     if len(futures) >= max_workers:
                         return False
                     admission = self._admission_decision()
@@ -1581,9 +1923,11 @@ class Scheduler:
                     )
                     self._set_ready_waiting(ready)
 
-                while futures or pending or capacity_retries:
+                while futures or pending or capacity_retries or held_tasks:
                     if self._stop_request_for_sprint(sprint.id):
                         stop_requested = True
+                    if not stop_requested:
+                        release_held()
 
                     # Harvest completions before scheduling retries. A future may have
                     # completed just after the previous FIRST_COMPLETED wait returned;
@@ -1608,7 +1952,7 @@ class Scheduler:
 
                     # With no active sibling, every unresolved task is capacity-paused.
                     # Return to the CLI wait loop instead of sleeping inside the stage.
-                    if not futures and not pending:
+                    if not futures and not pending and not held_tasks:
                         break
 
                     now = self._clock()
@@ -1636,6 +1980,12 @@ class Scheduler:
                         continue
 
                     update_waiting_record()
+
+                    if held_tasks and not futures and not pending:
+                        notice = tuple(sorted(held_tasks))
+                        if notice != last_held_notice:
+                            print("Waiting for release of held tasks: " + ", ".join(notice))
+                            last_held_notice = notice
 
                     wait_seconds = poll_seconds
                     if capacity_retries and len(futures) < max_workers:
