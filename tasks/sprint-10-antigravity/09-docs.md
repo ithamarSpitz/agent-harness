@@ -42,6 +42,7 @@ The spec parts, README and changelog describe S10 exactly as implemented.
 3. `docs/spec/operations.md`: `harness limits` and the headroom snapshot for agy.
 4. `README.md`: enabling agy in a project (install and sign in are the user's; the harness only runs `agy`). Under 250 lines.
 5. `CHANGELOG.md`: one S10 entry. `SPEC.md`: only the index lines that point to changed parts.
+- agy version (operator, Nov 4 2026): the installed agy updated itself from 1.4.12 to 1.5.0. Where this brief says 1.4.12, check flags and output against the installed version (`agy --help`, `/usage` costs no tokens) and follow what it does; record any difference in the report. Known: print mode must be `-p=` (S10-T4).
 
 # Acceptance criteria
 

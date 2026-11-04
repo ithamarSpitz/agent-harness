@@ -45,6 +45,7 @@ With `agy.enabled: true`, Antigravity takes part in the S9-T32 provider choice: 
 5. `harness doctor` reports whether `agy` is available when it is enabled (`agy --version`; never read credentials).
 6. With `agy.enabled: false`, routing is exactly as before.
 - Config source (operator, Nov 4 2026, follows S10-T6): pass the loaded config (or `--root` / `--config`) to `run_limits` and `headroom_snapshot` from `harness limits` in `harness/cli.py`, from `ProviderRunner` (`self.config`) and from the board (`harness/board.py`), so agy appears when the working folder is not the project root. A test runs `harness --root <tmp project> limits` from another folder and sees the agy section.
+- agy version (operator, Nov 4 2026): the installed agy updated itself from 1.4.12 to 1.5.0. Where this brief says 1.4.12, check flags and output against the installed version (`agy --help`, `/usage` costs no tokens) and follow what it does; record any difference in the report. Known: print mode must be `-p=` (S10-T4).
 
 # Acceptance criteria
 

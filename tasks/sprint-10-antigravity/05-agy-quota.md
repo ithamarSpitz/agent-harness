@@ -30,6 +30,7 @@ When agy runs out of quota, is busy, or is not signed in, the harness reacts the
 2. Out of quota (`credits balance is too low`, `Out of credits`, `Quota exhausted`, `RESOURCE_EXHAUSTED`, with straight and typographic apostrophes, any case): the pool of the model that was used is exhausted for this task; the runner moves to a ladder entry in the other pool if one exists (S10-T4 decision 6), otherwise the provider is out of quota for this call and the caller falls back or waits exactly as for the other providers.
 3. `model capacity exhausted` and `rate limit` → `WAITING_PROVIDER_BUSY` (temporary); network texts → `WAITING_NETWORK`; 5xx → `WAITING_PROVIDER_ERROR`; timeout or stall → `WAITING_TIMEOUT`; sign-in problems (`not signed in`, `login`, `authenticate`, `OAuth`) → an auth failure like Codex auth failures.
 4. Keep the pattern lists in `agy_runner.py` as constants in one place each.
+- agy version (operator, Nov 4 2026): the installed agy updated itself from 1.4.12 to 1.5.0. Where this brief says 1.4.12, check flags and output against the installed version (`agy --help`, `/usage` costs no tokens) and follow what it does; record any difference in the report. Known: print mode must be `-p=` (S10-T4).
 
 # Acceptance criteria
 

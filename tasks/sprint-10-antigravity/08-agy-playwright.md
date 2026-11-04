@@ -29,6 +29,7 @@ When `ui_review` is enabled, agy agents check the UI with the same Playwright MC
 1. Find out from the installed agy (`agy mcp --help`, `agy --help`, the changelog) whether an MCP server can be given for one call only (for example through `--settings`). State the evidence in your report.
 2. If it can: when `ui_review` is enabled, implementation, retry and review agy calls get only the Playwright server that way (same package and arguments as the other providers), and the permission to use its tools; when disabled, nothing is added.
 3. If it cannot: never use `agy mcp add`. Instead the agy runner reports itself as not supporting UI checks, and provider choice skips agy for calls of tasks whose project has `ui_review` enabled (expose a small `supports_ui_review` flag on the runner; S10-T7 reads it). Say so in OPEN_ISSUES.
+- agy version (operator, Nov 4 2026): the installed agy updated itself from 1.4.12 to 1.5.0. Where this brief says 1.4.12, check flags and output against the installed version (`agy --help`, `/usage` costs no tokens) and follow what it does; record any difference in the report. Known: print mode must be `-p=` (S10-T4).
 
 # Acceptance criteria
 
