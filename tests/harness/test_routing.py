@@ -4,11 +4,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from harness.routing import ClaudeReserve, choose_provider
+from harness.routing import (
+    ClaudeReserve,
+    choose_provider,
+    claude_five_hour_cap,
+    claude_weekly_cap,
+)
 
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
-RESERVE = ClaudeReserve(five_hour_max_used_percent=50, weekly_max_used_percent=80)
+RESERVE = ClaudeReserve()
 
 
 def window(used: float, hours: float) -> dict[str, object]:
@@ -19,72 +24,87 @@ def choose(
     snapshot: dict[str, object],
     *,
     phase: str = "implement",
-    model_class: str = "worker",
     enabled: object = ("codex", "cursor", "claude"),
     priority: tuple[str, ...] = ("codex", "cursor", "claude"),
     implementer_provider: str | None = None,
+    disabled: object = (),
+    auto_when_exhausted: bool = False,
 ):
     return choose_provider(
         snapshot,
         phase=phase,
-        model_class=model_class,
         enabled=enabled,
         priority=priority,
         implementer_provider=implementer_provider,
-        disabled_for_task=set(),
+        disabled_for_task=disabled,
         claude_reserve=RESERVE,
         now=NOW,
+        auto_when_exhausted=auto_when_exhausted,
     )
-
-
-def test_claude_expiring_capacity_beats_more_distant_codex_capacity():
-    choice = choose(
-        {
-            "claude": {"windows": {"weekly": window(22, 9)}},
-            "codex": {"secondary": window(47, 6 * 24)},
-        },
-        enabled=("codex", "claude"),
-    )
-
-    assert choice.provider == "claude"
-    assert choice.scores["claude"] == pytest.approx(78 / 9)
-    assert "78% of the week free" in choice.reason
-
-
-def test_claude_over_five_hour_reserve_is_excluded():
-    choice = choose(
-        {
-            "claude": {
-                "windows": {
-                    "five_hour": window(55, 1),
-                    "seven_day": window(10, 24),
-                }
-            },
-            "codex": {"primary": window(90, 5)},
-        },
-        enabled=("claude", "codex"),
-        priority=("claude", "codex"),
-    )
-
-    assert choice.provider == "codex"
 
 
 @pytest.mark.parametrize(
-    ("enabled", "expected"),
-    [(("codex", "claude"), "claude"), (("codex",), "codex")],
+    ("hours", "cap"),
+    [(0.5, 60), (1, 60), (3, 75), (5, 90), (8, 90)],
 )
-def test_review_avoids_implementer_when_an_alternative_exists(enabled, expected):
-    snapshot = {
-        "codex": {"secondary": window(20, 12)},
-        "claude": {"windows": {"seven_day": window(30, 12)}},
-    }
+def test_claude_five_hour_cap_follows_hours_until_another_provider(hours, cap):
+    assert claude_five_hour_cap(hours, RESERVE) == pytest.approx(cap)
 
-    assert choose(
-        snapshot,
-        phase="review",
-        enabled=enabled,
-        implementer_provider="codex",
-    ).provider == expected
+
+@pytest.mark.parametrize(("days", "cap"), [(5.65, 60.45), (3, 79), (0, 100), (20, 0)])
+def test_claude_weekly_cap(days, cap):
+    assert claude_weekly_cap(days, RESERVE) == pytest.approx(cap)
+
+
+def test_claude_weekly_over_cap_means_no_usage():
+    snapshot = {
+        "claude": {"windows": {"five_hour": window(10, 4), "weekly": window(80, 72)}},
+        "codex": {"primary": window(100, 2)},
+    }
+    choice = choose(snapshot, enabled=("codex", "claude"))
+    assert choice.provider is None
+    assert "claude weekly at 80% (cap 79%)" in choice.reason
+
+    snapshot["claude"] = {"windows": {"five_hour": window(10, 4), "weekly": window(70, 72)}}
+    assert choose(snapshot, enabled=("codex", "claude")).provider == "claude"
+
+
+def test_claude_weekly_unknown_reset_gets_strictest_cap():
+    # Unknown weekly reset: cap as if 7 days are left (100 - 7 * 7 = 51%).
+    snapshot = {
+        "claude": {
+            "windows": {"five_hour": window(10, 4), "weekly": {"used_percent": 90}}
+        },
+        "codex": {"primary": window(100, 2)},
+    }
+    choice = choose(snapshot, enabled=("codex", "claude"))
+    assert choice.provider is None
+    assert "claude weekly at 90% (cap 51%)" in choice.reason
+
+    snapshot["claude"] = {
+        "windows": {"five_hour": window(10, 4), "weekly": {"used_percent": 52}}
+    }
+    assert choose(snapshot, enabled=("codex", "claude")).provider is None
+
+    snapshot["claude"] = {
+        "windows": {"five_hour": window(10, 4), "weekly": {"used_percent": 50}}
+    }
+    assert choose(snapshot, enabled=("codex", "claude")).provider == "claude"
+
+
+def test_waste_goes_ahead_of_the_order():
+    choice = choose(
+        {
+            "codex": {"primary": window(70, 3)},
+            "cursor": {"monthly": window(20, 480)},
+            "claude": {"windows": {"five_hour": window(10, 1)}},
+        },
+        priority=("codex", "cursor", "claude"),
+    )
+
+    # Claude: 90 left, can burn 30 in 1h -> waste 60; Codex: 30 left, can burn 90.
+    assert choice.provider == "claude"
+    assert choice.reason.startswith("urgent: waste 60% of claude 5-hour")
 
 
 def test_all_out_names_every_provider():
@@ -92,7 +112,7 @@ def test_all_out_names_every_provider():
         {
             "codex": {"primary": window(100, 2)},
             "cursor": {"monthly": window(100, 100)},
-            "claude": {"windows": {"five_hour": window(55, 2)}},
+            "claude": {"windows": {"five_hour": window(80, 2)}},
         }
     )
 
@@ -101,64 +121,91 @@ def test_all_out_names_every_provider():
     codex_reset_local = (NOW + timedelta(hours=2)).astimezone().strftime("%H:%M")
     assert f"codex out until {codex_reset_local}" in choice.reason
     assert "cursor out until" in choice.reason
+    assert "claude 5-hour at 80% (cap 67.5%)" in choice.reason
 
 
-def test_unknown_headroom_uses_priority_order():
-    choice = choose(
-        {"codex": {}, "cursor": {}},
-        enabled=("codex", "cursor"),
-        priority=("cursor", "codex"),
-    )
+def test_no_headroom_data_follows_priority_exactly():
+    choice = choose({}, enabled=("codex", "cursor"), priority=("cursor", "codex"))
 
     assert choice.provider == "cursor"
+    assert choice.reason == "order"
     assert choice.scores == {"cursor": None, "codex": None}
 
 
-def test_measured_urgency_beats_unknown_priority():
+def test_unknown_usage_is_tried_in_order_but_never_urgent():
     choice = choose(
         {"codex": {}, "claude": {"weekly": window(10, 1)}},
         enabled=("codex", "claude"),
         priority=("codex", "claude"),
     )
 
+    # Claude's weekly window has 90% left and resets in 1h, but unknown Codex
+    # usage (H = 0) is never urgent and Claude weekly is urgent here: waste wins.
     assert choice.provider == "claude"
-    assert choice.scores["claude"] == pytest.approx(90.0)
+    assert choice.reason.startswith("urgent: waste")
+
+    quiet = choose({"codex": {}}, enabled=("codex", "claude"), priority=("codex", "claude"))
+    assert quiet.provider == "codex"
 
 
 def test_enabled_provider_omitted_from_priority_is_still_considered():
     choice = choose(
-        {"cursor": {"monthly": window(20, 100)}},
-        model_class="auto",
+        {"cursor": {"monthly": window(20, 480)}},
         enabled={"codex": False, "cursor": {"enabled": True}},
         priority=("codex",),
     )
 
     assert choice.provider == "cursor"
-    assert "cursor/auto" in choice.reason
 
 
-def test_cursor_auto_is_only_the_first_implementation_route():
-    snapshot = {
-        "cursor": {"monthly": window(99, 100)},
-        "codex": {"secondary": window(50, 10)},
+def test_cursor_auto_goes_first_only_while_both_pools_are_at_100():
+    both = {
+        "cursor": {"windows": {"composer_grok": window(100, 480), "other_models": window(100, 480)}},
+        "codex": {"primary": window(40, 3)},
+    }
+    below = {
+        "cursor": {"windows": {"composer_grok": window(100, 480), "other_models": window(99, 480)}},
+        "codex": {"primary": window(40, 3)},
     }
 
-    first = choose(snapshot, model_class="auto", enabled=("cursor", "codex"))
-    later = choose(snapshot, model_class="worker", enabled=("cursor", "codex"))
+    auto = choose(both, auto_when_exhausted=True, enabled=("cursor", "codex"))
+    assert (auto.provider, auto.auto) == ("cursor", True)
+    assert auto.reason == "cursor auto: both pools at 100%"
+    assert choose(both, enabled=("cursor", "codex")).provider == "codex"
+    named = choose(below, auto_when_exhausted=True, enabled=("cursor", "codex"))
+    assert named.provider == "codex"
+    assert not named.auto
+    assert choose(both, phase="review", auto_when_exhausted=True, enabled=("cursor", "codex")).provider == "codex"
 
-    assert first.provider == "cursor"
-    assert "cursor/auto" in first.reason
-    assert later.provider == "codex"
+
+def test_review_avoids_the_implementer_unless_it_is_the_only_provider_with_usage():
+    snapshot = {"codex": {"primary": window(70, 3)}, "cursor": {"monthly": window(20, 480)}}
+
+    other = choose(snapshot, phase="review", enabled=("codex", "cursor"), implementer_provider="codex")
+    assert other.provider == "cursor"
+    assert "codex implemented" in other.reason
+
+    alone = choose(snapshot, phase="review", enabled=("codex",), implementer_provider="codex")
+    assert alone.provider == "codex"
+
+    snapshot["cursor"] = {"monthly": window(100, 480)}
+    assert choose(
+        snapshot, phase="review", enabled=("codex", "cursor"), implementer_provider="codex"
+    ).provider == "codex"
 
 
-def test_review_waits_when_cursor_auto_is_the_only_route():
+def test_review_waits_when_nobody_has_usage():
     choice = choose(
-        {"cursor": {"auto_only": True}},
+        {"codex": {"primary": window(100, 3)}},
         phase="review",
-        model_class="auto",
-        enabled=("cursor",),
+        enabled=("codex",),
+        implementer_provider="codex",
     )
 
     assert choice.provider is None
-    assert "cursor" in choice.reason
-    assert "Auto" in choice.reason
+
+
+def test_provider_disabled_for_the_task_is_skipped():
+    choice = choose({}, disabled={"codex"})
+
+    assert choice.provider == "cursor"

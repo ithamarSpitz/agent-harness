@@ -130,6 +130,7 @@ def test_registered_worktree_passes_guard(tmp_path: Path):
     manager = WorktreeManager(repo, repo / ".harness")
     _, worktree = manager.create("T1", "HEAD")
     router, codex, cursor, _ = _router(repo)
+    router.config.cursor.enabled = False  # one provider: review may reuse the implementer
     task = _task(repo)
 
     assert worktree_guard_agent_result(worktree) is None

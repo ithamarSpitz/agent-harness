@@ -230,9 +230,9 @@ def test_flag_off_with_claude_routing_keeps_today_capacity_rule(tmp_path):
     assert cursor.models == [] and not result.ok
 
 
-def test_not_exhausted_without_claude_keeps_legacy_codex_sequence_end(tmp_path):
-    # With Claude off and Cursor not exhausted, the flag must not switch the
-    # task onto provider routing: budget and provider match the flag-off path.
+def test_not_exhausted_flag_does_not_change_routing_at_codex_sequence_end(tmp_path):
+    # With Cursor not exhausted, the flag changes nothing: budget and provider
+    # match the flag-off path (routing moves on to Cursor once Codex is spent).
     outcomes = []
     for auto in (False, True):
         root = tmp_path / str(auto)
@@ -240,7 +240,7 @@ def test_not_exhausted_without_claude_keeps_legacy_codex_sequence_end(tmp_path):
         runner, _codex, _cursor, task = _setup(root, 40, 40, auto=auto)
         runner.state.get(task.id).provider_attempts["codex"] = 1
         outcomes.append((runner.has_implementation_budget(task), runner.active_provider(task)))
-    assert outcomes[0] == outcomes[1] == (False, "codex")
+    assert outcomes[0] == outcomes[1] == (True, "codex")
 
 
 def test_routing_log_names_auto_or_named_model(tmp_path, capsys):

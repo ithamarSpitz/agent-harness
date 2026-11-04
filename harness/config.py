@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -135,8 +138,14 @@ class CodexConfig:
 
 @dataclass(slots=True)
 class ClaudeReserveConfig:
-    five_hour_max_used_percent: float = 50
-    weekly_max_used_percent: float = 70
+    # Claude 5-hour cap: min_percent when another provider returns within
+    # min_hours, max_percent from max_hours on, linear in between. The weekly
+    # cap is 100 - weekly_percent_per_day x days until the weekly reset.
+    min_percent: float = 60
+    max_percent: float = 90
+    min_hours: float = 1
+    max_hours: float = 5
+    weekly_percent_per_day: float = 7
 
 
 @dataclass(slots=True)
@@ -354,7 +363,16 @@ class HarnessConfig:
     @staticmethod
     def _load_claude(raw: Any) -> ClaudeConfig:
         section = dict(raw or {})
-        section["reserve"] = ClaudeReserveConfig(**section.get("reserve", {}))
+        reserve = dict(section.get("reserve") or {})
+        for old in ("five_hour_max_used_percent", "weekly_max_used_percent"):
+            if old in reserve:
+                reserve.pop(old)
+                LOGGER.warning(
+                    "claude.reserve.%s is ignored; use claude.reserve "
+                    "min_percent/max_percent/min_hours/max_hours/weekly_percent_per_day",
+                    old,
+                )
+        section["reserve"] = ClaudeReserveConfig(**reserve)
         config = ClaudeConfig(**section)
 
         if not config.implementation_sequence:
@@ -380,7 +398,7 @@ class HarnessConfig:
                     f"claude.{key} must be one of low, medium, high, max"
                 )
 
-        for key in ("five_hour_max_used_percent", "weekly_max_used_percent"):
+        for key in ("min_percent", "max_percent"):
             value = getattr(config.reserve, key)
             if (
                 isinstance(value, bool)
@@ -388,6 +406,14 @@ class HarnessConfig:
                 or not 0 <= value <= 100
             ):
                 raise ValueError(f"claude.reserve.{key} must be between 0 and 100")
+        for key in ("min_hours", "max_hours", "weekly_percent_per_day"):
+            value = getattr(config.reserve, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"claude.reserve.{key} must be 0 or more")
+        if config.reserve.max_percent < config.reserve.min_percent:
+            raise ValueError("claude.reserve.max_percent must be at least min_percent")
+        if config.reserve.max_hours <= config.reserve.min_hours:
+            raise ValueError("claude.reserve.max_hours must be greater than min_hours")
         return config
 
     @staticmethod

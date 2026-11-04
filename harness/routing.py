@@ -2,36 +2,61 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from math import isfinite
+from math import inf, isfinite
 
 
 @dataclass(frozen=True, slots=True)
 class Choice:
-    """The provider selected for one agent call and the data behind the choice."""
+    """The provider selected for one agent call and the data behind the choice.
+
+    ``scores`` holds each provider's waste (percent that would go unused), or
+    ``None`` when it is unknown or the provider has no usage. ``auto`` is true
+    when Cursor was chosen to run Auto.
+    """
 
     provider: str | None
     reason: str
     scores: dict[str, float | None] = field(default_factory=dict)
+    auto: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class ClaudeReserve:
-    """Maximum Claude utilization the harness may consume past."""
+    """Claude caps: the 5-hour cap rises with the hours until another provider returns."""
 
-    five_hour_max_used_percent: float = 50.0
-    weekly_max_used_percent: float = 100.0
+    min_percent: float = 60.0
+    max_percent: float = 90.0
+    min_hours: float = 1.0
+    max_hours: float = 5.0
+    weekly_percent_per_day: float = 7.0
+
+
+PaceFn = Callable[[str, str], float]
+DEFAULT_PACE: dict[str, float] = {"5-hour": 30.0, "week": 3.0, "month": 1.0}
+FALLBACK_PACE = 3.0
 
 
 @dataclass(frozen=True, slots=True)
-class _Capacity:
-    free: float | None
+class _Window:
+    name: str
+    used: float
     reset_at: datetime | None
-    urgency: float | None
-    window: str | None
-    unavailable: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Usage:
+    windows: tuple[_Window, ...] = ()
+
+    @property
+    def known(self) -> bool:
+        return bool(self.windows)
+
+    @property
+    def blocking(self) -> list[_Window]:
+        return [w for w in self.windows if w.used >= 100]
 
 
 _WINDOW_CONTAINER_KEYS = ("windows", "rate_limits", "rateLimits", "limits")
@@ -164,61 +189,109 @@ def _canonical_window(name: str) -> str:
     return name.replace("_", " ")
 
 
+def _usage(provider_snapshot: object | None) -> _Usage:
+    if provider_snapshot is None:
+        return _Usage()
+    parsed: list[_Window] = []
+    for name, window in _windows(provider_snapshot):
+        used = _number(_value(window, *_PERCENT_KEYS))
+        if used is None:
+            continue
+        parsed.append(
+            _Window(_canonical_window(name), used, _datetime(_value(window, *_RESET_KEYS)))
+        )
+    return _Usage(tuple(parsed))
+
+
 def _reserve_limit(reserve: object, name: str, default: float) -> float:
     value = _number(_value(reserve, name))
     return default if value is None else value
 
 
-def _capacity(
-    provider: str,
-    provider_snapshot: object | None,
-    *,
-    claude_reserve: object,
+def claude_five_hour_cap(hours: float, reserve: object = None) -> float:
+    """Claude 5-hour cap (percent used) when another provider returns in ``hours``."""
+
+    low = _reserve_limit(reserve, "min_percent", 60.0)
+    high = _reserve_limit(reserve, "max_percent", 90.0)
+    min_h = _reserve_limit(reserve, "min_hours", 1.0)
+    max_h = _reserve_limit(reserve, "max_hours", 5.0)
+    if hours <= min_h:
+        return low
+    if hours >= max_h:
+        return high
+    return low + (hours - min_h) / (max_h - min_h) * (high - low)
+
+
+def claude_weekly_cap(days: float, reserve: object = None) -> float:
+    """Claude weekly cap (percent used) with ``days`` left until the weekly reset."""
+
+    per_day = _reserve_limit(reserve, "weekly_percent_per_day", 7.0)
+    return min(100.0, max(0.0, 100.0 - per_day * max(0.0, days)))
+
+
+def _hours_until(moment: datetime, now: datetime) -> float:
+    return max(0.0, (moment - now).total_seconds() / 3600.0)
+
+
+def _hours_until_other_usage(
+    others: Sequence[str],
+    usage: Mapping[str, _Usage],
+    disabled: Mapping[str, bool],
     now: datetime,
-) -> _Capacity:
-    if provider_snapshot is None:
-        return _Capacity(None, None, None, None)
-    windows = _windows(provider_snapshot)
-    if not windows:
-        return _Capacity(None, None, None, None)
+) -> float:
+    """Hours until the first other provider has usage again (0 if one has it now)."""
 
-    parsed: list[tuple[str, float, datetime | None]] = []
-    for name, window in windows:
-        used = _number(_value(window, *_PERCENT_KEYS))
-        if used is None:
+    best = inf
+    for provider in others:
+        blocking = usage[provider].blocking
+        if not blocking:
+            if not disabled[provider]:
+                return 0.0
             continue
-        parsed.append((name, used, _datetime(_value(window, *_RESET_KEYS))))
-    if not parsed:
-        return _Capacity(None, None, None, None)
+        resets = [w.reset_at for w in blocking]
+        if any(reset is None for reset in resets):
+            continue
+        latest = max(reset for reset in resets if reset is not None)
+        best = min(best, _hours_until(latest, now))
+    return best
 
-    if provider == "claude":
-        five_hour_max = _reserve_limit(
-            claude_reserve, "five_hour_max_used_percent", 50.0
-        )
-        weekly_max = _reserve_limit(
-            claude_reserve, "weekly_max_used_percent", 100.0
-        )
-        for name, used, _ in parsed:
-            canonical = _canonical_window(name)
-            maximum = five_hour_max if canonical == "5-hour" else weekly_max
-            if canonical in {"5-hour", "week"} and used >= maximum:
-                return _Capacity(
-                    0.0,
-                    None,
-                    None,
-                    canonical,
-                    f"reserve reached ({used:g}% used, max {maximum:g}%)",
-                )
 
-    # The highest-used window is the tightest, even when another resets sooner.
-    name, used, reset_at = max(parsed, key=lambda item: item[1])
-    free = 100.0 - used
-    if free <= 0:
-        return _Capacity(free, reset_at, None, _canonical_window(name), "out")
-    if reset_at is None:
-        return _Capacity(free, None, None, _canonical_window(name))
-    hours = max((reset_at - now).total_seconds() / 3600.0, 0.5)
-    return _Capacity(free, reset_at, free / hours, _canonical_window(name))
+def _claude_block(
+    u: _Usage, *, hours: float, reserve: object, now: datetime
+) -> tuple[str | None, float]:
+    """Return (why Claude is over a cap, or None) and the 5-hour cap in force."""
+
+    cap = claude_five_hour_cap(hours, reserve)
+    for window in u.windows:
+        if window.name == "5-hour" and window.used >= cap:
+            return f"5-hour at {window.used:g}% (cap {cap:g}%)", cap
+        if window.name == "week":
+            # Unknown reset: strictest weekly cap, as if the whole week is left.
+            days = 7.0 if window.reset_at is None else _hours_until(window.reset_at, now) / 24.0
+            weekly = claude_weekly_cap(days, reserve)
+            if window.used >= weekly:
+                return f"weekly at {window.used:g}% (cap {weekly:g}%)", cap
+    return None, cap
+
+
+def _waste(provider: str, u: _Usage, pace: PaceFn, now: datetime) -> tuple[float, str | None]:
+    """Highest waste over the windows of a provider, and the window it came from."""
+
+    best, label = 0.0, None
+    for window in u.windows:
+        if window.reset_at is None:
+            continue
+        left = 100.0 - window.used
+        value = max(
+            0.0, left - _hours_until(window.reset_at, now) * pace(provider, window.name)
+        )
+        if value > best:
+            best, label = value, window.name
+    return best, label
+
+
+def _default_pace(_provider: str, window: str) -> float:
+    return DEFAULT_PACE.get(window, FALLBACK_PACE)
 
 
 def _is_enabled(enabled: object, provider: str) -> bool:
@@ -254,121 +327,114 @@ def _disabled(disabled_for_task: object, provider: str) -> bool:
     return False
 
 
-def _hours_label(reset_at: datetime | None, now: datetime) -> str:
-    if reset_at is None:
-        return "at an unknown time"
-    hours = max(0.0, (reset_at - now).total_seconds() / 3600.0)
-    if hours < 1:
-        return f"in {max(1, round(hours * 60))}m"
-    return f"in {hours:.1f}h" if hours < 10 else f"in {hours:.0f}h"
-
-
-def _available_reason(provider: str, capacity: _Capacity, now: datetime) -> str:
-    if capacity.free is None:
-        return f"{provider}: headroom unknown"
-    reset = _hours_label(capacity.reset_at, now)
-    score = "unknown" if capacity.urgency is None else f"{capacity.urgency:.1f}"
-    return (
-        f"{provider}: {capacity.free:g}% of the {capacity.window or 'quota'} free, "
-        f"resets {reset} (urgency {score})"
-    )
-
-
 def _until_label(reset_at: datetime | None) -> str:
     if reset_at is None:
         return ""
     return f" until {reset_at.astimezone().strftime('%H:%M')}"
 
 
-def _unavailable_reason(provider: str, capacity: _Capacity | None, why: str = "") -> str:
-    if why:
-        return f"{provider} {why}"
-    if capacity is None:
-        return f"{provider} unavailable"
-    if capacity.unavailable:
-        return f"{provider} {capacity.unavailable}{_until_label(capacity.reset_at)}"
-    return f"{provider} unavailable"
+def _pools_exhausted(u: _Usage) -> bool:
+    return len(u.windows) >= 2 and all(w.used >= 100 for w in u.windows)
 
 
 def choose_provider(
     snapshot: object,
     *,
     phase: str,
-    model_class: str,
+    model_class: str = "",
     enabled: object,
     priority: Sequence[str],
     implementer_provider: str | None,
     disabled_for_task: object,
-    claude_reserve: object,
+    claude_reserve: object = None,
     now: datetime,
+    pace: PaceFn | None = None,
+    auto_when_exhausted: bool = False,
 ) -> Choice:
     """Choose a provider without reading state or performing any I/O.
 
-    ``model_class == "auto"`` identifies Cursor Auto's first implementation
-    attempt. Later attempts carry their configured non-Auto model class.
+    The order is ``priority``; providers whose quota would otherwise go to waste
+    go first (highest waste first). With ``auto_when_exhausted`` and both Cursor
+    pools at 100%, an implementation goes to Cursor Auto before anything else.
+    Claude is capped by limits that depend on when another provider has usage
+    again. ``model_class`` is accepted for compatibility and ignored.
     """
 
+    del model_class
     now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
-    ordered = _provider_order(enabled, priority)
-    candidates = [
-        provider
-        for provider in ordered
-        if _is_enabled(enabled, provider) and not _disabled(disabled_for_task, provider)
-    ]
+    pace_of = pace or _default_pace
+    ordered = [p for p in _provider_order(enabled, priority) if _is_enabled(enabled, p)]
+    task_disabled = {p: _disabled(disabled_for_task, p) for p in ordered}
+    usage = {p: _usage(_provider_snapshot(snapshot, p)) for p in ordered}
+    candidates = [p for p in ordered if not task_disabled[p]]
+    scores: dict[str, float | None] = {p: None for p in ordered}
 
-    if phase == "implement" and model_class == "auto" and "cursor" in candidates:
-        return Choice("cursor", "cursor/auto: free first implementation attempt", {"cursor": None})
+    if (
+        phase == "implement"
+        and auto_when_exhausted
+        and "cursor" in candidates
+        and _pools_exhausted(usage["cursor"])
+    ):
+        return Choice("cursor", "cursor auto: both pools at 100%", scores, auto=True)
 
-    capacities = {
-        provider: _capacity(
-            provider,
-            _provider_snapshot(snapshot, provider),
-            claude_reserve=claude_reserve,
-            now=now,
-        )
-        for provider in candidates
-    }
-    available: list[str] = []
+    hours = 0.0
+    if "claude" in candidates:
+        others = [p for p in ordered if p != "claude"]
+        hours = _hours_until_other_usage(others, usage, task_disabled, now)
+
+    notes: dict[str, str] = {}
+    blocked: dict[str, str] = {}
+    has_usage: list[str] = []
     for provider in candidates:
-        free = capacities[provider].free
-        if free is None or free > 0:
-            available.append(provider)
+        u = usage[provider]
+        if u.blocking:
+            reset = max((w.reset_at for w in u.blocking if w.reset_at is not None), default=None)
+            blocked[provider] = f"{provider} out{_until_label(reset)}"
+            continue
+        if provider == "claude":
+            why, cap = _claude_block(u, hours=hours, reserve=claude_reserve, now=now)
+            if why:
+                blocked[provider] = f"claude {why}"
+                continue
+            notes[provider] = f"claude under cap {cap:g}%"
+        has_usage.append(provider)
 
-    # Auto is a free implementation-only route, not a review provider. A
-    # cursor snapshot can explicitly mark itself as Auto-only.
-    if phase == "review" and "cursor" in available:
-        cursor_snapshot = _provider_snapshot(snapshot, "cursor")
-        auto_only = bool(_value(cursor_snapshot, "auto_only", "autoOnly"))
-        if model_class == "auto" or auto_only:
-            available.remove("cursor")
-            capacities["cursor"] = _Capacity(0.0, None, None, None, "Auto only")
+    if phase == "review":
+        # Auto never reviews; pools at 100% already mean Cursor has no usage.
+        if implementer_provider in has_usage and len(has_usage) > 1:
+            has_usage.remove(implementer_provider)
 
-    if phase == "review" and implementer_provider in available and len(available) > 1:
-        available.remove(implementer_provider)
+    wastes: dict[str, tuple[float, str | None]] = {}
+    for provider in has_usage:
+        if usage[provider].known:
+            wastes[provider] = _waste(provider, usage[provider], pace_of, now)
+            scores[provider] = wastes[provider][0]
+    urgent = sorted(
+        (p for p in has_usage if wastes.get(p, (0.0, None))[0] > 0),
+        key=lambda p: -wastes[p][0],
+    )
+    final = urgent + [p for p in has_usage if p not in urgent]
 
-    scores = {provider: capacities[provider].urgency for provider in ordered if provider in capacities}
-    if available:
-        known = [provider for provider in available if capacities[provider].urgency is not None]
-        # Prefer measured urgency. Unknown headroom and equal scores fall back
-        # to priority order (`known` / `available` are already priority-ordered).
-        chosen = (
-            max(known, key=lambda provider: capacities[provider].urgency or 0.0)
-            if known
-            else available[0]
-        )
-        reason = _available_reason(chosen, capacities[chosen], now)
-        if phase == "review" and implementer_provider in capacities and chosen != implementer_provider:
+    if final:
+        chosen = final[0]
+        if chosen in urgent:
+            reason = f"urgent: waste {wastes[chosen][0]:.3g}% of {chosen} {wastes[chosen][1]}"
+        else:
+            reason = "order"
+        if chosen in notes:
+            reason += f"; {notes[chosen]}"
+        if phase == "review" and implementer_provider in usage and chosen != implementer_provider:
             reason += f"; {implementer_provider} implemented"
         return Choice(chosen, reason, scores)
 
     reasons: list[str] = []
-    for provider in ordered:
+    for provider in _provider_order(enabled, priority):
         if not _is_enabled(enabled, provider):
-            reasons.append(_unavailable_reason(provider, None, "disabled"))
-        elif _disabled(disabled_for_task, provider):
-            reasons.append(_unavailable_reason(provider, None, "disabled for task"))
-        elif phase == "review" and provider == "cursor" and model_class == "auto":
-            reasons.append(_unavailable_reason(provider, None, "Auto cannot review"))
+            reasons.append(f"{provider} disabled")
+        elif task_disabled.get(provider):
+            reasons.append(f"{provider} disabled for task")
+        elif provider in blocked:
+            reasons.append(blocked[provider])
         else:
-            reasons.append(_unavailable_reason(provider, capacities.get(provider)))
+            reasons.append(f"{provider} unavailable")
     return Choice(None, "; ".join(reasons) or "no providers configured", scores)

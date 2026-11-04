@@ -423,6 +423,7 @@ def test_codex_substantive_ladder_is_sol_medium_sol_medium_sol_high_astra_medium
     codex = _FakeCodex()
     cursor = _FakeCursor()
     router, state, _ = _router(tmp_path, codex, cursor)
+    router.config.cursor.enabled = False  # with Cursor on, routing moves on to Cursor
     task = _task(tmp_path)
     workspace = tmp_path / "w"
     workspace.mkdir()
