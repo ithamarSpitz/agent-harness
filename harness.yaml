@@ -34,7 +34,7 @@ claude:
   enabled: true
   reserve:
     five_hour_max_used_percent: 80
-    weekly_max_used_percent: 70
+    weekly_max_used_percent: 60  # interim: 100 - 7% x ~5.65 days left (S9-T32 makes it live)
 
 self_hosting:
   enabled: true
