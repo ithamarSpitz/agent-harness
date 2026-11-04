@@ -1,6 +1,6 @@
 ---
 id: S9-T13
-stage: 8
+stage: 9
 model_class: worker
 timeout_minutes: 40
 review: true
@@ -22,6 +22,8 @@ depends_on:
   - S9-T28
   - S9-T29
   - S9-T30
+  - S9-T31
+  - S9-T32
   - S9-T7
   - S9-T9
   - S9-T11
@@ -57,7 +59,8 @@ The spec parts, README and changelog describe S9 exactly as implemented.
 7. `docs/spec/operations.md` also: `harness hold` / `harness release` (S9-T25) and brief reload before each attempt plus the agent-reported block rule (S9-T24).
 8. `docs/spec/providers.md` also: Cursor Auto takes first implementation attempts and headroom routing applies in every project (S9-T26).
 9. `docs/spec/configuration.md` and `docs/spec/providers.md` also: `cursor.auto_when_exhausted` (S9-T30): Cursor uses its named models; only while both Cursor pools are at 100% does Auto replace them for implementation (never for review), and the Auto-first attempt applies only then.
-10. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.
+10. `docs/spec/providers.md` also: the routing rules of S9-T32 (order agy, codex, cursor, claude; waste and urgency with full pace from S9-T31; Cursor Auto first only at 100%/100%; Claude cap 60-90% by hours until another provider returns), with its five scenarios.
+11. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.
 
 # Acceptance criteria
 

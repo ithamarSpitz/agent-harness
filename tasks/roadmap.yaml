@@ -582,9 +582,20 @@ sprints:
         depends_on:
         - S9-T26
         - S9-T20
+      S9-T31:
+        file: tasks/sprint-09-claude-and-routing/31-usage-pace.md
+        stage: 7
+        depends_on:
+        - S9-T23
+      S9-T32:
+        file: tasks/sprint-09-claude-and-routing/32-order-urgency-claude-cap.md
+        stage: 8
+        depends_on:
+        - S9-T30
+        - S9-T31
       S9-T13:
         file: tasks/sprint-09-claude-and-routing/13-docs.md
-        stage: 8
+        stage: 9
         depends_on:
         - S9-T14
         - S9-T16
@@ -602,6 +613,8 @@ sprints:
         - S9-T28
         - S9-T29
         - S9-T30
+        - S9-T31
+        - S9-T32
         - S9-T7
         - S9-T9
         - S9-T11
