@@ -35,6 +35,7 @@ The harness can run an implementation or review agent with agy and turn its outp
 5. Stall watchdog: same rule as the other runners (last activity = latest of CLI output and worktree file activity), same `stall_timeout_minutes`.
 6. Model choice: implementation attempt n uses entry n of `implementation_sequence` (last entry for later attempts); review uses `review_model`/`review_effort`; model class `escalation` uses the escalation pair. A ladder entry whose pool is reported exhausted for this task (S10-T5) is skipped in favor of the next entry in another pool.
 7. Each call logs `agy --version` output once per run (agy updates itself, so logs show which version ran).
+- Permissions and code map (operator, Nov 4 2026, follows S10-T3 decision 5): pass the call's base commit as `base_sha` to `agy_permissions.build_settings`, so the exact `git diff <base_sha>` rules are allowed. agy has no graphify permission, so for agy calls add one prompt line saying the code map is not available and not to run `graphify` (reviewers already get the callers of changed symbols in the prompt).
 
 # Acceptance criteria
 
