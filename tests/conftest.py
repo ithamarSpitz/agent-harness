@@ -11,6 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from harness.winplatform import disable_wmi_queries  # noqa: E402
+
+disable_wmi_queries()
+
 
 @pytest.fixture(scope="session", autouse=True)
 def isolate_graphify_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
