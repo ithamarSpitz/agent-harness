@@ -2,7 +2,7 @@
 id: S9-T32
 stage: 8
 model_class: hard_worker
-timeout_minutes: 60
+timeout_minutes: 75
 review: true
 allow_protected: false
 depends_on:
@@ -55,6 +55,10 @@ Today `choose_provider` (`harness/routing.py`) picks the provider with the highe
 8. **Nothing available:** wait for the earliest reset, as today.
 9. Log the chosen provider and the reason (for example `urgent: waste 50% of codex 5-hour`, `order`, `cursor auto: both pools at 100%`, `claude under cap 75%`) in today's routing log line.
 10. `routing.py` must not special-case provider names other than `cursor` (Auto) and `claude` (cap), so a provider named `agy` works in tests now.
+11. **Routing in every project** (folded in from the dropped S9-T26): `ProviderAgentRunner` (`harness/provider_runner.py`) uses `choose_provider` with the live headroom snapshot for implementation and review calls in every project, whether or not `claude.enabled`. With no headroom data the order is `providers.priority` exactly.
+12. **Implementer record.** After a successful implementation call, record the provider in the meta key `<sprint>.<task>.provider.implementer` (as S9-T10 does on its routing path) on every path, so the review rule (decision 6) always knows it.
+13. **"Auto"** always means the resolved model `auto` (for example `worker: auto`), never a model-class name.
+14. **Keep existing behavior:** when a chosen provider turns out unavailable, disable it for the call and choose again; routing choices are logged to the run log only (never written to `.harness/usage.jsonl` or the outcomes log, which hold provider calls only); plan-repair calls keep their current behavior; tests whose setup means a single provider (for example `tests/harness/test_worktree_guard.py`) disable the other providers in their config.
 
 # Scenarios (source of truth; each one is a test in `tests/harness/test_routing_scenarios.py`)
 
@@ -72,7 +76,8 @@ Base order agy, codex, cursor, claude. Full pace (injected): Codex 5-hour 30%/h,
 2. Cap: H = 0.5 gives 60; H = 1 gives 60; H = 3 gives 75; H = 5 gives 90; H = 8 gives 90. Weekly cap: 5.65 days left gives 60.45; 3 days gives 79; 0 days gives 100; with 3 days left, Claude weekly at 80% used means Claude has no usage.
 3. No headroom data at all: the order is `providers.priority` exactly.
 4. `harness.yaml` priority is `[codex, cursor, claude]`, and `harness validate` passes.
-5. Existing tests that check the old urgency-first choice or the fixed 50% reserve are updated to these rules (`tests/harness/test_routing.py` is in allowed_paths).
+6. With Claude disabled and headroom known, the choice follows these rules (not only the priority order); the review never runs on the implementer when another provider has usage (a test sets `provider.implementer` through a real implementation call).
+7. Existing tests that check the old urgency-first choice or the fixed 50% reserve are updated to these rules (`tests/harness/test_routing.py` is in allowed_paths).
 
 # Rules for every S9 task
 

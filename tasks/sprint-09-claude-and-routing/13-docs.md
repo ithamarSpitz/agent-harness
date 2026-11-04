@@ -17,7 +17,6 @@ depends_on:
   - S9-T23
   - S9-T24
   - S9-T25
-  - S9-T26
   - S9-T27
   - S9-T28
   - S9-T29
@@ -58,7 +57,7 @@ The spec parts, README and changelog describe S9 exactly as implemented.
 5. `docs/spec/review.md`: the required impact step and `IMPACT:` section (S9-T15), the "code outside the diff that uses what changed" list the harness puts in review prompts and its grep fallback (S9-T16), and that the reviewer is never the implementing provider and never Cursor Auto once another reviewer exists.
 6. `docs/spec/operations.md`: `HARNESS_HOME` and the machine-wide files under it (`agents.json` ledger, `outcomes.jsonl`), the per-call fields in usage records (S9-T18), verification records, and that tests never touch the real home folder (S9-T17).
 7. `docs/spec/operations.md` also: `harness hold` / `harness release` (S9-T25) and brief reload before each attempt plus the agent-reported block rule (S9-T24).
-8. `docs/spec/providers.md` also: Cursor Auto takes first implementation attempts and headroom routing applies in every project (S9-T26).
+8. `docs/spec/providers.md` also: Cursor Auto takes first implementation attempts and headroom routing applies in every project (S9-T30, S9-T32).
 9. `docs/spec/configuration.md` and `docs/spec/providers.md` also: `cursor.auto_when_exhausted` (S9-T30): Cursor uses its named models; only while both Cursor pools are at 100% does Auto replace them for implementation (never for review), and the Auto-first attempt applies only then.
 10. `docs/spec/providers.md` also: the routing rules of S9-T32 (order agy, codex, cursor, claude; waste and urgency with full pace from S9-T31; Cursor Auto first only at 100%/100%; Claude 5-hour cap 60-90% by hours until another provider returns, Claude weekly cap 100% minus 7% per day until its weekly reset), with its five scenarios.
 11. `SPEC.md`: only the summary/index lines that point to the changed parts, so it stays consistent with them.

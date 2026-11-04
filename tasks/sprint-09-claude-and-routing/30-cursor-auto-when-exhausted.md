@@ -6,7 +6,6 @@ timeout_minutes: 45
 review: true
 allow_protected: false
 depends_on:
-  - S9-T26
   - S9-T20
 allowed_paths:
   - harness/config.py
@@ -39,7 +38,7 @@ Cursor runs with its named models (as before the Auto trial). Only while both Cu
 
 # Background
 
-Before Nov 2 2026 this repo's `harness.yaml` had named Cursor models: `worker: composer-2.5`, `hard_worker: cursor-grok-4.6-high`, `reviewer: cursor-grok-4.6-high`, `escalation: claude-opus-5-thinking-high`, with Codex first in `providers.priority`. When both Cursor pools hit 100%, the commit "TRIAL: Cursor models -> auto" mapped every class to `auto` (Auto ran on free credit then). The user's rule (Nov 4 2026): go back to the named models, and use Auto only while both pools ("Cursor models (Composer, Grok)" and "Other models") are at 100%. `harness/limits.py` `load_cursor` reads both (`auto_percent_used`, `api_percent_used`); `harness/headroom.py` exposes them as cursor windows `composer_grok` and `other_models`. S9-T5 decision 7 / S9-T26 send the first implementation attempt to Cursor Auto.
+Before Nov 2 2026 this repo's `harness.yaml` had named Cursor models: `worker: composer-2.5`, `hard_worker: cursor-grok-4.6-high`, `reviewer: cursor-grok-4.6-high`, `escalation: claude-opus-5-thinking-high`, with Codex first in `providers.priority`. When both Cursor pools hit 100%, the commit "TRIAL: Cursor models -> auto" mapped every class to `auto` (Auto ran on free credit then). The user's rule (Nov 4 2026): go back to the named models, and use Auto only while both pools ("Cursor models (Composer, Grok)" and "Other models") are at 100%. `harness/limits.py` `load_cursor` reads both (`auto_percent_used`, `api_percent_used`); `harness/headroom.py` exposes them as cursor windows `composer_grok` and `other_models`. S9-T5 decision 7 sends the first implementation attempt to Cursor Auto (`model_class == "auto"`).
 
 # Decisions (do not reopen)
 
@@ -48,7 +47,7 @@ Before Nov 2 2026 this repo's `harness.yaml` had named Cursor models: `worker: c
 3. "Exhausted" means the latest headroom shows both cursor windows known and at 100% or more. Unknown, missing or stale data means not exhausted.
 4. With `auto_when_exhausted` on and Cursor exhausted, an implementation call on Cursor runs model `auto` instead of the named model for its class. Being at 100% is then not "no capacity" for Cursor implementation.
 5. Reviews never run on Auto (S9-T5): when Cursor is exhausted, Cursor is not available for review, and the review goes to another provider or waits as today.
-6. The Auto-first rule (first implementation attempt goes to Cursor Auto) applies only when `auto_when_exhausted` is on and Cursor is exhausted. Otherwise the first attempt follows the normal choice (Codex first in this repo).
+6. The Auto-first rule (first implementation attempt goes to Cursor Auto; pass `model_class="auto"` to `choose_provider` for attempt 1 when the task's class resolves to the model `auto`) applies only when `auto_when_exhausted` is on and Cursor is exhausted. Otherwise the first attempt follows the normal choice (Codex first in this repo).
 7. When Cursor is not exhausted, Cursor calls use the named models and the normal capacity rules, exactly as before the trial.
 8. A real Cursor call that still reports a usage limit is handled as today (quota-disable for the task).
 9. Log the choice: `cursor: auto (both pools at 100%)` or `cursor: <model>` in the existing routing log line.

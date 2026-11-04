@@ -555,11 +555,6 @@ sprints:
         stage: 6
         depends_on:
         - S9-T24
-      S9-T26:
-        file: tasks/sprint-09-claude-and-routing/26-auto-first-live.md
-        stage: 5
-        depends_on:
-        - S9-T10
       S9-T27:
         file: tasks/sprint-09-claude-and-routing/27-no-direct-harness-home.md
         stage: 6
@@ -580,7 +575,6 @@ sprints:
         file: tasks/sprint-09-claude-and-routing/30-cursor-auto-when-exhausted.md
         stage: 7
         depends_on:
-        - S9-T26
         - S9-T20
       S9-T31:
         file: tasks/sprint-09-claude-and-routing/31-usage-pace.md
@@ -613,7 +607,6 @@ sprints:
         - S9-T23
         - S9-T24
         - S9-T25
-        - S9-T26
         - S9-T27
         - S9-T28
         - S9-T29
