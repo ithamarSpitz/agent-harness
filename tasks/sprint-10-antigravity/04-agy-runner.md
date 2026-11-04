@@ -36,6 +36,7 @@ The harness can run an implementation or review agent with agy and turn its outp
 6. Model choice: implementation attempt n uses entry n of `implementation_sequence` (last entry for later attempts); review uses `review_model`/`review_effort`; model class `escalation` uses the escalation pair. A ladder entry whose pool is reported exhausted for this task (S10-T5) is skipped in favor of the next entry in another pool.
 7. Each call logs `agy --version` output once per run (agy updates itself, so logs show which version ran).
 - Permissions and code map (operator, Nov 4 2026, follows S10-T3 decision 5): pass the call's base commit as `base_sha` to `agy_permissions.build_settings`, so the exact `git diff <base_sha>` rules are allowed. agy has no graphify permission, so for agy calls add one prompt line saying the code map is not available and not to run `graphify` (reviewers already get the callers of changed symbols in the prompt).
+- Print flag (operator, Nov 4 2026, tested on the installed agy, which updated itself to 1.5.0): the command line uses the attached empty form `-p=` (one argument), never a standalone `-p`. agy 1.5.0 rejects `-p --input-format stream-json ...` with `Error: -p took "--input-format" as its prompt`; `-p= --input-format stream-json --output-format stream-json` works, with the prompt on stdin. This overrides any `-p` written elsewhere in this brief. The command-line tests assert `-p=`. Reviewers: do not fail the task for `-p=`.
 
 # Acceptance criteria
 
