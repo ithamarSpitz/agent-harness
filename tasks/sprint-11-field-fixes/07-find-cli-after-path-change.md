@@ -14,10 +14,12 @@ allowed_paths:
   - harness/agy_runner.py
   - harness/agy_usage.py
   - harness/doctor.py
+  - harness/cli.py
   - tests/harness/test_command_locate.py
   - tests/harness/test_agy_runner.py
   - tests/harness/test_agy_usage.py
   - tests/harness/test_doctor_gitignore.py
+  - tests/harness/test_doctor_recovery.py
 context:
   - spec
 environment: null
@@ -40,7 +42,7 @@ agy's installer adds `%LOCALAPPDATA%\agy\bin` to the user PATH. Processes starte
 
 1. New module `harness/command_locate.py` with `locate(command: str) -> str | None`: `shutil.which(command)` first. On Windows only, if not found, read the current user and machine PATH from the registry (`winreg`: `HKEY_CURRENT_USER\Environment` value `Path`, and `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` value `Path`, expanding `%VARS%`) and search those folders with `shutil.which(command, path=...)`. No provider names in this module. Cache per process.
 2. `harness/agy_runner.py` and `harness/agy_usage.py` start agy through `locate(config.agy.command)` (an absolute `agy.command` is used as is). When it returns None, the launch failure message is `agy not found on PATH (installed after this shell started? restart the shell or set agy.command to the full path)`.
-3. `harness doctor`'s agy check uses the same function and shows the same text. Codex, Cursor and Claude move to `locate` later (the modular provider work); do not change them now.
+3. `harness doctor`'s agy check (it lives in `harness/cli.py` `cmd_doctor`, the `if runtime.config.agy.enabled:` block, not in `harness/doctor.py`; change only that block in `cli.py`) uses the same function and shows the same text. Codex, Cursor and Claude move to `locate` later (the modular provider work); do not change them now.
 
 # Acceptance criteria
 
