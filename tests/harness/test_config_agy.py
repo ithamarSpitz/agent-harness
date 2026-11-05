@@ -23,6 +23,7 @@ def test_agy_defaults_when_section_is_omitted(tmp_path: Path):
         {"model": "gemini-3.8-flash-high"},
         {"model": "claude-opus-4-6-thinking", "effort": "high"},
     ]
+    assert config.agy.effort_models == ["gemini-"]
     assert config.agy.pools == {
         "gemini-weekly": ["gemini-"],
         "3p-weekly": ["claude-", "gpt-oss-"],
@@ -49,6 +50,7 @@ agy:
   review_effort: xhigh
   escalation_model: escalation-model
   escalation_effort: max
+  effort_models: [first-, second-]
   pools:
     first-pool: [first-, review-]
     second-pool: [second-, escalation-]
@@ -67,6 +69,7 @@ agy:
         review_effort="xhigh",
         escalation_model="escalation-model",
         escalation_effort="max",
+        effort_models=["first-", "second-"],
         pools={
             "first-pool": ["first-", "review-"],
             "second-pool": ["second-", "escalation-"],
@@ -96,6 +99,9 @@ agy:
         ),
         ("agy:\n  review_model: [claude-sonnet-4-6]\n", r"agy\.review_model"),
         ("agy:\n  escalation_effort: [high]\n", r"agy\.escalation_effort"),
+        ("agy:\n  review_effort: extreme\n", r"agy\.review_effort"),
+        ("agy:\n  effort_models: gemini-\n", r"agy\.effort_models"),
+        ("agy:\n  effort_models: [gemini-, 1]\n", r"agy\.effort_models\[1\]"),
         ("agy:\n  base_allow: [[command]]\n", r"agy\.base_allow\[0\]"),
         (
             "agy:\n  pools:\n    gemini-weekly: [[gemini-]]\n",
@@ -110,6 +116,20 @@ def test_agy_rejects_invalid_values(
 ):
     with pytest.raises(ValueError, match=key):
         load_config(tmp_path, yaml_text)
+
+
+def test_agy_nullable_efforts_load(tmp_path: Path) -> None:
+    config = load_config(
+        tmp_path,
+        "agy:\n"
+        "  implementation_sequence: [{model: gemini-test, effort: null}]\n"
+        "  review_effort: null\n"
+        "  escalation_effort: null\n",
+    )
+
+    assert config.agy.implementation_sequence[0]["effort"] is None
+    assert config.agy.review_effort is None
+    assert config.agy.escalation_effort is None
 
 
 @pytest.mark.parametrize(

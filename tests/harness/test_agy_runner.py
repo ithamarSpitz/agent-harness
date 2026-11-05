@@ -23,6 +23,7 @@ def _write_config(
     *,
     stall_timeout_minutes: float = 12.0,
     watchdog_poll_seconds: float = 10.0,
+    effort_models: list[str] | None = None,
 ) -> HarnessConfig:
     payload = {
         "execution": {
@@ -47,6 +48,7 @@ def _write_config(
             "review_effort": "high",
             "escalation_model": "claude-opus",
             "escalation_effort": "max",
+            "effort_models": ["gemini-"] if effort_models is None else effort_models,
             "pools": {
                 "gemini-weekly": ["gemini-"],
                 "3p-weekly": ["claude-"],
@@ -79,7 +81,12 @@ def _settings() -> str:
 
 
 def _expected_command(
-    command: str, model: str, effort: str | None, mode: str
+    command: str,
+    model: str,
+    effort: str | None,
+    mode: str,
+    *,
+    accepts_effort: bool = True,
 ) -> list[str]:
     result = [
         command,
@@ -91,28 +98,34 @@ def _expected_command(
         "--model",
         model,
     ]
-    if effort:
+    if effort and accepts_effort:
         result += ["--effort", effort]
     return result + ["--mode", mode, "--settings", _settings()]
 
 
 @pytest.mark.parametrize(
-    ("attempt", "model", "effort"),
+    ("attempt", "model", "effort", "accepts_effort"),
     [
-        (1, "gemini-low", "low"),
-        (2, "gemini-high", "high"),
-        (3, "claude-opus", "xhigh"),
-        (4, "claude-opus", "xhigh"),
+        (1, "gemini-low", "low", True),
+        (2, "gemini-high", "high", True),
+        (3, "claude-opus", "xhigh", False),
+        (4, "claude-opus", "xhigh", False),
     ],
 )
 def test_agy_command_line_for_implementation_attempts(
-    tmp_path: Path, attempt: int, model: str, effort: str
+    tmp_path: Path,
+    attempt: int,
+    model: str,
+    effort: str,
+    accepts_effort: bool,
 ) -> None:
     runner = AgyAgentRunner(_write_config(tmp_path), tmp_path / "logs")
     profile = runner._implementation_profile(attempt)
     assert profile == (model, effort)
     argv = runner._command(*profile, "accept-edits", _settings())
-    assert argv == _expected_command("agy", model, effort, "accept-edits")
+    assert argv == _expected_command(
+        "agy", model, effort, "accept-edits", accepts_effort=accepts_effort
+    )
     # agy 1.5.0 takes the token after a standalone ``-p`` as the prompt, so
     # print mode must be the attached empty form in a single argument.
     assert argv[1] == "-p="
@@ -125,18 +138,45 @@ def test_agy_command_line_for_review_escalation_and_pool_skip(tmp_path: Path) ->
     review = runner._review_profile()
     assert review == ("claude-review", "high")
     assert runner._command(*review, "plan", _settings()) == _expected_command(
-        "agy", "claude-review", "high", "plan"
+        "agy", "claude-review", "high", "plan", accepts_effort=False
     )
 
     escalation = runner._implementation_profile(1, model_class="escalation")
     assert escalation == ("claude-opus", "max")
     assert runner._command(
         *escalation, "accept-edits", _settings()
-    ) == _expected_command("agy", "claude-opus", "max", "accept-edits")
+    ) == _expected_command(
+        "agy", "claude-opus", "max", "accept-edits", accepts_effort=False
+    )
 
     assert runner._implementation_profile(
         1, exhausted_pools={"gemini-weekly"}
     ) == ("claude-opus", "xhigh")
+
+
+def test_agy_empty_effort_models_omits_effort_for_every_model(
+    tmp_path: Path,
+) -> None:
+    runner = AgyAgentRunner(
+        _write_config(tmp_path, effort_models=[]), tmp_path / "logs"
+    )
+
+    assert runner._command(
+        "gemini-high", "high", "accept-edits", _settings()
+    ) == _expected_command(
+        "agy", "gemini-high", "high", "accept-edits", accepts_effort=False
+    )
+
+
+def test_agy_logs_when_configured_effort_is_omitted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runner = AgyAgentRunner(_write_config(tmp_path), tmp_path / "logs")
+
+    with caplog.at_level("DEBUG", logger="harness.agy_runner"):
+        runner._command("claude-review", "high", "plan", _settings())
+
+    assert "Omitting agy --effort for model claude-review" in caplog.text
 
 
 def test_agy_stream_fixture_extracts_answer_usage_and_success(tmp_path: Path) -> None:

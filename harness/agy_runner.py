@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -71,6 +72,7 @@ AGY_AUTH_PATTERNS = (
 _NO_CODE_MAP = (
     "\n\nThe code map is not available for this agy call. Do not run `graphify`.\n"
 )
+LOGGER = logging.getLogger(__name__)
 
 
 class AgyAgentRunner:
@@ -128,7 +130,7 @@ class AgyAgentRunner:
         effort = entry.get("effort")
         return str(entry["model"]), str(effort) if effort is not None else None
 
-    def _review_profile(self) -> tuple[str, str]:
+    def _review_profile(self) -> tuple[str, str | None]:
         return self.config.agy.review_model, self.config.agy.review_effort
 
     def _command(
@@ -152,8 +154,16 @@ class AgyAgentRunner:
             "--model",
             model,
         ]
-        if effort:
+        if effort and any(
+            model.startswith(prefix) for prefix in self.config.agy.effort_models
+        ):
             command += ["--effort", effort]
+        elif effort:
+            LOGGER.debug(
+                "Omitting agy --effort for model %s because it does not match "
+                "agy.effort_models",
+                model,
+            )
         command += ["--mode", mode, "--settings", settings]
         return command
 
