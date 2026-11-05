@@ -994,6 +994,63 @@ class Scheduler:
             return
         self.state.set_meta(key, "launch_failure")
 
+    @staticmethod
+    def _review_fault_reason(result: AgentResult) -> str:
+        for detail in (result.error, result.output):
+            if detail:
+                reason = next(
+                    (line.strip() for line in detail.splitlines() if line.strip()), None
+                )
+                if reason:
+                    return reason
+        return "Reviewer failed without feedback"
+
+    def _review_faults_key(self, task: TaskSpec, attempt: int) -> str:
+        return f"{task.sprint}.{task.id}.review_faults.{attempt}"
+
+    def _review_faults(self, task: TaskSpec, attempt: int) -> list[str]:
+        value = self.state.get_meta(self._review_faults_key(task, attempt), [])
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    def _disable_provider_for_review_fault(
+        self, task: TaskSpec, provider: str, reason: str
+    ) -> None:
+        prefix = f"{task.sprint}.{task.id}.provider.{provider}"
+        # Keep the task-contract key as the source of truth. ProviderAgentRunner
+        # currently consumes its older phase-disable key, so mirror the reason
+        # there until its review API accepts an explicit exclusion.
+        self.state.set_meta(f"{prefix}.review_disabled", reason)
+        self.state.set_meta(f"{prefix}.disabled.review", reason)
+
+    def _review_fallback_available(self, task: TaskSpec, failed_provider: str) -> bool:
+        checker = getattr(self.runner, "_has_other_candidate", None)
+        if callable(checker):
+            return bool(checker(task, "review", failed_provider, set()))
+
+        enabled = {
+            "agy": self.config.agy.enabled,
+            "codex": self.config.codex.enabled,
+            "cursor": self.config.cursor.enabled,
+            "claude": self.config.claude.enabled,
+        }
+        prefix = f"{task.sprint}.{task.id}.provider"
+        return any(
+            is_enabled
+            and provider != failed_provider
+            and not self.state.get_meta(f"{prefix}.{provider}.disabled")
+            and not self.state.get_meta(f"{prefix}.{provider}.disabled.review")
+            and not self.state.get_meta(f"{prefix}.{provider}.review_disabled")
+            for provider, is_enabled in enabled.items()
+        )
+
+    def _block_reviewer_faults(
+        self, task: TaskSpec, worktree: Path, faults: list[str]
+    ) -> TaskOutcome:
+        details = "\n".join(f"- {fault}" for fault in faults)
+        return self._block_task(task, f"Reviewer faults:\n{details}", worktree)
+
     def _block_launch_failure(
         self, task: TaskSpec, error: str, worktree: Path | None = None
     ) -> TaskOutcome:
@@ -1276,54 +1333,67 @@ class Scheduler:
                 return interrupted
             self._set_task_status(task, runtime, TaskStatus.REVIEWING)
             self.state.save()
-            with self._process_sampler(observed_peaks) as on_process_start:
-                review = self.runner.review(
-                    task, worktree, base_ref, verification_summary, timeout,
-                    env=task_env, code_map_offered=code_map_offered,
-                    on_process_start=on_process_start,
-                )
-            # Observe a hold after the call before handling its result. A release
-            # that arrived first cancels the unapplied hold and continues here.
-            held = self._hold_outcome(task, worktree)
-            if held is not None:
-                return held
-            if self._is_resource_launch_failure(review):
-                return self._requeue_resource_launch_failure(
+            faults = self._review_faults(task, runtime.attempt)
+            while True:
+                with self._process_sampler(observed_peaks) as on_process_start:
+                    review = self.runner.review(
+                        task, worktree, base_ref, verification_summary, timeout,
+                        env=task_env, code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
+                # Observe a hold after the call before handling its result. A release
+                # that arrived first cancels the unapplied hold and continues here.
+                held = self._hold_outcome(task, worktree)
+                if held is not None:
+                    return held
+                if self._is_resource_launch_failure(review):
+                    return self._requeue_resource_launch_failure(
+                        task, worktree, review, phase="review", decrement_attempt=False
+                    )
+                if self._is_launch_failure(review):
+                    error = review.error or f"{review.provider} could not start"
+                    if self._launch_fallback_available(
+                        task, review.provider
+                    ) and self._review_fallback_available(task, review.provider):
+                        self._disable_provider_for_launch_failure(task, review.provider)
+                        interrupted = self._interrupt_outcome(task, worktree)
+                        if interrupted is not None:
+                            return interrupted
+                        continue
+                    return self._block_launch_failure(task, error, worktree)
+                paused = self._handle_agent_wait(
                     task, worktree, review, phase="review", decrement_attempt=False
                 )
-            if self._is_launch_failure(review):
-                error = review.error or f"{review.provider} could not start"
-                if self._launch_fallback_available(task, review.provider):
-                    self._disable_provider_for_launch_failure(task, review.provider)
-                    # Re-enter review on the alternate provider without another implement call.
-                    interrupted = self._interrupt_outcome(task, worktree)
-                    if interrupted is not None:
-                        return interrupted
-                    with self._process_sampler(observed_peaks) as on_process_start:
-                        review = self.runner.review(
-                            task, worktree, base_ref, verification_summary, timeout,
-                            env=task_env, code_map_offered=code_map_offered,
-                            on_process_start=on_process_start,
-                        )
-                    held = self._hold_outcome(task, worktree)
-                    if held is not None:
-                        return held
-                    if self._is_launch_failure(review) or self._is_resource_launch_failure(review):
-                        if self._is_resource_launch_failure(review):
-                            return self._requeue_resource_launch_failure(
-                                task, worktree, review, phase="review", decrement_attempt=False
-                            )
-                        return self._block_launch_failure(
-                            task, review.error or error, worktree
-                        )
-                else:
-                    return self._block_launch_failure(task, error, worktree)
-            paused = self._handle_agent_wait(
-                task, worktree, review, phase="review", decrement_attempt=False
-            )
-            if paused is not None:
-                return paused
-            verdict_label, findings = parse_review_outcome(review.ok, review.output or "")
+                if paused is not None:
+                    return paused
+                verdict_label, findings = parse_review_outcome(
+                    review.ok, review.output or ""
+                )
+                has_verdict = any(
+                    line.strip().startswith("VERDICT:")
+                    for line in (review.output or "").splitlines()
+                )
+                if review.ok or has_verdict:
+                    break
+
+                reason = self._review_fault_reason(review)
+                fault = f"{review.provider}: {reason}"
+                faults.append(fault)
+                self.state.set_meta(self._review_faults_key(task, runtime.attempt), faults)
+                self._disable_provider_for_review_fault(task, review.provider, reason)
+                LOGGER.warning(
+                    "review fault on %s: %s; reviewing again elsewhere",
+                    review.provider,
+                    reason,
+                )
+                if len(faults) >= 2 or not self._review_fallback_available(
+                    task, review.provider
+                ):
+                    return self._block_reviewer_faults(task, worktree, faults)
+                interrupted = self._interrupt_outcome(task, worktree)
+                if interrupted is not None:
+                    return interrupted
+
             verdict_pass = verdict_label == "PASS"
             self._append_event(
                 task.sprint,
