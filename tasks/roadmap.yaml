@@ -683,3 +683,55 @@ sprints:
         file: tasks/sprint-10-antigravity/11-auto-quota-memory.md
         stage: 1
         depends_on: []
+  S11-field-fixes:
+    name: Fixes for problems found running 0.20 on BookNook (plan-change, agy, reviewer faults, doctor)
+    tasks:
+      S11-T1:
+        file: tasks/sprint-11-field-fixes/01-plan-change-fresh-budget.md
+        stage: 1
+        depends_on: []
+      S11-T2:
+        file: tasks/sprint-11-field-fixes/02-plan-change-revalidation-scope.md
+        stage: 2
+        depends_on:
+          - S11-T1
+      S11-T3:
+        file: tasks/sprint-11-field-fixes/03-agy-usage-temp-cleanup.md
+        stage: 1
+        depends_on: []
+      S11-T4:
+        file: tasks/sprint-11-field-fixes/04-agy-effort-per-model.md
+        stage: 1
+        depends_on: []
+      S11-T5:
+        file: tasks/sprint-11-field-fixes/05-reviewer-fault-no-attempt.md
+        stage: 1
+        depends_on: []
+      S11-T6:
+        file: tasks/sprint-11-field-fixes/06-doctor-gitignore.md
+        stage: 1
+        depends_on: []
+      S11-T7:
+        file: tasks/sprint-11-field-fixes/07-find-cli-after-path-change.md
+        stage: 2
+        depends_on:
+          - S11-T3
+          - S11-T4
+          - S11-T6
+      S11-T8:
+        file: tasks/sprint-11-field-fixes/08-agy-exploration.md
+        stage: 3
+        depends_on:
+          - S11-T7
+      S11-T9:
+        file: tasks/sprint-11-field-fixes/09-docs.md
+        stage: 4
+        depends_on:
+          - S11-T1
+          - S11-T2
+          - S11-T3
+          - S11-T4
+          - S11-T5
+          - S11-T6
+          - S11-T7
+          - S11-T8
