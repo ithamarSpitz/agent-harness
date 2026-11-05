@@ -136,3 +136,23 @@ def test_doctor_reports_agy_only_when_enabled(tmp_path: Path, capsys):
     assert cmd_doctor(runtime, full=False) == 0
     assert "agy-cli/login" not in capsys.readouterr().out
 
+
+def test_doctor_reports_actionable_message_for_missing_agy(
+    tmp_path: Path, capsys, monkeypatch
+):
+    init_project(tmp_path)
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "\nagy:\n  enabled: true\n  command: missing-agy\n",
+        encoding="utf-8",
+    )
+    runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", config_path)
+    monkeypatch.setattr("harness.cli.locate", lambda _command: None)
+
+    assert cmd_doctor(runtime, full=False) == 0
+    output = capsys.readouterr().out
+    assert "agy-cli/login" in output
+    assert "agy not found on PATH (installed after this shell started?" in output
+    assert "restart the shell or set agy.command to the full path)" in output
+

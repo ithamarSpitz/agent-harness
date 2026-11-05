@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .agy_permissions import build_settings
+from .command_locate import locate
 from .config import HarnessConfig
 from .context import ContextResolver
 from .logging_utils import write_log
@@ -73,6 +74,10 @@ _NO_CODE_MAP = (
     "\n\nThe code map is not available for this agy call. Do not run `graphify`.\n"
 )
 LOGGER = logging.getLogger(__name__)
+AGY_NOT_FOUND = (
+    "agy not found on PATH (installed after this shell started? restart the shell or "
+    "set agy.command to the full path)"
+)
 
 
 class AgyAgentRunner:
@@ -167,14 +172,16 @@ class AgyAgentRunner:
         command += ["--mode", mode, "--settings", settings]
         return command
 
-    def _log_version_once(self, workspace: Path, env: dict[str, str] | None) -> None:
+    def _log_version_once(
+        self, executable: str, workspace: Path, env: dict[str, str] | None
+    ) -> None:
         with self._version_lock:
             if self._version_logged:
                 return
             self._version_logged = True
             try:
                 completed = subprocess.run(
-                    prepare_external_argv([self.config.agy.command, "--version"]),
+                    prepare_external_argv([executable, "--version"]),
                     cwd=workspace,
                     text=True,
                     encoding="utf-8",
@@ -327,8 +334,28 @@ class AgyAgentRunner:
         env: dict[str, str] | None = None,
         on_process_start: Callable[[int], None] | None = None,
     ) -> AgentResult:
-        self._log_version_once(workspace, env)
+        configured_command = self.config.agy.command
+        executable = (
+            configured_command
+            if os.path.isabs(configured_command)
+            else locate(configured_command)
+        )
+        if executable is None:
+            write_log(self.log_dir, log_name, AGY_NOT_FOUND)
+            result = AgentResult(
+                False,
+                AGY_NOT_FOUND,
+                provider_could_not_start("agy", AGY_NOT_FOUND),
+                model=model,
+                provider="agy",
+                launch_failure=True,
+            )
+            self._record_usage(task_id, phase, model, effort, attempt, result)
+            return result
+
+        self._log_version_once(executable, workspace, env)
         command = self._command(model, effort, mode, settings)
+        command[0] = executable
         started = time.monotonic()
         output_lines: list[str] = []
         output_lock = threading.Lock()

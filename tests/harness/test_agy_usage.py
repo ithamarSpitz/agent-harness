@@ -15,6 +15,11 @@ from harness.agy_usage import AgyBucket, AgyUsageError, fetch_agy_usage, parse_a
 FIXTURE = Path(__file__).parent / "fixtures" / "agy-usage-sample.json"
 
 
+@pytest.fixture(autouse=True)
+def resolve_injected_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("harness.agy_usage.locate", lambda command: command)
+
+
 def test_recorded_usage_fixture_has_two_weekly_buckets() -> None:
     buckets = parse_agy_usage(FIXTURE.read_text(encoding="utf-8"))
 
@@ -145,6 +150,18 @@ def test_fetch_file_not_found_is_reported_as_failed_to_start() -> None:
 
     with pytest.raises(AgyUsageError, match="failed to start: fake-agy was not found"):
         fetch_agy_usage(command="fake-agy", run=fake_run)
+
+
+def test_fetch_missing_command_has_actionable_launch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("harness.agy_usage.locate", lambda _command: None)
+
+    with pytest.raises(
+        AgyUsageError,
+        match=r"agy not found on PATH \(installed after this shell started\? restart the shell or set agy\.command to the full path\)",
+    ):
+        fetch_agy_usage(command="missing-agy")
 
 
 def test_fetch_timeout_raises_small_error_without_output() -> None:
