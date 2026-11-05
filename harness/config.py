@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -169,15 +169,18 @@ class ClaudeConfig:
 class AgyConfig:
     enabled: bool = False
     command: str = "agy"
-    implementation_sequence: list[dict[str, str]] = field(default_factory=lambda: [
-        {"model": "gemini-3.8-flash-medium"},
-        {"model": "gemini-3.8-flash-high"},
-        {"model": "claude-opus-4-6-thinking", "effort": "high"},
-    ])
+    implementation_sequence: list[dict[str, str | None]] = field(
+        default_factory=lambda: [
+            {"model": "gemini-3.8-flash-medium"},
+            {"model": "gemini-3.8-flash-high"},
+            {"model": "claude-opus-4-6-thinking", "effort": "high"},
+        ]
+    )
     review_model: str = "claude-sonnet-4-6"
-    review_effort: str = "high"
+    review_effort: str | None = "high"
     escalation_model: str = "claude-opus-4-6-thinking"
-    escalation_effort: str = "high"
+    escalation_effort: str | None = "high"
+    effort_models: list[str] = field(default_factory=lambda: ["gemini-"])
     pools: dict[str, list[str]] = field(default_factory=lambda: {
         "gemini-weekly": ["gemini-"],
         "3p-weekly": ["claude-", "gpt-oss-"],
@@ -451,9 +454,7 @@ class HarnessConfig:
         for key in (
             "command",
             "review_model",
-            "review_effort",
             "escalation_model",
-            "escalation_effort",
         ):
             value = getattr(config, key)
             if not isinstance(value, str):
@@ -474,18 +475,27 @@ class HarnessConfig:
                 raise ValueError(f"{key}.model must be a string")
             if "effort" in profile:
                 effort = profile["effort"]
-                if not isinstance(effort, str):
-                    raise ValueError(f"{key}.effort must be a string")
-                if effort not in valid_efforts:
+                if effort is not None and (
+                    not isinstance(effort, str) or effort not in valid_efforts
+                ):
                     raise ValueError(
                         f"{key}.effort must be one of low, medium, high, xhigh, max"
                     )
 
         for key in ("review_effort", "escalation_effort"):
-            if getattr(config, key) not in valid_efforts:
+            effort = getattr(config, key)
+            if effort is not None and (
+                not isinstance(effort, str) or effort not in valid_efforts
+            ):
                 raise ValueError(
                     f"agy.{key} must be one of low, medium, high, xhigh, max"
                 )
+
+        if not isinstance(config.effort_models, list):
+            raise ValueError("agy.effort_models must be a list")
+        for index, prefix in enumerate(config.effort_models):
+            if not isinstance(prefix, str):
+                raise ValueError(f"agy.effort_models[{index}] must be a string")
 
         if not isinstance(config.pools, dict):
             raise ValueError("agy.pools must be a mapping")
@@ -506,7 +516,10 @@ class HarnessConfig:
             if not isinstance(rule, str):
                 raise ValueError(f"agy.base_allow[{index}] must be a string")
 
-        models = [profile["model"] for profile in config.implementation_sequence]
+        models = [
+            cast(str, profile["model"])
+            for profile in config.implementation_sequence
+        ]
         models.extend((config.review_model, config.escalation_model))
         for model in models:
             matching_pools = {
