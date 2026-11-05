@@ -726,26 +726,39 @@ class ProviderAgentRunner:
                 return False
             return self._provider_attempt(task, "cursor") < 1
         if self._routing_active(task, "implement"):
-            exhausted: set[str] = set()
-            if self._provider_attempt(task, "agy") >= len(
-                self.config.agy.implementation_sequence
-            ):
-                exhausted.add("agy")
-            if self._provider_attempt(task, "codex") >= len(
-                self.config.codex.implementation_sequence
-            ):
-                exhausted.add("codex")
-            if self._provider_attempt(task, "cursor") >= self._cursor_implement_budget():
-                exhausted.add("cursor")
-            if self._provider_attempt(task, "claude") >= len(
-                self.config.claude.implementation_sequence
-            ):
-                exhausted.add("claude")
-            return self._choose(
-                task, "implement",
-                model_class=self._routing_model_class(task, "implement"),
-                extra_disabled=exhausted,
-            ).provider is not None
+            self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
+            enabled = {
+                "agy": self.config.agy.enabled and self.agy is not None,
+                "codex": self.config.codex.enabled,
+                "cursor": self.config.cursor.enabled,
+                "claude": self.config.claude.enabled and self.claude is not None,
+            }
+            attempt_limits = {
+                "agy": len(self.config.agy.implementation_sequence),
+                "codex": len(self.config.codex.implementation_sequence),
+                "cursor": self._cursor_implement_budget(),
+                "claude": len(self.config.claude.implementation_sequence),
+            }
+            for provider, is_enabled in enabled.items():
+                if (
+                    not is_enabled
+                    or self._provider_attempt(task, provider) >= attempt_limits[provider]
+                ):
+                    continue
+                disable_reasons = (
+                    self.state.get_meta(
+                        f"{task.sprint}.{task.id}.provider.{provider}.disabled"
+                    ),
+                    self.state.get_meta(
+                        self._phase_disable_key(task, provider, "implement")
+                    ),
+                )
+                if not any(
+                    reason and not self._is_temporary_disable_reason(reason)
+                    for reason in disable_reasons
+                ):
+                    return True
+            return False
         provider = self.active_provider(task)
         if provider == "codex":
             return self._provider_attempt(task, "codex") < len(self.config.codex.implementation_sequence)
