@@ -27,6 +27,7 @@ class DoctorCheck:
     ok: bool
     detail: str
     required: bool = True
+    skipped: bool = False
 
 
 class Doctor:
@@ -137,6 +138,42 @@ class Doctor:
             checks.append(DoctorCheck("git-root", True, str(self.root)))
         except Exception as exc:
             checks.append(DoctorCheck("git-root", False, str(exc)))
+
+        try:
+            proc = subprocess.run(
+                prepare_external_argv(["git", "check-ignore", "-q", ".harness/scheduler-owner"]),
+                cwd=self.root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=15,
+            )
+            if proc.returncode == 0:
+                checks.append(DoctorCheck("repo/harness-ignored", True, "ignored"))
+            elif proc.returncode == 1:
+                checks.append(DoctorCheck(
+                    "repo/harness-ignored",
+                    False,
+                    "add `.harness/` to .gitignore (or .git/info/exclude)",
+                    required=False,
+                ))
+            else:
+                checks.append(DoctorCheck(
+                    "repo/harness-ignored",
+                    True,
+                    "not a Git repository",
+                    required=False,
+                    skipped=True,
+                ))
+        except (OSError, subprocess.TimeoutExpired):
+            checks.append(DoctorCheck(
+                "repo/harness-ignored",
+                True,
+                "not a Git repository",
+                required=False,
+                skipped=True,
+            ))
 
         if self.config.cursor.enabled and cursor_path:
             ok, detail = self._command_version(self.config.cursor.command)
@@ -294,6 +331,8 @@ class Doctor:
     def render(checks: list[DoctorCheck]) -> str:
         lines: list[str] = []
         for check in checks:
-            status = "OK" if check.ok else ("FAIL" if check.required else "WARN")
+            status = "SKIP" if check.skipped else (
+                "OK" if check.ok else ("FAIL" if check.required else "WARN")
+            )
             lines.append(f"{status:4} {check.name:22} {check.detail}")
         return "\n".join(lines)
