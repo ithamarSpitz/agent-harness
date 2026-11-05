@@ -70,9 +70,12 @@ AGY_AUTH_PATTERNS = (
     "authenticate",
     "oauth",
 )
-_NO_CODE_MAP = (
-    "\n\nThe code map is not available for this agy call. Do not run `graphify`.\n"
+_EXPLORATION_GUIDANCE = (
+    "\n\nUse agy's own file tools to list, read, and search files instead of shell "
+    "commands. The base commit, changed files, and diff summary are already in "
+    "the prompt. Do not run `graphify`.\n"
 )
+_NO_CODE_MAP = "\n\nDo not run `graphify`.\n"
 LOGGER = logging.getLogger(__name__)
 AGY_NOT_FOUND = (
     "agy not found on PATH (installed after this shell started? restart the shell or "
@@ -145,6 +148,18 @@ class AgyAgentRunner:
         mode: str,
         settings: str,
     ) -> list[str]:
+        # Real CLI permission probe (agy 1.5.1, 2026-11-05):
+        # option                    git log  list  read  write-in  write-out  network
+        # accept-edits/exact rules  quota     quota quota quota     quota      quota
+        # auto                      quota*    quota quota quota     quota      quota
+        # sandbox + skip            quota     quota quota quota     quota      quota
+        # * --mode auto was unavailable for the probing account and fell back to
+        #   the default mode. All calls hit Gemini's individual quota before the
+        #   first tool action; independent checks found no inside/outside writes.
+        # Thus neither alternative demonstrated workspace containment, so the
+        # decision-2 fallback retains accept-edits for implementation and plan for
+        # review. Never add --dangerously-skip-permissions without a qualifying
+        # sandbox probe that proves outside-workspace writes are blocked.
         # ``-p=`` (attached empty form, one argument) selects print mode; a
         # standalone ``-p`` would swallow the next flag as its prompt. The
         # actual, potentially long prompt goes to stdin as one stream-json
@@ -624,6 +639,26 @@ class AgyAgentRunner:
             for entry in sequence[start:]
         )
 
+    @staticmethod
+    def _diff_stat(workspace: Path, base_ref: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "diff", "--stat", base_ref],
+                cwd=workspace,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"(git diff --stat unavailable: {exc})"
+        output = completed.stdout.strip()
+        if completed.returncode == 0:
+            return output or "(no changed files)"
+        detail = completed.stderr.strip() or f"exit {completed.returncode}"
+        return f"(git diff --stat unavailable: {detail})"
+
     def _implement_once(
         self,
         task: TaskSpec,
@@ -657,7 +692,7 @@ class AgyAgentRunner:
         return self._invoke(
             task_id=task.id,
             phase="implement",
-            prompt=prompt + _NO_CODE_MAP,
+            prompt=prompt + _EXPLORATION_GUIDANCE,
             workspace=workspace,
             model=model,
             effort=effort,
@@ -696,10 +731,14 @@ class AgyAgentRunner:
             self.config.code_map.command,
             ui_review=None,
         )
+        prompt += (
+            f"\nDiff summary (`git diff --stat {base_ref}`):\n---\n"
+            f"{self._diff_stat(workspace, base_ref)}\n---\n"
+        )
         return self._invoke(
             task_id=task.id,
             phase="review",
-            prompt=prompt + _NO_CODE_MAP,
+            prompt=prompt + _EXPLORATION_GUIDANCE,
             workspace=workspace,
             model=model,
             effort=effort,

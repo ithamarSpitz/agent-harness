@@ -189,6 +189,13 @@ class AgyConfig:
         "command(git status*)",
         "command(git diff*)",
         "command(git log*)",
+        "command(git status)",
+        "command(git status --short)",
+        "command(git log --oneline -n 3)",
+        "command(git log -n 3 --oneline)",
+        "command(git log --oneline -20)",
+        "command(git diff --stat)",
+        "command(git show --stat HEAD)",
         "command(graphify *)",
     ])
 

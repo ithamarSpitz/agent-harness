@@ -67,6 +67,13 @@ DEFAULT_BASE_ALLOW = [
     "command(git status*)",
     "command(git diff*)",
     "command(git log*)",
+    "command(git status)",
+    "command(git status --short)",
+    "command(git log --oneline -n 3)",
+    "command(git log -n 3 --oneline)",
+    "command(git log --oneline -20)",
+    "command(git diff --stat)",
+    "command(git show --stat HEAD)",
     "command(graphify *)",
 ]
 
@@ -87,6 +94,10 @@ def test_default_base_wildcards_become_exact_prompt_commands(caplog: pytest.LogC
         "command(git diff)",
         "command(git diff --stat)",
         "command(git log --oneline -20)",
+        "command(git status --short)",
+        "command(git log --oneline -n 3)",
+        "command(git log -n 3 --oneline)",
+        "command(git show --stat HEAD)",
     ]
     assert_no_wildcard_or_regex(settings)
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -102,6 +113,10 @@ def test_base_sha_adds_exact_diff_rules() -> None:
         "command(git diff)",
         "command(git diff --stat)",
         "command(git log --oneline -20)",
+        "command(git status --short)",
+        "command(git log --oneline -n 3)",
+        "command(git log -n 3 --oneline)",
+        "command(git show --stat HEAD)",
         "command(git diff deadbeef)",
         "command(git diff deadbeef --stat)",
         "command(git diff --stat deadbeef)",

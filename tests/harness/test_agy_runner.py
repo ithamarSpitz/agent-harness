@@ -130,6 +130,8 @@ def test_agy_command_line_for_implementation_attempts(
     # print mode must be the attached empty form in a single argument.
     assert argv[1] == "-p="
     assert "-p" not in argv
+    assert "--sandbox" not in argv
+    assert "--dangerously-skip-permissions" not in argv
 
 
 def test_agy_command_line_for_review_escalation_and_pool_skip(tmp_path: Path) -> None:
@@ -139,6 +141,9 @@ def test_agy_command_line_for_review_escalation_and_pool_skip(tmp_path: Path) ->
     assert review == ("claude-review", "high")
     assert runner._command(*review, "plan", _settings()) == _expected_command(
         "agy", "claude-review", "high", "plan", accepts_effort=False
+    )
+    assert "--dangerously-skip-permissions" not in runner._command(
+        *review, "plan", _settings()
     )
 
     escalation = runner._implementation_profile(1, model_class="escalation")
@@ -600,6 +605,9 @@ def test_implement_and_review_build_phase_settings_and_prompts(
         return AgentResult(True, "ok", provider="agy")
 
     monkeypatch.setattr(runner, "_invoke", fake_invoke)
+    monkeypatch.setattr(
+        runner, "_diff_stat", lambda _workspace, _base: " agy.py | 2 ++"
+    )
     runner.implement(task, tmp_path, 1, 1, None, base_sha="abc123")
     runner.review(task, tmp_path, "def456", "passed", 1)
 
@@ -609,8 +617,15 @@ def test_implement_and_review_build_phase_settings_and_prompts(
         implementation["settings"]
     )
     assert "command(git diff abc123)" in str(implementation["settings"])
-    assert "code map is not available" in str(implementation["prompt"])
+    guidance = (
+        "Use agy's own file tools to list, read, and search files instead of shell "
+        "commands. The base commit, changed files, and diff summary are already in "
+        "the prompt. Do not run `graphify`."
+    )
+    assert guidance in str(implementation["prompt"])
     assert review["mode"] == "plan"
     assert "command(python -m pytest -q tests/harness)" not in str(review["settings"])
     assert "command(git diff def456)" in str(review["settings"])
-    assert "code map is not available" in str(review["prompt"])
+    assert guidance in str(review["prompt"])
+    assert "Diff summary (`git diff --stat def456`):" in str(review["prompt"])
+    assert "agy.py | 2 ++" in str(review["prompt"])
