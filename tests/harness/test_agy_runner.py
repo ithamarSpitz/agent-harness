@@ -303,6 +303,24 @@ def test_agy_non_success_status_fails(tmp_path: Path) -> None:
     assert result.error == "Agy reported status ERROR"
 
 
+def test_agy_missing_command_is_launch_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = AgyAgentRunner(_write_config(tmp_path), tmp_path / "logs")
+    monkeypatch.setattr("harness.agy_runner.locate", lambda _command: None)
+
+    result = _invoke_review(runner, tmp_path, "MISSING")
+
+    message = (
+        "agy not found on PATH (installed after this shell started? restart the shell or "
+        "set agy.command to the full path)"
+    )
+    assert not result.ok
+    assert result.launch_failure
+    assert result.output == message
+    assert message in str(result.error)
+
+
 def _invoke_review(runner: AgyAgentRunner, tmp_path: Path, name: str):  # type: ignore[no-untyped-def]
     return runner._invoke(
         task_id=name,

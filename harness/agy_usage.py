@@ -7,7 +7,16 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from .command_locate import locate
+
+
+AGY_NOT_FOUND = (
+    "agy not found on PATH (installed after this shell started? restart the shell or "
+    "set agy.command to the full path)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,12 +105,16 @@ def fetch_agy_usage(
 ) -> list[AgyBucket]:
     """Fetch Antigravity quota in an isolated directory with stdin closed."""
 
+    executable = command if Path(command).is_absolute() else locate(command)
+    if executable is None:
+        raise AgyUsageError(AGY_NOT_FOUND)
+
     with tempfile.TemporaryDirectory(
         prefix="harness-agy-usage-", ignore_cleanup_errors=True
     ) as cwd:
         try:
             completed = run(
-                [command, "-p", "/usage", "--output-format", "json"],
+                [executable, "-p", "/usage", "--output-format", "json"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

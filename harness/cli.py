@@ -38,6 +38,7 @@ from .roadmap import Roadmap, RoadmapError
 from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .agy_runner import AgyAgentRunner
+from .command_locate import locate
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .process_utils import prepare_external_argv, split_command
 from .runner import CursorAgentRunner
@@ -349,10 +350,21 @@ def cmd_doctor(runtime: Runtime, *, full: bool) -> int:
                 ),
             ))
     if runtime.config.agy.enabled:
-        parts = split_command(runtime.config.agy.command)
+        configured_command = runtime.config.agy.command
+        executable = (
+            configured_command
+            if Path(configured_command).is_absolute()
+            else locate(configured_command)
+        )
+        missing_message = (
+            "agy not found on PATH (installed after this shell started? restart the shell "
+            "or set agy.command to the full path)"
+        )
         try:
+            if executable is None:
+                raise FileNotFoundError(missing_message)
             proc = subprocess.run(
-                prepare_external_argv([*parts, "--version"]),
+                prepare_external_argv([executable, "--version"]),
                 cwd=runtime.root,
                 text=True,
                 encoding="utf-8",
