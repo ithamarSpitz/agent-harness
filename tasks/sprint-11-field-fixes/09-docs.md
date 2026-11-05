@@ -14,6 +14,7 @@ depends_on:
   - S11-T6
   - S11-T7
   - S11-T8
+  - S11-T10
 allowed_paths:
   - README.md
   - README-HARNESS.md
@@ -35,7 +36,7 @@ The docs describe the S11 changes for users.
 
 # Decisions (do not reopen)
 
-1. CHANGELOG: a new unreleased section listing each S11 fix in one line (plan-change budget and revalidation, agy usage on Windows, agy effort per model and `agy.effort_models`, reviewer faults reviewed elsewhere, the doctor `.harness/` ignore check, CLIs found after a PATH change, agy exploration and the chosen permission mode).
+1. CHANGELOG: a new unreleased section listing each S11 fix in one line (plan-change budget and revalidation, agy usage on Windows, agy effort per model and `agy.effort_models`, reviewer faults reviewed elsewhere, the doctor `.harness/` ignore check, CLIs found after a PATH change, agy exploration and the chosen permission mode, waiting instead of blocking when every provider is temporarily out).
 2. README-HARNESS (or README, wherever provider config is documented): document `agy.effort_models`, the reviewer-fault rule, and the agy permission mode from S11-T8 with its reason.
 3. SPEC: update only the sections that describe these behaviors.
 
