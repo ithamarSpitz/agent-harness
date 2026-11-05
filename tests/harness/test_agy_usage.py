@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,47 @@ def test_fetch_runs_in_empty_temporary_directory_with_closed_stdin() -> None:
     assert [bucket.pool_id for bucket in buckets] == ["gemini-weekly", "3p-weekly"]
     assert observed_cwd is not None
     assert not observed_cwd.exists()
+
+
+def test_fetch_returns_buckets_when_temporary_directory_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_text = FIXTURE.read_text(encoding="utf-8")
+    original_rmtree = tempfile.TemporaryDirectory._rmtree
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, fixture_text, "")
+
+    def cleanup_with_permission_error(
+        cls: type[tempfile.TemporaryDirectory[str]],
+        name: str,
+        ignore_errors: bool = False,
+        repeated: bool = False,
+    ) -> None:
+        try:
+            raise PermissionError("file is in use")
+        except PermissionError:
+            if not ignore_errors:
+                raise
+        original_rmtree(name, ignore_errors=ignore_errors, repeated=repeated)
+
+    monkeypatch.setattr(
+        tempfile.TemporaryDirectory,
+        "_rmtree",
+        classmethod(cleanup_with_permission_error),
+    )
+
+    buckets = fetch_agy_usage(command="fake-agy", run=fake_run)
+
+    assert [bucket.pool_id for bucket in buckets] == ["gemini-weekly", "3p-weekly"]
+
+
+def test_fetch_file_not_found_is_reported_as_failed_to_start() -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("fake-agy was not found")
+
+    with pytest.raises(AgyUsageError, match="failed to start: fake-agy was not found"):
+        fetch_agy_usage(command="fake-agy", run=fake_run)
 
 
 def test_fetch_timeout_raises_small_error_without_output() -> None:

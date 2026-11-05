@@ -96,8 +96,10 @@ def fetch_agy_usage(
 ) -> list[AgyBucket]:
     """Fetch Antigravity quota in an isolated directory with stdin closed."""
 
-    try:
-        with tempfile.TemporaryDirectory(prefix="harness-agy-usage-") as cwd:
+    with tempfile.TemporaryDirectory(
+        prefix="harness-agy-usage-", ignore_cleanup_errors=True
+    ) as cwd:
+        try:
             completed = run(
                 [command, "-p", "/usage", "--output-format", "json"],
                 stdin=subprocess.DEVNULL,
@@ -108,11 +110,13 @@ def fetch_agy_usage(
                 timeout=timeout,
                 check=False,
             )
-    except subprocess.TimeoutExpired as exc:
-        raise AgyUsageError(f"agy usage command timed out after {timeout:g} seconds") from exc
-    except OSError as exc:
-        reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
-        raise AgyUsageError(f"agy usage command failed to start: {reason}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AgyUsageError(
+                f"agy usage command timed out after {timeout:g} seconds"
+            ) from exc
+        except OSError as exc:
+            reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            raise AgyUsageError(f"agy usage command failed to start: {reason}") from exc
 
     if completed.returncode != 0:
         raise AgyUsageError(f"agy usage command exited with status {completed.returncode}")
