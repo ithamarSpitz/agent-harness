@@ -11,8 +11,9 @@ from .failure import FailureRecord, FailureStore
 from .logging_utils import utc_now
 from .models import TaskStatus
 from .roadmap import Roadmap
-from .provider_runner import ProviderAgentRunner
+from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .state import StateStore
+from .scheduler import reset_implementation_budget
 
 
 def _hash_file(path: Path) -> str | None:
@@ -332,7 +333,11 @@ class PlanChangeManager:
                 revalidate.append(task_id)
             else:
                 runtime.status = TaskStatus.PENDING
-                runtime.attempt = 0
+                reset_implementation_budget(runtime)
+                runtime.started_at = None
+                runtime.finished_at = None
+                runtime.resource_launch_failures = 0
+                clear_task_quota_disables(self.state, task_id)
                 runtime.last_error = f"Reset by applied plan change {request_id}"
                 runtime.review_feedback = None
                 runtime.waiting_phase = None
