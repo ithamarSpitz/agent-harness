@@ -125,6 +125,17 @@ class PlanChangeManager:
             self.state.set_meta("plan.revision", revision)
         return path
 
+    def _record_proposal_baseline(self, roadmap: Roadmap) -> Path:
+        """Refresh the current revision snapshot at the plan-change boundary."""
+        revision = self.revision()
+        path = self.snapshot_path(revision)
+        path.write_text(
+            json.dumps(self._snapshot_payload(roadmap, revision=revision), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.state.set_meta("plan.revision", revision)
+        return path
+
     def open_request_id(self) -> str | None:
         value = self.state.get_meta("plan.open_change_request")
         return str(value) if isinstance(value, str) and value else None
@@ -182,6 +193,10 @@ class PlanChangeManager:
         task = roadmap.task(task_id)
         if task.sprint != sprint_id:
             raise RuntimeError(f"Task {task_id} belongs to {task.sprint}, not {sprint_id}")
+        # The revision snapshot may have been created much earlier in the run.
+        # Re-anchor it here so apply compares against the plan that was actually
+        # in effect when this proposal was opened.
+        self._record_proposal_baseline(roadmap)
         result = runner.plan_change(
             task,
             workspace,
@@ -301,6 +316,11 @@ class PlanChangeManager:
         previous_tasks = dict(before.get("tasks") or {})
         added = sorted(set(current_tasks) - set(previous_tasks))
         removed = sorted(set(previous_tasks) - set(current_tasks))
+        for task_id in added:
+            print(
+                f"Plan-change baseline has no signature for task {task_id}; "
+                "it will not be treated as changed."
+            )
         changed = sorted(
             task_id for task_id in set(current_tasks) & set(previous_tasks)
             if current_tasks[task_id] != previous_tasks[task_id]
@@ -319,7 +339,8 @@ class PlanChangeManager:
                 + ". Supersede them with corrective tasks or keep the task and revise its dependencies/spec."
             )
 
-        affected = sorted(set(affected_task_ids or []) | {str(data.get("task_id"))} | set(changed))
+        explicitly_affected = set(affected_task_ids or [])
+        affected = sorted(explicitly_affected | {str(data.get("task_id"))} | set(changed))
         unknown_affected = [tid for tid in affected if tid not in current_tasks]
         if unknown_affected:
             raise RuntimeError("Affected tasks are not present in the revised roadmap: " + ", ".join(unknown_affected))
@@ -330,7 +351,8 @@ class PlanChangeManager:
         for task_id in affected:
             runtime = self.state.get(task_id)
             if runtime.status == TaskStatus.DONE:
-                revalidate.append(task_id)
+                if task_id in changed or task_id in explicitly_affected:
+                    revalidate.append(task_id)
             else:
                 runtime.status = TaskStatus.PENDING
                 reset_implementation_budget(runtime)
