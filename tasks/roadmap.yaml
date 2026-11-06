@@ -725,7 +725,7 @@ sprints:
           - S11-T7
       S11-T9:
         file: tasks/sprint-11-field-fixes/09-docs.md
-        stage: 4
+        stage: 5
         depends_on:
           - S11-T1
           - S11-T2
@@ -736,7 +736,27 @@ sprints:
           - S11-T7
           - S11-T8
           - S11-T10
+          - S11-T11
+          - S11-T12
+          - S11-T13
+          - S11-T14
       S11-T10:
         file: tasks/sprint-11-field-fixes/10-budget-is-not-availability.md
         stage: 1
+        depends_on: []
+      S11-T11:
+        file: tasks/sprint-11-field-fixes/11-locate-no-negative-cache.md
+        stage: 4
+        depends_on: []
+      S11-T12:
+        file: tasks/sprint-11-field-fixes/12-plan-change-clears-wait.md
+        stage: 4
+        depends_on: []
+      S11-T13:
+        file: tasks/sprint-11-field-fixes/13-agy-implement-prompt-truth.md
+        stage: 4
+        depends_on: []
+      S11-T14:
+        file: tasks/sprint-11-field-fixes/14-weekly-cap-wait-time.md
+        stage: 4
         depends_on: []

@@ -1,6 +1,6 @@
 ---
 id: S11-T9
-stage: 4
+stage: 5
 model_class: worker
 timeout_minutes: 30
 review: true
@@ -15,6 +15,10 @@ depends_on:
   - S11-T7
   - S11-T8
   - S11-T10
+  - S11-T11
+  - S11-T12
+  - S11-T13
+  - S11-T14
 allowed_paths:
   - README.md
   - README-HARNESS.md
