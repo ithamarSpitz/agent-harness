@@ -2,6 +2,17 @@
 
 Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](README.md) is the short operator guide.
 
+## Unreleased — S11 field fixes
+
+- Applying a plan change now refreshes the full implementation budget and transient routing state for affected unfinished tasks, while changed or explicitly affected completed tasks are revalidated before resume against a proposal-time baseline.
+- Antigravity `/usage` works reliably on Windows even when temporary-directory cleanup encounters a transient sharing or permission error.
+- Agy effort is selected per model: nullable profile effort values are supported and the new `agy.effort_models` prefix list (default `[gemini-]`) controls which models receive `--effort`.
+- Reviewer process faults without a verdict are reviewed elsewhere without reimplementation; two faults, or no alternate reviewer, block with the recorded fault details, while `VERDICT: FAIL` remains normal review feedback.
+- `harness doctor` now warns when `.harness/` is not ignored and skips that check cleanly outside a Git repository.
+- Agy command discovery on Windows sees user or machine PATH changes made after the harness process started, and a failed lookup is not cached.
+- Agy uses its native file tools for exploration, receives harness-computed diff context for review, and stays on `accept-edits` for implementation and `plan` for review/repair because sandbox probes did not prove outside-worktree containment.
+- When every provider is temporarily quota-blocked, routing now enters `WAITING_QUOTA` without spending an attempt instead of reporting exhausted budget; reserve-based waits use the time a provider becomes eligible, including Claude's rising weekly cap.
+
 ## Sprint S10 — Google Antigravity provider
 
 - Optional `agy` provider with a pool-aware Gemini/Claude implementation ladder, independent plan-mode reviews, per-call exact permissions, denied-action failures, and token/usage records.
