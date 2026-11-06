@@ -40,11 +40,14 @@ Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `curso
 ```yaml
 agy:
   enabled: true
+  effort_models: [gemini-]  # default: only these model prefixes receive --effort
 providers:
   priority: [agy, codex, cursor, claude]
 ```
 
-The harness only runs the `agy` command with per-call settings; it does not install, update, sign in, read credentials, or change saved Antigravity configuration. Override `agy.command` only when the executable is not on PATH. To enable Claude:
+`agy.effort_models` is a list of model-name prefixes and defaults to `[gemini-]`. The harness passes a profile's configured `effort` to `agy --effort` only when its model matches one of these prefixes; use `null` for a profile that should have no effort value. This avoids sending an unsupported flag to other model families.
+
+The harness only runs the `agy` command with per-call settings; it does not install, update, sign in, read credentials, or change saved Antigravity configuration. Agy implementations use `--mode accept-edits`; reviews and plan repair use read-only `--mode plan`. The harness does not use `--dangerously-skip-permissions`: probes of agy 1.5.1 did not establish that its sandbox prevents writes outside the worktree, so the narrower demonstrated modes remain the safe default. Override `agy.command` only when the executable is not on PATH. To enable Claude:
 
 ```yaml
 claude:
@@ -53,7 +56,7 @@ providers:
   priority: [codex, cursor, claude]
 ```
 
-The default Claude ladder is Sonnet medium, Sonnet high, then Opus high. Current headroom chooses among enabled providers on every call; reviews use another provider when available. See [SPEC.md](SPEC.md) for routing and reserve rules.
+The default Claude ladder is Sonnet medium, Sonnet high, then Opus high. Current headroom chooses among enabled providers on every call; reviews use another provider when available. A reviewer process failure that supplies no `VERDICT:` is treated as a reviewer fault: that provider is disabled for the task's review and the same implementation is reviewed elsewhere without spending implementation budget. Two reviewer faults, or one with no alternate reviewer, block the task and report the faults. An explicit `VERDICT: FAIL` remains ordinary review feedback even if the reviewer process exits unsuccessfully. See [SPEC.md](SPEC.md) for routing and reserve rules.
 
 ## Start a new project
 

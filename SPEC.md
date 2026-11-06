@@ -47,6 +47,28 @@ State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 
 Cursor implementation uses `--force` and `--trust` only in verified harness worktrees under `.harness/worktrees/`; review and plan-repair calls do not use `--force`. Codex uses its own CLI flags and sandbox settings when enabled.
 
+## S11 field-fix behavior
+
+### Plan changes, review faults, and provider waits
+
+- A plan-change proposal refreshes the current revision snapshot when the proposal opens, so apply compares the edited plan with the plan that was actually proposed against. Applying it resets the complete implementation budget, timestamps, resource-failure count, wait state, routing reset, review feedback, and quota disables for each affected unfinished task. Completed tasks remain done; only completed tasks whose signature changed or which the operator explicitly named with `--affected` are queued for mechanical revalidation before the sprint resumes. A failed revalidation stops resume with `REVALIDATION_FAILED`.
+- A review call that fails without producing a `VERDICT:` is a reviewer fault rather than implementation feedback. The harness records the fault, disables that provider for this task's review, and sends the existing implementation to another reviewer without incrementing the implementation attempt or provider-attempt counters. Two reviewer faults, or a fault when no alternate reviewer exists, block the task with all recorded faults. Any explicit verdict, including `VERDICT: FAIL` from a process with a nonzero exit, follows the normal review path.
+- Temporary quota disables do not make an otherwise unspent provider sequence look exhausted. If routing has no current candidate only because every eligible provider is temporarily quota-blocked, the task enters `WAITING_QUOTA`, preserves its attempt budget, and records the earliest eligibility time. For Claude's weekly reserve, that time is when the rising reserve cap reaches current usage, not necessarily the weekly reset. Providers with exhausted attempt sequences or permanent disables still produce the normal no-budget result.
+
+### Antigravity execution and diagnostics
+
+- Agy usage collection runs in an isolated temporary directory. On Windows, a transient permission or sharing error during cleanup does not replace the `/usage` result or its real failure.
+- Agy effort values are optional per implementation profile and for review/escalation. The harness emits `--effort` only when the value is non-null and the selected model starts with a prefix in `agy.effort_models`; otherwise it omits the flag.
+- Agy implementations run in `accept-edits` mode. Reviews and plan repair run in `plan` mode. The harness never adds `--dangerously-skip-permissions`: direct agy 1.5.1 probes did not demonstrate containment of writes outside the worktree. Prompts direct agy to use its native file tools for exploration; review prompts also receive a harness-computed `git diff --stat` summary.
+- On Windows, agy lookup falls back to the current user and machine registry PATH when the process environment is stale. Only successful lookups are cached, so installing agy after a failed lookup is detected without restarting the harness. An absolute `agy.command` remains authoritative.
+- `harness doctor` checks that `.harness/scheduler-owner` is ignored, which verifies the repository's `.harness/` runtime area is excluded. A missing ignore rule is a warning with remediation; a non-Git directory reports the check as skipped.
+
+### S11 configuration reference
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `agy.effort_models` | `["gemini-"]` | Model-name prefixes eligible to receive agy's `--effort` flag. An empty list suppresses the flag for every model. |
+
 ## S8 execution behavior
 
 ### Prompts, retries, waits, and failures
