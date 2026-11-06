@@ -70,7 +70,11 @@ AGY_AUTH_PATTERNS = (
     "authenticate",
     "oauth",
 )
-_EXPLORATION_GUIDANCE = (
+_IMPLEMENTATION_EXPLORATION_GUIDANCE = (
+    "\n\nUse agy's own file tools to list, read, and search files instead of shell "
+    "commands. Do not run `graphify`.\n"
+)
+_REVIEW_EXPLORATION_GUIDANCE = (
     "\n\nUse agy's own file tools to list, read, and search files instead of shell "
     "commands. The base commit, changed files, and diff summary are already in "
     "the prompt. Do not run `graphify`.\n"
@@ -692,7 +696,7 @@ class AgyAgentRunner:
         return self._invoke(
             task_id=task.id,
             phase="implement",
-            prompt=prompt + _EXPLORATION_GUIDANCE,
+            prompt=prompt + _IMPLEMENTATION_EXPLORATION_GUIDANCE,
             workspace=workspace,
             model=model,
             effort=effort,
@@ -738,7 +742,7 @@ class AgyAgentRunner:
         return self._invoke(
             task_id=task.id,
             phase="review",
-            prompt=prompt + _EXPLORATION_GUIDANCE,
+            prompt=prompt + _REVIEW_EXPLORATION_GUIDANCE,
             workspace=workspace,
             model=model,
             effort=effort,

@@ -617,15 +617,20 @@ def test_implement_and_review_build_phase_settings_and_prompts(
         implementation["settings"]
     )
     assert "command(git diff abc123)" in str(implementation["settings"])
-    guidance = (
+    implementation_guidance = (
+        "Use agy's own file tools to list, read, and search files instead of shell "
+        "commands. Do not run `graphify`."
+    )
+    review_guidance = (
         "Use agy's own file tools to list, read, and search files instead of shell "
         "commands. The base commit, changed files, and diff summary are already in "
         "the prompt. Do not run `graphify`."
     )
-    assert guidance in str(implementation["prompt"])
+    assert implementation_guidance in str(implementation["prompt"])
+    assert "diff summary" not in str(implementation["prompt"])
     assert review["mode"] == "plan"
     assert "command(python -m pytest -q tests/harness)" not in str(review["settings"])
     assert "command(git diff def456)" in str(review["settings"])
-    assert guidance in str(review["prompt"])
+    assert review_guidance in str(review["prompt"])
     assert "Diff summary (`git diff --stat def456`):" in str(review["prompt"])
     assert "agy.py | 2 ++" in str(review["prompt"])
