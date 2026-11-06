@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import inf, isfinite
 
 
@@ -230,6 +230,18 @@ def claude_weekly_cap(days: float, reserve: object = None) -> float:
     return min(100.0, max(0.0, 100.0 - per_day * max(0.0, days)))
 
 
+def claude_weekly_cap_clears_at(
+    used: float, reset_at: datetime, reserve: object, now: datetime
+) -> datetime:
+    """Return when the rising weekly cap reaches Claude's current usage."""
+
+    per_day = _reserve_limit(reserve, "weekly_percent_per_day", 7.0)
+    if per_day <= 0:
+        return max(now, reset_at)
+    clears_at = reset_at - timedelta(days=(100.0 - used) / per_day)
+    return min(reset_at, max(now, clears_at))
+
+
 def _hours_until(moment: datetime, now: datetime) -> float:
     return max(0.0, (moment - now).total_seconds() / 3600.0)
 
@@ -410,7 +422,17 @@ def choose_provider(
                 )
                 blocked[provider] = f"claude {why}{_until_label(reset)}"
                 if reset is not None:
-                    reset_candidates.append(reset)
+                    if window_name == "week":
+                        weekly = next(
+                            window for window in u.windows if window.name == window_name
+                        )
+                        reset_candidates.append(
+                            claude_weekly_cap_clears_at(
+                                weekly.used, reset, claude_reserve, now
+                            )
+                        )
+                    else:
+                        reset_candidates.append(reset)
                 continue
             notes[provider] = f"claude under cap {cap:g}%"
         has_usage.append(provider)
