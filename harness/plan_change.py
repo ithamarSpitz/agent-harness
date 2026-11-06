@@ -363,6 +363,9 @@ class PlanChangeManager:
                 runtime.last_error = f"Reset by applied plan change {request_id}"
                 runtime.review_feedback = None
                 runtime.waiting_phase = None
+                runtime.waiting_provider = None
+                task = roadmap.task(task_id)
+                self.state.set_meta(f"{task.sprint}.{task_id}.routing_quota_reset_at", None)
         self.state.save()
 
         pending_value = self.state.get_meta("plan.pending_revalidation", [])

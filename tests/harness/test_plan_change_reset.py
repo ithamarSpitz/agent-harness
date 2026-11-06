@@ -100,14 +100,17 @@ sprints:
     manager.ensure_baseline(roadmap)
 
     runtime = state.get("A")
-    runtime.status = TaskStatus.BLOCKED
+    runtime.status = TaskStatus.WAITING_QUOTA
     runtime.attempt = 3
     runtime.provider_attempts = {"cursor": 3}
     runtime.stall_counts = {"cursor:implement": 2}
     runtime.started_at = "2026-01-01T00:00:00+00:00"
     runtime.finished_at = "2026-01-01T00:01:00+00:00"
     runtime.resource_launch_failures = 4
+    runtime.waiting_phase = "implement"
+    runtime.waiting_provider = "cursor"
     state.set_meta("s1.A.provider.cursor.disabled", "quota:weekly")
+    state.set_meta("s1.A.routing_quota_reset_at", 1_800_000_000.0)
     state.save()
 
     request = manager.propose(
@@ -130,7 +133,10 @@ sprints:
     assert reset.started_at is None
     assert reset.finished_at is None
     assert reset.resource_launch_failures == 0
+    assert reset.waiting_phase is None
+    assert reset.waiting_provider is None
     assert state.get_meta("s1.A.provider.cursor.disabled") is None
+    assert state.get_meta("s1.A.routing_quota_reset_at") is None
 
     worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
     verifier = Verifier(config, tmp_path / ".harness/logs", worktrees)
