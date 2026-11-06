@@ -239,3 +239,39 @@ def test_claude_cap_reset_is_an_earlier_wait_candidate():
     assert choice.provider is None
     assert choice.wait_until == NOW + timedelta(hours=1)
     assert "claude 5-hour at 65%" in choice.reason
+
+
+def test_claude_weekly_cap_waits_until_cap_reaches_current_usage():
+    choice = choose(
+        {
+            "claude": {
+                "windows": {
+                    "five_hour": window(10, 4),
+                    "weekly": window(76, 3.875 * 24),
+                }
+            }
+        },
+        enabled=("claude",),
+    )
+
+    expected = NOW + timedelta(days=3.875 - 24 / 7)
+    assert choice.provider is None
+    assert choice.wait_until == pytest.approx(expected, abs=timedelta(minutes=1))
+
+
+def test_claude_weekly_cap_wait_is_clamped_before_reset():
+    choice = choose(
+        {
+            "claude": {
+                "windows": {
+                    "five_hour": window(10, 4),
+                    "weekly": window(99, 2 * 24),
+                }
+            }
+        },
+        enabled=("claude",),
+    )
+
+    expected = NOW + timedelta(days=2 - 1 / 7)
+    assert choice.provider is None
+    assert choice.wait_until == pytest.approx(expected, abs=timedelta(minutes=1))
