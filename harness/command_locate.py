@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import functools
 import os
 import shutil
 import sys
+
+
+_SUCCESS_CACHE: dict[str, str] = {}
 
 
 def _registry_path() -> str:
@@ -30,15 +32,30 @@ def _registry_path() -> str:
     return os.pathsep.join(values)
 
 
-@functools.cache
 def locate(command: str) -> str | None:
     """Locate a command, including Windows PATH updates made after startup."""
 
+    cached = _SUCCESS_CACHE.get(command)
+    if cached is not None:
+        return cached
+
     found = shutil.which(command)
-    if found is not None or sys.platform != "win32":
+    if found is not None:
+        _SUCCESS_CACHE[command] = found
         return found
+    if sys.platform != "win32":
+        return None
 
     registry_path = _registry_path()
     if not registry_path:
         return None
-    return shutil.which(command, path=registry_path)
+    found = shutil.which(command, path=registry_path)
+    if found is not None:
+        _SUCCESS_CACHE[command] = found
+    return found
+
+
+def clear_locate_cache() -> None:
+    """Clear paths cached by successful command lookups."""
+
+    _SUCCESS_CACHE.clear()
