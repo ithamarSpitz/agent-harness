@@ -760,3 +760,10 @@ sprints:
         file: tasks/sprint-11-field-fixes/14-weekly-cap-wait-time.md
         stage: 4
         depends_on: []
+  S12-agy-test-isolation:
+    name: Tests never run the real agy (found right after 0.21)
+    tasks:
+      S12-T1:
+        file: tasks/sprint-12-agy-test-isolation/01-no-real-agy-in-tests.md
+        stage: 1
+        depends_on: []
