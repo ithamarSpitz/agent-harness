@@ -17,16 +17,18 @@ disable_wmi_queries()
 
 
 @pytest.fixture(scope="session", autouse=True)
-def isolate_graphify_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Keep default-config tests from invoking a developer's real Graphify."""
+def isolate_external_commands(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep tests from invoking a developer's real Graphify or agy command."""
     bin_dir = tmp_path_factory.mktemp("test-bin")
     if os.name == "nt":
-        shim = bin_dir / "graphify.cmd"
-        shim.write_text("@exit /b 1\n", encoding="utf-8")
+        for command in ("graphify", "agy"):
+            shim = bin_dir / f"{command}.cmd"
+            shim.write_text("@exit /b 1\n", encoding="utf-8")
     else:
-        shim = bin_dir / "graphify"
-        shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-        shim.chmod(0o755)
+        for command in ("graphify", "agy"):
+            shim = bin_dir / command
+            shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            shim.chmod(0o755)
 
     original_path = os.environ.get("PATH")
     os.environ["PATH"] = os.pathsep.join((str(bin_dir), original_path or ""))

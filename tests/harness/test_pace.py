@@ -118,6 +118,7 @@ def test_snapshot_records_to_harness_home(tmp_path: Path, monkeypatch) -> None:
     headroom.headroom_snapshot(
         paths=paths, cache_path=cache, now=lambda: float(NOW),
         codex_source=codex, cursor_source=empty, claude_source=empty,
+        agy_enabled=False,
     )
     history = tmp_path / "home" / "headroom-history.jsonl"
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
