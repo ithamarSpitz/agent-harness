@@ -51,10 +51,8 @@ providers:
     - claude
 
 agy:
-  # Off during S11 (2026-11-05): on 0.20 agy's Claude models reject --effort and agy is denied
-  # exploration commands, so each agy call burns a task attempt. S11-T4/T8 fix both; turn back on
-  # for the post-release smoke test.
-  enabled: false
+  # Back on after 0.21 (2026-11-06): S11-T4 fixed --effort for Claude models, S11-T8/T13 the exploration prompt.
+  enabled: true
 
 codex:
   enabled: true
