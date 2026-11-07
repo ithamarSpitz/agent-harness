@@ -18,14 +18,14 @@ disable_wmi_queries()
 
 @pytest.fixture(scope="session", autouse=True)
 def isolate_external_commands(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Keep tests from invoking a developer's real Graphify or agy command."""
+    """Keep tests from invoking a developer's real external agent commands."""
     bin_dir = tmp_path_factory.mktemp("test-bin")
     if os.name == "nt":
-        for command in ("graphify", "agy"):
+        for command in ("graphify", "agy", "copilot"):
             shim = bin_dir / f"{command}.cmd"
             shim.write_text("@exit /b 1\n", encoding="utf-8")
     else:
-        for command in ("graphify", "agy"):
+        for command in ("graphify", "agy", "copilot"):
             shim = bin_dir / command
             shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
             shim.chmod(0o755)
