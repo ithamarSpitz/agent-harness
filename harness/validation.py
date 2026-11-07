@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .brief_lint import lint_brief
 from .config import HarnessConfig
 from .context import ContextResolver, ContextError
 from .roadmap import Roadmap, RoadmapError, _frontmatter
@@ -126,6 +127,24 @@ class ProjectValidator:
             except (OSError, RoadmapError) as exc:
                 report.errors.append(f"{task.id}: cannot parse task frontmatter: {exc}")
                 continue
+
+            if sprint_id is not None:
+                try:
+                    brief_text = task_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    report.errors.append(f"{task.id}: cannot parse task frontmatter: {exc}")
+                    continue
+                for finding in lint_brief(
+                    task,
+                    brief_text,
+                    self.root,
+                    self.config.paths.protected,
+                ):
+                    message = f"{task.id}: brief {finding.code}: {finding.message}"
+                    if finding.level == "error":
+                        report.errors.append(message)
+                    else:
+                        report.warnings.append(message)
 
             fm_id = fm.get("id")
             if fm_id is not None and str(fm_id) != task.id:
