@@ -201,6 +201,32 @@ class AgyConfig:
 
 
 @dataclass(slots=True)
+class CopilotConfig:
+    enabled: bool = False
+    command: str = "copilot"
+    implementation_sequence: list[dict[str, str | None]] = field(
+        default_factory=lambda: [
+            {"model": "auto", "auto_tier": "balance"},
+            {"model": "auto", "auto_tier": "intelligence"},
+            {
+                "model": "auto",
+                "auto_tier": "intelligence",
+                "effort": "high",
+            },
+        ]
+    )
+    review_model: str = "auto"
+    review_auto_tier: str | None = "intelligence"
+    review_effort: str | None = None
+    escalation_model: str = "auto"
+    escalation_auto_tier: str | None = "intelligence"
+    escalation_effort: str | None = "high"
+    quota_command: list[str] = field(
+        default_factory=lambda: ["gh", "api", "copilot_internal/user"]
+    )
+
+
+@dataclass(slots=True)
 class ProvidersConfig:
     priority: list[str] = field(default_factory=lambda: ["codex", "cursor"])
 
@@ -365,6 +391,7 @@ class HarnessConfig:
     self_hosting: SelfHostingConfig = field(default_factory=SelfHostingConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     agy: AgyConfig = field(default_factory=AgyConfig)
+    copilot: CopilotConfig = field(default_factory=CopilotConfig)
 
     @classmethod
     def _load_execution(cls, raw: Any) -> ExecutionConfig:
@@ -541,6 +568,106 @@ class HarnessConfig:
         return config
 
     @staticmethod
+    def _load_copilot(raw: Any) -> CopilotConfig:
+        if raw is not None and not isinstance(raw, dict):
+            raise ValueError("copilot must be a mapping")
+        config = CopilotConfig(**dict(raw or {}))
+
+        for key in ("command", "review_model", "escalation_model"):
+            value = getattr(config, key)
+            if not isinstance(value, str):
+                raise ValueError(f"copilot.{key} value {value!r} must be a string")
+
+        if not isinstance(config.implementation_sequence, list):
+            raise ValueError("copilot.implementation_sequence must be a list")
+        if not config.implementation_sequence:
+            raise ValueError("copilot.implementation_sequence must not be empty")
+
+        valid_auto_tiers = {"efficiency", "balance", "intelligence"}
+        valid_efforts = {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }
+
+        def validate_profile(
+            model_key: str,
+            auto_tier_key: str,
+            effort_key: str,
+            model: Any,
+            auto_tier: Any,
+            effort: Any,
+        ) -> None:
+            if not isinstance(model, str):
+                raise ValueError(f"{model_key} value {model!r} must be a string")
+            if auto_tier is not None and not isinstance(auto_tier, str):
+                raise ValueError(
+                    f"{auto_tier_key} value {auto_tier!r} must be a string or null"
+                )
+            if effort is not None and not isinstance(effort, str):
+                raise ValueError(
+                    f"{effort_key} value {effort!r} must be a string or null"
+                )
+            if auto_tier is not None and auto_tier not in valid_auto_tiers:
+                raise ValueError(
+                    f"{auto_tier_key} value {auto_tier!r} must be one of "
+                    "efficiency, balance, intelligence"
+                )
+            if auto_tier is not None and model != "auto":
+                raise ValueError(
+                    f"{auto_tier_key} value {auto_tier!r} requires model 'auto', "
+                    f"not {model!r}"
+                )
+            if effort is not None and effort not in valid_efforts:
+                raise ValueError(
+                    f"{effort_key} value {effort!r} must be one of none, minimal, "
+                    "low, medium, high, xhigh, max"
+                )
+
+        for index, profile in enumerate(config.implementation_sequence):
+            key = f"copilot.implementation_sequence[{index}]"
+            if not isinstance(profile, dict):
+                raise ValueError(f"{key} value {profile!r} must be a mapping")
+            validate_profile(
+                f"{key}.model",
+                f"{key}.auto_tier",
+                f"{key}.effort",
+                profile.get("model"),
+                profile.get("auto_tier"),
+                profile.get("effort"),
+            )
+
+        validate_profile(
+            "copilot.review_model",
+            "copilot.review_auto_tier",
+            "copilot.review_effort",
+            config.review_model,
+            config.review_auto_tier,
+            config.review_effort,
+        )
+        validate_profile(
+            "copilot.escalation_model",
+            "copilot.escalation_auto_tier",
+            "copilot.escalation_effort",
+            config.escalation_model,
+            config.escalation_auto_tier,
+            config.escalation_effort,
+        )
+
+        if not isinstance(config.quota_command, list):
+            raise ValueError("copilot.quota_command must be a list")
+        for index, part in enumerate(config.quota_command):
+            if not isinstance(part, str):
+                raise ValueError(
+                    f"copilot.quota_command[{index}] value {part!r} must be a string"
+                )
+        return config
+
+    @staticmethod
     def _load_wait_patterns(raw: Any, config_type: type[CodexConfig] | type[CapacityConfig]):
         section = dict(raw or {})
         defaults = config_type()
@@ -579,4 +706,5 @@ class HarnessConfig:
             self_hosting=SelfHostingConfig(**raw.get("self_hosting", {})),
             claude=cls._load_claude(raw.get("claude", {})),
             agy=cls._load_agy(raw.get("agy", {})),
+            copilot=cls._load_copilot(raw.get("copilot", {})),
         )
