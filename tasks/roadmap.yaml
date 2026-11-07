@@ -767,3 +767,35 @@ sprints:
         file: tasks/sprint-12-agy-test-isolation/01-no-real-agy-in-tests.md
         stage: 1
         depends_on: []
+  S13-brief-writer:
+    name: Brief writer - free brief checks, read-through, brief skill, Spec Kit
+    tasks:
+      S13-T1:
+        file: tasks/sprint-13-brief-writer/01-brief-lint.md
+        stage: 1
+        depends_on: []
+      S13-T2:
+        file: tasks/sprint-13-brief-writer/02-validate-runs-brief-lint.md
+        stage: 2
+        depends_on:
+        - S13-T1
+      S13-T4:
+        file: tasks/sprint-13-brief-writer/03-readthrough-prompt.md
+        stage: 1
+        depends_on: []
+      S13-T5:
+        file: tasks/sprint-13-brief-writer/04-brief-check-command.md
+        stage: 2
+        depends_on:
+        - S13-T4
+      S13-T3:
+        file: tasks/sprint-13-brief-writer/05-brief-skill.md
+        stage: 3
+        depends_on:
+        - S13-T2
+        - S13-T5
+      S13-T6:
+        file: tasks/sprint-13-brief-writer/06-docs.md
+        stage: 4
+        depends_on:
+        - S13-T3
