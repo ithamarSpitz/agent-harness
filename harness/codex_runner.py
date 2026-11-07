@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from .brief_readthrough import readthrough_prompt
 from .config import HarnessConfig
 from .context import ContextResolver
 from .logging_utils import write_log
@@ -454,4 +455,27 @@ class CodexAgentRunner:
             prompt=plan_change_prompt(task, failure_summary, self._context_paths(task)), workspace=workspace,
             model=model, timeout_minutes=timeout_minutes, log_name=f"{task.id}-plan-repair-codex.log",
             env=env, read_only=True, sprint=task.sprint,
+        )
+
+    def brief_check(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        brief_text: str,
+        timeout_minutes: int,
+        *,
+        model: str,
+        env: dict[str, str] | None = None,
+    ) -> AgentResult:
+        return self._invoke(
+            task_id=task.id,
+            phase="brief_check",
+            prompt=readthrough_prompt(task, brief_text),
+            workspace=workspace,
+            model=model,
+            timeout_minutes=timeout_minutes,
+            log_name=f"{task.id}-brief-check-codex.log",
+            env=env,
+            read_only=True,
+            sprint=task.sprint,
         )

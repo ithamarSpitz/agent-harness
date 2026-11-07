@@ -22,6 +22,7 @@ from .board_loop import (
     suppress_progress_stdout,
 )
 from .board import live_headroom_source
+from .brief_readthrough import compare_readthrough, parse_readthrough
 from .capacity import CapacityManager
 from .config import HarnessConfig
 from .context import ContextResolver
@@ -314,6 +315,51 @@ def cmd_validate(runtime: Runtime, sprint_id: str | None = None) -> int:
     report = runtime.validator.validate(sprint_id)
     print(report.render())
     return 0 if report.ok else 2
+
+
+def cmd_brief_check(runtime: Runtime, task_id: str, timeout_minutes: int) -> int:
+    task = _resolve_task(runtime, task_id)
+    codex = runtime.runner.codex
+    available, reason = codex.availability(refresh=True)
+    if not available:
+        print(f"Codex unavailable: {reason}", file=sys.stderr)
+        return 2
+
+    brief_text = task.file.read_text(encoding="utf-8-sig")
+    result = codex.brief_check(
+        task,
+        runtime.root,
+        brief_text,
+        timeout_minutes,
+        model=runtime.config.codex.planner_model,
+    )
+    if not result.ok:
+        reason = result.error or (
+            "Codex quota exhausted" if result.quota_exhausted else "Codex brief check failed"
+        )
+        print(reason, file=sys.stderr)
+        return 2
+
+    readthrough = parse_readthrough(result.output)
+    messages = compare_readthrough(readthrough, task.allowed_paths)
+    print("Files:")
+    if readthrough.files:
+        for path in readthrough.files:
+            print(f"  {path}")
+    else:
+        print("  (none)")
+    print("Plans:")
+    if readthrough.plans:
+        for path, plan in readthrough.plans.items():
+            print(f"  {path}: {plan}")
+    else:
+        print("  (none)")
+    if messages:
+        for message in messages:
+            print(message)
+        return 1
+    print("OK brief reads as intended")
+    return 0
 
 
 def cmd_doctor(runtime: Runtime, *, full: bool) -> int:
@@ -1343,6 +1389,10 @@ def parser() -> argparse.ArgumentParser:
     val = sub.add_parser("validate")
     val.add_argument("sprint", nargs="?")
 
+    brief_check = sub.add_parser("brief-check")
+    brief_check.add_argument("task")
+    brief_check.add_argument("--timeout-minutes", type=int, default=10)
+
     init_p = sub.add_parser("init")
     init_p.add_argument("--force", action="store_true")
     init_p.add_argument("--public", action="store_true")
@@ -1507,6 +1557,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_usage(runtime)
         if args.command == "validate":
             return cmd_validate(runtime, args.sprint)
+        if args.command == "brief-check":
+            return cmd_brief_check(runtime, args.task, args.timeout_minutes)
         if args.command == "doctor":
             return cmd_doctor(runtime, full=args.full)
         if args.command == "quota":
