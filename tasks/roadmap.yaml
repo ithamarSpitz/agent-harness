@@ -799,3 +799,51 @@ sprints:
         stage: 4
         depends_on:
         - S13-T3
+
+  S14-copilot-cli:
+    name: GitHub Copilot CLI as a provider
+    tasks:
+      S14-T1:
+        file: tasks/sprint-14-copilot-cli/01-copilot-config.md
+        stage: 1
+        depends_on: []
+      S14-T2:
+        file: tasks/sprint-14-copilot-cli/02-no-real-copilot-in-tests.md
+        stage: 1
+        depends_on: []
+      S14-T3:
+        file: tasks/sprint-14-copilot-cli/03-copilot-usage.md
+        stage: 1
+        depends_on: []
+      S14-T4:
+        file: tasks/sprint-14-copilot-cli/04-copilot-runner.md
+        stage: 2
+        depends_on:
+        - S14-T1
+      S14-T5:
+        file: tasks/sprint-14-copilot-cli/05-copilot-failures.md
+        stage: 3
+        depends_on:
+        - S14-T4
+      S14-T6:
+        file: tasks/sprint-14-copilot-cli/06-copilot-limits.md
+        stage: 2
+        depends_on:
+        - S14-T1
+        - S14-T3
+      S14-T7:
+        file: tasks/sprint-14-copilot-cli/07-wire-copilot.md
+        stage: 4
+        depends_on:
+        - S14-T5
+        - S14-T6
+      S14-T8:
+        file: tasks/sprint-14-copilot-cli/08-copilot-on-in-this-repo.md
+        stage: 5
+        depends_on:
+        - S14-T7
+      S14-T9:
+        file: tasks/sprint-14-copilot-cli/09-docs.md
+        stage: 6
+        depends_on:
+        - S14-T8
