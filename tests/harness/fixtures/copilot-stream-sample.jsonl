@@ -1,0 +1,6 @@
+{"type":"session.start","data":{"sessionId":"fixture"}}
+{"type":"assistant.message_delta","data":{"content":"partial"}}
+{"type":"commands.changed","data":{"commands":[]}}
+{"type":"model.call_final_result","data":{"model":"gpt-5.6-luna","result":"success"}}
+{"type":"assistant.message","data":{"content":"fixture answer"}}
+{"type":"result","exitCode":0,"usage":{"premiumRequests":1,"inputTokens":42,"outputTokens":7}}
