@@ -2,7 +2,11 @@
 
 Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](README.md) is the short operator guide.
 
-## Unreleased — S11 field fixes
+## Unreleased
+
+- Added the checked-in Spec Kit setup (`.specify/`, with generated designs under `specs/`) and `skills/write-harness-briefs/SKILL.md` for turning an approved design into scoped task briefs and roadmap entries.
+- `harness validate <SPRINT>` now reports brief findings with the codes `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`.
+- Added `harness brief-check <TASK>`, a read-only Codex read-through that exits 0 when inferred work matches `allowed_paths`, 1 for discrepancies, and 2 when Codex is unavailable or the check fails.
 
 - Applying a plan change now refreshes the full implementation budget and transient routing state for affected unfinished tasks, while changed or explicitly affected completed tasks are revalidated before resume against a proposal-time baseline.
 - Antigravity `/usage` works reliably on Windows even when temporary-directory cleanup encounters a transient sharing or permission error.
