@@ -101,6 +101,12 @@ verification:
 
 Commit harness, roadmap, and task files before the first automated run. Map stable context aliases in `harness.yaml` once architecture files exist. See [SPEC.md](SPEC.md) for validation rules and protected paths.
 
+## Writing briefs
+
+Use the checked-in Spec Kit workflows under `.specify/` to settle the feature spec and plan; Spec Kit writes those artifacts under `specs/<NNN-feature>/`. Then follow [`skills/write-harness-briefs/SKILL.md`](skills/write-harness-briefs/SKILL.md) to turn the approved design into small task briefs and a roadmap entry.
+
+Run `harness validate <SPRINT>` before execution. Its brief findings use these codes: `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`. After fixing those findings, run `harness brief-check <TASK>` for each task. The latter asks the configured Codex planner, in read-only mode, which files and changes it infers from the brief and compares them with `allowed_paths`. Exit code 0 means the read-through matches, 1 means it found a discrepancy, and 2 means Codex is unavailable or the model check failed.
+
 ## Run a sprint
 
 Replace `SPRINT` with the sprint key from `tasks/roadmap.yaml` (for example `sprint-01-example` after `harness init`, or `S1-tooling` in this repository).
@@ -183,6 +189,7 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `manifest SPRINT` | Active or latest run manifest for a sprint. |
 | `usage` | Local agent invocation log summary. |
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
+| `brief-check TASK [--timeout-minutes N]` | Run a read-only Codex read-through of one task brief. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
 | `limits [--json]` | Codex, Cursor, Claude, and enabled Antigravity usage limits (independent blocks). |
 | `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |
