@@ -40,6 +40,7 @@ from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .agy_runner import AgyAgentRunner
 from .copilot_runner import CopilotAgentRunner
+from .copilot_usage import CopilotUsageError, fetch_copilot_quota
 from .command_locate import locate
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .process_utils import prepare_external_argv, split_command
@@ -57,7 +58,7 @@ from .state import StateStore
 from .usage import UsageRecorder
 from .validation import ProjectValidator
 from .init_project import run_init
-from .limits import run_limits
+from .limits import format_local_day_time, run_limits
 from .machine_setup import run_setup_machine
 from .outcomes_report import import_usage_records, render_models_report
 from .release import ReleaseRunner, format_release_status, sprint_is_complete
@@ -447,6 +448,62 @@ def cmd_doctor(runtime: Runtime, *, full: bool) -> int:
                     or runtime.config.cursor.enabled
                     or runtime.config.claude.enabled
                 ),
+            ))
+    if runtime.config.copilot.enabled:
+        configured_command = runtime.config.copilot.command
+        parts = split_command(configured_command)
+        executable = locate(parts[0]) if parts else None
+        copilot_required = not (
+            runtime.config.agy.enabled
+            or runtime.config.codex.enabled
+            or runtime.config.cursor.enabled
+            or runtime.config.claude.enabled
+        )
+        if executable is None:
+            checks.append(DoctorCheck(
+                "copilot-cli/version",
+                False,
+                "copilot not found on PATH",
+                required=copilot_required,
+            ))
+        else:
+            try:
+                proc = subprocess.run(
+                    prepare_external_argv([*parts, "--version"]),
+                    cwd=runtime.root,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                    timeout=15,
+                )
+                detail = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+                checks.append(DoctorCheck(
+                    "copilot-cli/version",
+                    proc.returncode == 0,
+                    detail[:300] or "copilot --version returned no output",
+                    required=copilot_required,
+                ))
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                checks.append(DoctorCheck(
+                    "copilot-cli/version", False, str(exc), required=copilot_required
+                ))
+        try:
+            quota = fetch_copilot_quota(command=runtime.config.copilot.quota_command)
+            checks.append(DoctorCheck(
+                "copilot-quota",
+                True,
+                f"{quota.remaining} of {quota.entitlement} premium requests left, "
+                f"resets {format_local_day_time(quota.reset_time)}",
+                required=copilot_required,
+            ))
+        except CopilotUsageError as exc:
+            reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            checks.append(DoctorCheck(
+                "copilot-quota",
+                False,
+                f"unavailable: {reason}",
+                required=copilot_required,
             ))
     print(Doctor.render(checks))
     if full:

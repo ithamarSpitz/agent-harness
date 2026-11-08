@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.cli import build_runtime, cmd_cleanup, cmd_doctor, cmd_reset_task, cmd_unblock
+from harness.copilot_usage import CopilotQuota, CopilotUsageError
 from harness.doctor import Doctor
 from harness.failure import FailureRecord
 from harness.models import TaskStatus
@@ -155,4 +157,55 @@ def test_doctor_reports_actionable_message_for_missing_agy(
     assert "agy-cli/login" in output
     assert "agy not found on PATH (installed after this shell started?" in output
     assert "restart the shell or set agy.command to the full path)" in output
+
+
+def _enable_copilot(config_path: Path, command: str) -> None:
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f"\ncopilot:\n  enabled: true\n  command: {yaml_quote(command)}\n",
+        encoding="utf-8",
+    )
+
+
+def test_doctor_reports_copilot_version_and_quota(tmp_path: Path, capsys, monkeypatch):
+    fake = init_project(tmp_path)
+    _enable_copilot(tmp_path / "harness.yaml", str(fake))
+    monkeypatch.setattr(
+        "harness.cli.fetch_copilot_quota",
+        lambda *, command: CopilotQuota(
+            plan="individual",
+            entitlement=200,
+            remaining=199,
+            percent_remaining=99.5,
+            unlimited=False,
+            reset_time=datetime(2026, 12, 1, tzinfo=timezone.utc),
+        ),
+    )
+    runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", tmp_path / "harness.yaml")
+
+    assert cmd_doctor(runtime, full=False) == 0
+    output = capsys.readouterr().out
+    assert "copilot-cli/version" in output
+    assert "fake 1.0" in output
+    assert "199 of 200 premium requests left, resets" in output
+
+
+def test_doctor_reports_copilot_not_found_and_quota_unavailable(
+    tmp_path: Path, capsys, monkeypatch
+):
+    init_project(tmp_path)
+    _enable_copilot(tmp_path / "harness.yaml", "missing-copilot")
+    monkeypatch.setattr(
+        "harness.cli.fetch_copilot_quota",
+        lambda *, command: (_ for _ in ()).throw(CopilotUsageError("quota offline")),
+    )
+    monkeypatch.setattr("harness.cli.locate", lambda _command: None)
+    runtime = build_runtime(tmp_path, tmp_path / "tasks/roadmap.yaml", tmp_path / "harness.yaml")
+
+    assert cmd_doctor(runtime, full=False) == 0
+    output = capsys.readouterr().out
+    assert "copilot-cli/version" in output
+    assert "copilot not found on PATH" in output
+    assert "copilot-quota" in output
+    assert "unavailable: quota offline" in output
 
