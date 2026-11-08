@@ -12,9 +12,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator
 
 from .agy_usage import AgyBucket, fetch_agy_usage
+from .copilot_usage import CopilotQuota, fetch_copilot_quota
 from .home import harness_home
 from .pace import record_samples
-from .limits import LimitsPaths, _agy_settings, load_claude, load_codex, load_cursor
+from .limits import (
+    LimitsPaths,
+    _agy_settings,
+    _copilot_settings,
+    load_claude,
+    load_codex,
+    load_cursor,
+)
 
 if TYPE_CHECKING:
     from .config import HarnessConfig
@@ -31,6 +39,7 @@ class Headroom:
 
 LimitsSource = Callable[[LimitsPaths], tuple[list[str], dict[str, Any]]]
 AgyUsageSource = Callable[..., list[AgyBucket]]
+CopilotQuotaSource = Callable[..., CopilotQuota]
 
 _PROVIDER_WINDOWS = {
     "codex": ("five_hour", "weekly"),
@@ -42,6 +51,7 @@ _memory_cached_at: float | None = None
 _memory_cache_path: Path | None = None
 _memory_snapshot: dict[str, tuple[Headroom, ...]] | None = None
 _memory_agy_enabled: bool | None = None
+_memory_copilot_enabled: bool | None = None
 
 
 def _unknown(provider: str, window: str) -> Headroom:
@@ -142,6 +152,24 @@ def _agy_entries(source: AgyUsageSource, command: str) -> list[Headroom]:
         return [_unknown("agy", "weekly"), _unknown("agy", "weekly")]
 
 
+def _copilot_entries(
+    source: CopilotQuotaSource | None, command: list[str] | None
+) -> list[Headroom]:
+    try:
+        quota = (source or fetch_copilot_quota)(command=command)
+        return [
+            Headroom(
+                "copilot",
+                100.0 - quota.percent_remaining,
+                int(quota.reset_time.timestamp()),
+                "monthly",
+                True,
+            )
+        ]
+    except Exception:
+        return [_unknown("copilot", "monthly")]
+
+
 def _copy_snapshot(snapshot: dict[str, tuple[Headroom, ...]]) -> dict[str, list[Headroom]]:
     return {provider: list(entries) for provider, entries in snapshot.items()}
 
@@ -156,7 +184,7 @@ def _fresh(cached_at: float, now: float, max_age_seconds: float) -> bool:
 
 
 def _decode_snapshot(
-    raw: Any, *, agy_enabled: bool = False
+    raw: Any, *, agy_enabled: bool = False, copilot_enabled: bool = False
 ) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     if not isinstance(raw, dict):
         return None
@@ -188,18 +216,35 @@ def _decode_snapshot(
             snapshot["agy"] = entries
         elif "agy" in raw_providers:
             return None
+        if copilot_enabled:
+            raw_entries = raw_providers["copilot"]
+            if not isinstance(raw_entries, list) or len(raw_entries) != 1:
+                return None
+            entries = tuple(
+                Headroom(**entry) for entry in raw_entries if isinstance(entry, dict)
+            )
+            if (
+                len(entries) != 1
+                or entries[0].provider != "copilot"
+                or entries[0].window != "monthly"
+            ):
+                return None
+            snapshot["copilot"] = entries
+        elif "copilot" in raw_providers:
+            return None
         return cached_at, snapshot
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
 
 def _read_disk_cache(
-    cache_path: Path, *, agy_enabled: bool = False
+    cache_path: Path, *, agy_enabled: bool = False, copilot_enabled: bool = False
 ) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     try:
         return _decode_snapshot(
             json.loads(cache_path.read_text(encoding="utf-8")),
             agy_enabled=agy_enabled,
+            copilot_enabled=copilot_enabled,
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
@@ -307,6 +352,9 @@ def headroom_snapshot(
     agy_enabled: bool | None = None,
     agy_command: str | None = None,
     agy_source: AgyUsageSource = fetch_agy_usage,
+    copilot_enabled: bool | None = None,
+    copilot_quota_command: list[str] | None = None,
+    copilot_source: CopilotQuotaSource | None = None,
     config: HarnessConfig | None = None,
     root: Path | None = None,
     config_path: Path | None = None,
@@ -317,7 +365,8 @@ def headroom_snapshot(
     access. Source failures are represented by unknown entries and never escape.
     """
 
-    global _memory_agy_enabled, _memory_cache_path, _memory_cached_at, _memory_snapshot
+    global _memory_agy_enabled, _memory_cache_path, _memory_cached_at
+    global _memory_copilot_enabled, _memory_snapshot
 
     now = now or time.time
     cache_path = (cache_path or harness_home() / "headroom-cache.json").expanduser()
@@ -329,6 +378,14 @@ def headroom_snapshot(
             agy_enabled = configured_enabled
         if agy_command is None:
             agy_command = configured_command
+    if copilot_enabled is None or copilot_quota_command is None:
+        configured_copilot_enabled, configured_quota_command = _copilot_settings(
+            config, root=root, config_path=config_path
+        )
+        if copilot_enabled is None:
+            copilot_enabled = configured_copilot_enabled
+        if copilot_quota_command is None:
+            copilot_quota_command = configured_quota_command
 
     with _MEMORY_LOCK:
         current_time = now()
@@ -337,6 +394,7 @@ def headroom_snapshot(
             and _memory_cached_at is not None
             and _memory_cache_path == cache_path
             and _memory_agy_enabled == agy_enabled
+            and _memory_copilot_enabled == copilot_enabled
             and _fresh(_memory_cached_at, current_time, max_age_seconds)
         ):
             return _copy_snapshot(_memory_snapshot)
@@ -344,13 +402,18 @@ def headroom_snapshot(
         with _disk_lock(cache_path) as cache_available:
             current_time = now()
             if cache_available:
-                disk_cache = _read_disk_cache(cache_path, agy_enabled=agy_enabled)
+                disk_cache = _read_disk_cache(
+                    cache_path,
+                    agy_enabled=agy_enabled,
+                    copilot_enabled=copilot_enabled,
+                )
                 if disk_cache is not None and _fresh(
                     disk_cache[0], current_time, max_age_seconds
                 ):
                     _memory_cached_at, _memory_snapshot = disk_cache
                     _memory_cache_path = cache_path
                     _memory_agy_enabled = agy_enabled
+                    _memory_copilot_enabled = copilot_enabled
                     return _copy_snapshot(_memory_snapshot)
 
             try:
@@ -368,10 +431,15 @@ def headroom_snapshot(
                 }
             if agy_enabled:
                 snapshot["agy"] = _agy_entries(agy_source, agy_command)
+            if copilot_enabled:
+                snapshot["copilot"] = _copilot_entries(
+                    copilot_source, copilot_quota_command
+                )
             frozen = _freeze(snapshot)
             _memory_cached_at = current_time
             _memory_cache_path = cache_path
             _memory_agy_enabled = agy_enabled
+            _memory_copilot_enabled = copilot_enabled
             _memory_snapshot = frozen
             record_samples(
                 [entry for entries in frozen.values() for entry in entries],

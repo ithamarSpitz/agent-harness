@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from harness.winplatform import disable_wmi_queries  # noqa: E402
+from harness.copilot_usage import CopilotUsageError  # noqa: E402
 
 disable_wmi_queries()
 
@@ -70,6 +71,15 @@ def isolate_live_provider_limits(
         "harness.limits.default_cursor_state_db",
         lambda: cursor_home / "state.vscdb",
     )
+
+    def isolated_copilot_quota(**_kwargs: object) -> None:
+        raise CopilotUsageError("isolated in tests")
+
+    monkeypatch.setattr(
+        "harness.copilot_usage.fetch_copilot_quota", isolated_copilot_quota
+    )
+    monkeypatch.setattr("harness.limits.fetch_copilot_quota", isolated_copilot_quota)
+    monkeypatch.setattr("harness.headroom.fetch_copilot_quota", isolated_copilot_quota)
     yield
 
 
