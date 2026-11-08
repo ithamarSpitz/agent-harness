@@ -27,15 +27,54 @@ from .usage import UsageRecorder, parse_review_outcome
 
 
 COPILOT_QUOTA_PATTERNS = (
-    "premium request quota",
-    "premium requests quota",
-    "quota exhausted",
-    "out of premium requests",
+    "quota",
+    "premium request",
+    "402",
+    "exceeded your",
+    "limit reached",
 )
 COPILOT_AUTH_PATTERNS = (
-    "not signed in",
-    "authentication required",
-    "please sign in",
+    "not logged in",
+    "login",
+    "authenticate",
+    "401",
+    "no copilot access",
+)
+COPILOT_MODEL_UNAVAILABLE_PATTERNS = (
+    "from --model flag is not available",
+)
+COPILOT_PROVIDER_BUSY_PATTERNS = (
+    "rate limit",
+    "429",
+    "capacity",
+)
+COPILOT_NETWORK_PATTERNS = (
+    "network error",
+    "connection error",
+    "connection failed",
+    "connection lost",
+    "connection reset",
+    "connection refused",
+    "failed to connect",
+    "unable to connect",
+    "econnrefused",
+    "econnreset",
+    "etimedout",
+    "enotfound",
+    "socket hang up",
+    "dns",
+    "no such host",
+    "temporary failure in name resolution",
+)
+COPILOT_PROVIDER_ERROR_PATTERNS = (
+    "internal server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "http 5",
+    "status code 5",
+    "status: 5",
+    "5xx",
 )
 COPILOT_NOT_FOUND = (
     "copilot not found on PATH (installed after this shell started? restart the shell "
@@ -460,18 +499,54 @@ class CopilotAgentRunner:
         quota_exhausted = call_failed and self._matches(
             raw_output, COPILOT_QUOTA_PATTERNS
         )
-        auth_failure = (
+        model_unavailable = (
             call_failed
             and not quota_exhausted
             and not timed_out
             and not stalled
+            and self._matches(raw_output, COPILOT_MODEL_UNAVAILABLE_PATTERNS)
+        )
+        capacity_exhausted = (
+            call_failed
+            and not quota_exhausted
+            and not model_unavailable
+            and not timed_out
+            and not stalled
+            and self._matches(raw_output, COPILOT_PROVIDER_BUSY_PATTERNS)
+        )
+        auth_failure = (
+            call_failed
+            and not quota_exhausted
+            and not model_unavailable
+            and not capacity_exhausted
+            and not timed_out
+            and not stalled
             and self._matches(raw_output, COPILOT_AUTH_PATTERNS)
         )
-        ok = not call_failed and not quota_exhausted and not auth_failure
+        waiting_cause: str | None
+        if quota_exhausted or model_unavailable or auth_failure:
+            waiting_cause = None
+        elif timed_out or stalled:
+            waiting_cause = "timeout"
+        elif capacity_exhausted:
+            waiting_cause = "provider_busy"
+        elif call_failed and self._matches(raw_output, COPILOT_NETWORK_PATTERNS):
+            waiting_cause = "network"
+        elif call_failed and self._matches(raw_output, COPILOT_PROVIDER_ERROR_PATTERNS):
+            waiting_cause = "provider_error"
+        else:
+            waiting_cause = None
+        ok = not call_failed
         if quota_exhausted:
             error = "Copilot usage quota exhausted"
+        elif model_unavailable:
+            error = f"Copilot model unavailable: {model}"
+        elif capacity_exhausted:
+            error = "Copilot provider capacity temporarily exhausted"
         elif auth_failure:
             error = "Copilot authentication unavailable"
+        elif waiting_cause in {"network", "provider_error"}:
+            error = f"Copilot {waiting_cause.replace('_', ' ')} failure"
         elif not result_event_ok and not timed_out and not stalled:
             error = "Copilot JSON stream contained no successful result event"
         elif return_code != 0 and not timed_out and not stalled:
@@ -487,9 +562,12 @@ class CopilotAgentRunner:
             model=routed_model or model,
             quota_exhausted=quota_exhausted,
             quota_scope="premium_requests" if quota_exhausted else None,
-            transient_error=timed_out or stalled,
-            waiting_cause="timeout" if timed_out or stalled else None,
+            capacity_exhausted=capacity_exhausted,
+            transient_error=waiting_cause
+            in {"provider_busy", "network", "provider_error", "timeout"},
+            waiting_cause=waiting_cause,
             auth_failure=auth_failure,
+            model_unavailable=model_unavailable,
             provider="copilot",
         )
         self._record_usage(
