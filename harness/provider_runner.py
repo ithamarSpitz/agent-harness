@@ -11,6 +11,7 @@ from typing import cast
 from .agy_runner import AgyAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
+from .copilot_runner import CopilotAgentRunner
 from .config import HarnessConfig
 from .headroom import headroom_snapshot
 from .impact import collect_outside_impact
@@ -149,13 +150,15 @@ class ProviderAgentRunner:
                  claude: ClaudeAgentRunner | None = None,
                  agy: AgyAgentRunner | None = None,
                  headroom_reader: HeadroomReader | None = None,
-                 clock: Clock | None = None):
+                 clock: Clock | None = None,
+                 copilot: CopilotAgentRunner | None = None):
         self.config = config
         self.state = state
         self.codex = codex
         self.cursor = cursor
         self.claude = claude
         self.agy = agy
+        self.copilot = copilot
         self.usage = usage
         self._headroom_reader = headroom_reader or (
             lambda: headroom_snapshot(config=self.config)
@@ -249,6 +252,20 @@ class ProviderAgentRunner:
             )
             and not bool(
                 phase and self.state.get_meta(self._phase_disable_key(task, "agy", phase))
+            )
+        )
+
+    def _copilot_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
+        return (
+            self.config.copilot.enabled
+            and self.copilot is not None
+            and not bool(
+                self.state.get_meta(f"{task.sprint}.{task.id}.provider.copilot.disabled")
+            )
+            and not bool(
+                phase and self.state.get_meta(
+                    self._phase_disable_key(task, "copilot", phase)
+                )
             )
         )
 
@@ -372,7 +389,7 @@ class ProviderAgentRunner:
 
     def _disabled_for(self, task: TaskSpec, phase: str) -> set[str]:
         disabled: set[str] = set()
-        for provider in ("agy", "codex", "cursor", "claude"):
+        for provider in ("agy", "copilot", "codex", "cursor", "claude"):
             if self.state.get_meta(
                 f"{task.sprint}.{task.id}.provider.{provider}.disabled"
             ) or self.state.get_meta(self._phase_disable_key(task, provider, phase)):
@@ -513,6 +530,7 @@ class ProviderAgentRunner:
         disabled = self._disabled_for(task, phase) | (extra_disabled or set())
         enabled = {
             "agy": self.config.agy.enabled and self.agy is not None,
+            "copilot": self.config.copilot.enabled and self.copilot is not None,
             "codex": self.config.codex.enabled,
             "cursor": self.config.cursor.enabled,
             "claude": self.config.claude.enabled and self.claude is not None,
@@ -582,6 +600,7 @@ class ProviderAgentRunner:
         skipped = self._disabled_for(task, phase) | unavailable
         enabled = {
             "agy": self.config.agy.enabled and self.agy is not None,
+            "copilot": self.config.copilot.enabled and self.copilot is not None,
             "codex": self.config.codex.enabled,
             "cursor": self.config.cursor.enabled,
             "claude": self.config.claude.enabled and self.claude is not None,
@@ -620,6 +639,8 @@ class ProviderAgentRunner:
             normalized = provider.strip().casefold()
             if normalized == "agy" and self._agy_enabled_for(task, phase):
                 return "agy"
+            if normalized == "copilot" and self._copilot_enabled_for(task, phase):
+                return "copilot"
             if normalized == "codex" and self._codex_enabled_for(task, phase):
                 return "codex"
             if normalized == "cursor" and self._cursor_enabled_for(task, phase):
@@ -630,6 +651,8 @@ class ProviderAgentRunner:
             return "cursor"
         if self._agy_enabled_for(task, phase):
             return "agy"
+        if self._copilot_enabled_for(task, phase):
+            return "copilot"
         return "none"
 
     def _mark_codex_disabled(self, task: TaskSpec, reason: str) -> None:
@@ -707,12 +730,17 @@ class ProviderAgentRunner:
             len(self.config.agy.implementation_sequence)
             if self.config.agy.enabled else 0
         )
+        copilot_attempts = (
+            len(self.config.copilot.implementation_sequence)
+            if self.config.copilot.enabled else 0
+        )
         claude_attempts = (
             len(self.config.claude.implementation_sequence)
             if self.config.claude.enabled else 0
         )
         return (
             agy_attempts
+            + copilot_attempts
             + len(self.config.codex.implementation_sequence)
             + self._cursor_implement_budget()
             + claude_attempts
@@ -729,12 +757,14 @@ class ProviderAgentRunner:
             self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
             enabled = {
                 "agy": self.config.agy.enabled and self.agy is not None,
+                "copilot": self.config.copilot.enabled and self.copilot is not None,
                 "codex": self.config.codex.enabled,
                 "cursor": self.config.cursor.enabled,
                 "claude": self.config.claude.enabled and self.claude is not None,
             }
             attempt_limits = {
                 "agy": len(self.config.agy.implementation_sequence),
+                "copilot": len(self.config.copilot.implementation_sequence),
                 "codex": len(self.config.codex.implementation_sequence),
                 "cursor": self._cursor_implement_budget(),
                 "claude": len(self.config.claude.implementation_sequence),
@@ -882,7 +912,9 @@ class ProviderAgentRunner:
                 code_map_offered=code_map_offered,
                 on_process_start=hook,
             )
-            if result.ok and result.provider in {"agy", "codex", "cursor", "claude"}:
+            if result.ok and result.provider in {
+                "agy", "copilot", "codex", "cursor", "claude"
+            }:
                 # Every path records the implementer so review can avoid it.
                 self.state.set_meta(
                     f"{task.sprint}.{task.id}.provider.implementer", result.provider
@@ -988,6 +1020,10 @@ class ProviderAgentRunner:
                 self.config.agy.implementation_sequence
             ):
                 exhausted.add("agy")
+            if self._provider_attempt(task, "copilot") >= len(
+                self.config.copilot.implementation_sequence
+            ):
+                exhausted.add("copilot")
             if self._provider_attempt(task, "codex") >= len(
                 self.config.codex.implementation_sequence
             ):
@@ -1021,6 +1057,15 @@ class ProviderAgentRunner:
                         model_class_override=routing_class,
                         code_map_offered=code_map_offered,
                         exhausted_pools=self._agy_exhausted_pools(task),
+                        on_process_start=on_process_start,
+                    )
+                elif provider == "copilot" and self.copilot is not None:
+                    result = self.copilot.implement(
+                        task, workspace, timeout_minutes,
+                        self._provider_attempt(task, "copilot") + 1,
+                        previous_failure, env=env,
+                        model_class_override=routing_class,
+                        code_map_offered=code_map_offered,
                         on_process_start=on_process_start,
                     )
                 elif provider == "codex":
@@ -1232,6 +1277,13 @@ class ProviderAgentRunner:
                         code_map_offered=code_map_offered,
                         on_process_start=on_process_start,
                     )
+                elif provider == "copilot" and self.copilot is not None:
+                    result = self.copilot.review(
+                        task, workspace, base_ref, verification_summary,
+                        timeout_minutes, env=env,
+                        code_map_offered=code_map_offered,
+                        on_process_start=on_process_start,
+                    )
                 elif provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
@@ -1283,7 +1335,7 @@ class ProviderAgentRunner:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
-        if self.config.claude.enabled:
+        if self.config.claude.enabled or self.config.copilot.enabled:
             return self._plan_change_with_routing(
                 task, workspace, failure_summary, timeout_minutes,
                 model_class=model_class, env=env,
@@ -1356,6 +1408,11 @@ class ProviderAgentRunner:
                         task, workspace, failure_summary, timeout_minutes,
                         model_class=model_class, env=env,
                     )
+                elif provider == "copilot" and self.copilot is not None:
+                    result = self.copilot.plan_change(
+                        task, workspace, failure_summary, timeout_minutes,
+                        model_class=model_class, env=env,
+                    )
                 elif provider == "codex":
                     available, _ = self.codex.availability()
                     if not available:
@@ -1385,6 +1442,76 @@ class ProviderAgentRunner:
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
                 self._disable_provider(task, provider, self._fallback_reason(result))
+                unavailable.add(provider)
+                continue
+            return result
+
+    def brief_check(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        brief_text: str,
+        timeout_minutes: int,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> AgentResult:
+        """Read through a brief using the plan-repair routing policy."""
+
+        unavailable: set[str] = {"agy", "cursor", "claude"}
+        last_result: AgentResult | None = None
+        while True:
+            choice = self._choose(
+                task,
+                "plan_repair",
+                model_class="reviewer",
+                record=True,
+                extra_disabled=unavailable,
+            )
+            provider = choice.provider
+            if provider is None:
+                return last_result or AgentResult(
+                    False, "", choice.reason, provider="none", quota_exhausted=True
+                )
+            override: str | None = None
+            try:
+                if provider == "copilot" and self.copilot is not None:
+                    available, _ = self.copilot.availability()
+                    if not available:
+                        override = "auth_or_cli_unavailable"
+                        result = AgentResult(
+                            False, "", "Copilot CLI/auth unavailable",
+                            provider="copilot", auth_failure=True,
+                        )
+                    else:
+                        result = self.copilot.brief_check(
+                            task, workspace, brief_text, timeout_minutes, env=env
+                        )
+                else:
+                    available, _ = self.codex.availability(refresh=True)
+                    if not available:
+                        override = "auth_or_cli_unavailable"
+                        result = AgentResult(
+                            False, "", "Codex CLI/auth unavailable",
+                            provider="codex", auth_failure=True,
+                        )
+                    else:
+                        result = self.codex.brief_check(
+                            task,
+                            workspace,
+                            brief_text,
+                            timeout_minutes,
+                            model=self.config.codex.planner_model,
+                        )
+            except Exception as exc:
+                override = f"integration_error:{type(exc).__name__}"
+                result = AgentResult(
+                    False, "", f"{provider} integration error: {type(exc).__name__}",
+                    provider=provider, launch_failure=True,
+                )
+            if self._provider_unavailable(result) or self._is_launch_failure(result):
+                last_result = result
+                reason = override or self._fallback_reason(result)
+                self._disable_provider(task, provider, reason)
                 unavailable.add(provider)
                 continue
             return result

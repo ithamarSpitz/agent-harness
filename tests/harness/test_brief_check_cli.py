@@ -47,7 +47,12 @@ def _runtime(tmp_path: Path, result: AgentResult) -> tuple[SimpleNamespace, Fake
         root=tmp_path,
         config=SimpleNamespace(codex=SimpleNamespace(planner_model="planner")),
         roadmap=object(),
-        runner=SimpleNamespace(codex=codex),
+        runner=SimpleNamespace(
+            codex=codex,
+            brief_check=lambda task, workspace, brief_text, timeout_minutes: codex.brief_check(
+                task, workspace, brief_text, timeout_minutes, model="planner"
+            ),
+        ),
         scheduler=SimpleNamespace(
             task_queue=SimpleNamespace(resolve_task=lambda roadmap, task_id: task)
         ),

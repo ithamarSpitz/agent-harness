@@ -39,6 +39,7 @@ from .roadmap import Roadmap, RoadmapError
 from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .agy_runner import AgyAgentRunner
+from .copilot_runner import CopilotAgentRunner
 from .command_locate import locate
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
 from .process_utils import prepare_external_argv, split_command
@@ -115,8 +116,19 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
         AgyAgentRunner(config, runtime_root / "logs", context, usage)
         if config.agy.enabled else None
     )
+    copilot_runner = (
+        CopilotAgentRunner(config, runtime_root / "logs", context, usage)
+        if config.copilot.enabled else None
+    )
     runner = ProviderAgentRunner(
-        config, state, codex_runner, cursor_runner, usage, claude_runner, agy_runner
+        config,
+        state,
+        codex_runner,
+        cursor_runner,
+        usage,
+        claude_runner,
+        agy_runner,
+        copilot=copilot_runner,
     )
     verifier = Verifier(config, runtime_root / "logs", worktrees)
     scheduler = Scheduler(
@@ -319,24 +331,23 @@ def cmd_validate(runtime: Runtime, sprint_id: str | None = None) -> int:
 
 def cmd_brief_check(runtime: Runtime, task_id: str, timeout_minutes: int) -> int:
     task = _resolve_task(runtime, task_id)
-    codex = runtime.runner.codex
-    available, reason = codex.availability(refresh=True)
-    if not available:
-        print(f"Codex unavailable: {reason}", file=sys.stderr)
-        return 2
-
     brief_text = task.file.read_text(encoding="utf-8-sig")
-    result = codex.brief_check(
-        task,
-        runtime.root,
-        brief_text,
-        timeout_minutes,
-        model=runtime.config.codex.planner_model,
+    result = runtime.runner.brief_check(
+        task, runtime.root, brief_text, timeout_minutes
     )
     if not result.ok:
-        reason = result.error or (
-            "Codex quota exhausted" if result.quota_exhausted else "Codex brief check failed"
-        )
+        if result.error:
+            reason = result.error
+        elif result.provider == "codex":
+            reason = (
+                "Codex quota exhausted"
+                if result.quota_exhausted else "Codex brief check failed"
+            )
+        else:
+            reason = (
+                "Provider quota exhausted"
+                if result.quota_exhausted else "Provider brief check failed"
+            )
         print(reason, file=sys.stderr)
         return 2
 
