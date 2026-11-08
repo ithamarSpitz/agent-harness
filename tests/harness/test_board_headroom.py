@@ -122,7 +122,7 @@ def test_live_source_refreshes_stale_data_through_headroom_snapshot(
     cache.write_text(json.dumps({"cached_at": 1, "providers": stale}), encoding="utf-8")
     control = tmp_path / "control.json"
     control.write_text(json.dumps({"cached_at": 1, "providers": stale}), encoding="utf-8")
-    fresh = headroom_snapshot(cache_path=control, now=lambda: 2.0, agy_enabled=False)
+    fresh = headroom_snapshot(cache_path=control, now=lambda: 2.0, agy_enabled=False, copilot_enabled=False)
     assert fresh["codex"][0].used_percent == 77.0  # fixture is a readable cache
     seen: list[str] = []
 
@@ -142,6 +142,7 @@ def test_live_source_refreshes_stale_data_through_headroom_snapshot(
             cache_path=cache,
             now=lambda: 10_000.0,
             agy_enabled=False,
+            copilot_enabled=False,
         )
 
     monkeypatch.setattr(board_module, "headroom_snapshot", live)
