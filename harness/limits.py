@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from . import __version__
 from .agy_usage import AgyBucket, fetch_agy_usage
+from .copilot_usage import CopilotQuota, fetch_copilot_quota
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 
 if TYPE_CHECKING:
@@ -76,6 +77,7 @@ def default_cursor_state_db() -> Path:
 
 UrlOpener = Callable[..., Any]
 AgyUsageSource = Callable[..., list[AgyBucket]]
+CopilotQuotaSource = Callable[..., CopilotQuota]
 
 
 _AGY_CONFIG_WARNED: set[tuple[str, str]] = set()
@@ -126,6 +128,34 @@ def _agy_settings(
             )
         return False, "agy"
     return bool(loaded.agy.enabled), str(loaded.agy.command or "agy")
+
+
+def _copilot_settings(
+    config: HarnessConfig | None = None,
+    *,
+    root: Path | None = None,
+    config_path: Path | None = None,
+) -> tuple[bool, list[str] | None]:
+    """Return whether Copilot is enabled and its quota command."""
+    if config is not None:
+        return bool(config.copilot.enabled), list(config.copilot.quota_command)
+    if config_path is None:
+        try:
+            base = Path(root) if root is not None else Path.cwd()
+        except OSError:
+            return False, None
+        config_path = base / "harness.yaml"
+    path = Path(config_path)
+    try:
+        if not path.is_file():
+            return False, None
+        from .config import HarnessConfig as _HarnessConfig
+
+        loaded = _HarnessConfig.load(path)
+    except Exception:
+        # _agy_settings owns the existing once-only warning for invalid config.
+        return False, None
+    return bool(loaded.copilot.enabled), list(loaded.copilot.quota_command)
 
 
 class _ClaudeNoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -922,6 +952,37 @@ def load_agy(
     return lines, {"pools": payload}
 
 
+def load_copilot(
+    *,
+    command: list[str] | None = None,
+    source: CopilotQuotaSource | None = None,
+    now: datetime | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    now = now or datetime.now().astimezone()
+    source = source or fetch_copilot_quota
+    try:
+        quota = source(command=command)
+    except Exception as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        return [f"Copilot: usage unavailable ({reason})"], {"error": reason}
+
+    resets_at = int(quota.reset_time.timestamp())
+    remaining_seconds = max(0, int((quota.reset_time - now).total_seconds()))
+    line = (
+        f"  premium  {100.0 - quota.percent_remaining:g}% used, "
+        f"{quota.remaining} of {quota.entitlement} left, resets "
+        f"{format_local_day_time(quota.reset_time)} "
+        f"({_format_duration_until(seconds=remaining_seconds)})"
+    )
+    return [f"Copilot ({quota.plan})", line], {
+        "plan": quota.plan,
+        "entitlement": quota.entitlement,
+        "remaining": quota.remaining,
+        "percent_remaining": quota.percent_remaining,
+        "resets_at": resets_at,
+    }
+
+
 def render_limits(
     paths: LimitsPaths,
     *,
@@ -933,6 +994,9 @@ def render_limits(
     agy_enabled: bool = False,
     agy_command: str = "agy",
     agy_source: AgyUsageSource = fetch_agy_usage,
+    copilot_enabled: bool = False,
+    copilot_quota_command: list[str] | None = None,
+    copilot_source: CopilotQuotaSource | None = None,
 ) -> str:
     now = now or datetime.now().astimezone()
     codex_lines, codex_json = load_codex(
@@ -951,6 +1015,14 @@ def render_limits(
             source=agy_source,
             now=now,
         )
+    copilot_lines: list[str] | None = None
+    copilot_json: dict[str, Any] | None = None
+    if copilot_enabled:
+        copilot_lines, copilot_json = load_copilot(
+            command=copilot_quota_command,
+            source=copilot_source,
+            now=now,
+        )
     if as_json:
         payload: dict[str, Any] = {
             "codex": codex_json,
@@ -959,10 +1031,14 @@ def render_limits(
         }
         if agy_json is not None:
             payload["agy"] = agy_json
+        if copilot_json is not None:
+            payload["copilot"] = copilot_json
         return json.dumps(payload, indent=2, sort_keys=True)
     blocks = ["\n".join(codex_lines), "\n".join(cursor_lines), "\n".join(claude_lines)]
     if agy_lines is not None:
         blocks.append("\n".join(agy_lines))
+    if copilot_lines is not None:
+        blocks.append("\n".join(copilot_lines))
     return "\n\n".join(blocks)
 
 
@@ -976,6 +1052,9 @@ def run_limits(
     agy_enabled: bool | None = None,
     agy_command: str | None = None,
     agy_source: AgyUsageSource = fetch_agy_usage,
+    copilot_enabled: bool | None = None,
+    copilot_quota_command: list[str] | None = None,
+    copilot_source: CopilotQuotaSource | None = None,
     config: HarnessConfig | None = None,
     root: Path | None = None,
     config_path: Path | None = None,
@@ -989,6 +1068,14 @@ def run_limits(
             agy_enabled = configured_enabled
         if agy_command is None:
             agy_command = configured_command
+    if copilot_enabled is None or copilot_quota_command is None:
+        configured_copilot_enabled, configured_quota_command = _copilot_settings(
+            config, root=root, config_path=config_path
+        )
+        if copilot_enabled is None:
+            copilot_enabled = configured_copilot_enabled
+        if copilot_quota_command is None:
+            copilot_quota_command = configured_quota_command
     print(
         render_limits(
             paths,
@@ -999,6 +1086,9 @@ def run_limits(
             agy_enabled=agy_enabled,
             agy_command=agy_command,
             agy_source=agy_source,
+            copilot_enabled=copilot_enabled,
+            copilot_quota_command=copilot_quota_command,
+            copilot_source=copilot_source,
         )
     )
     return 0
