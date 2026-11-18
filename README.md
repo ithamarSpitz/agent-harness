@@ -1,6 +1,6 @@
 # Agent Harness
 
-A small orchestrator that runs Antigravity, Codex, Cursor, and Claude Code agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
+A small orchestrator that runs Antigravity, Codex, Cursor, Claude Code, and GitHub Copilot agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
 
 ## Install on a new computer
 
@@ -14,6 +14,7 @@ Install and authenticate these yourself before using the harness:
 - **Cursor CLI** (`agent`) — run `agent login`
 - **Claude Code** (optional) — install and authenticate `claude`
 - **Google Antigravity CLI** (optional) — install `agy` and sign in with your Google account
+- **GitHub Copilot CLI** (optional) — install `copilot` and run `copilot login`
 
 Clone this repository, then from the repo root run:
 
@@ -35,7 +36,7 @@ Check the environment:
 harness doctor --full
 ```
 
-Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `cursor.enabled`, `claude.enabled`). To enable Antigravity after you have installed and signed in to `agy`:
+Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `cursor.enabled`, `claude.enabled`, `copilot.enabled`). To enable Antigravity after you have installed and signed in to `agy`:
 
 ```yaml
 agy:
@@ -57,6 +58,25 @@ providers:
 ```
 
 The default Claude ladder is Sonnet medium, Sonnet high, then Opus high. Current headroom chooses among enabled providers on every call; reviews use another provider when available. A reviewer process failure that supplies no `VERDICT:` is treated as a reviewer fault: that provider is disabled for the task's review and the same implementation is reviewed elsewhere without spending implementation budget. Two reviewer faults, or one with no alternate reviewer, block the task and report the faults. An explicit `VERDICT: FAIL` remains ordinary review feedback even if the reviewer process exits unsuccessfully. See [SPEC.md](SPEC.md) for routing and reserve rules.
+
+To enable GitHub Copilot CLI after installing `copilot` and signing in with `copilot login`:
+
+```yaml
+copilot:
+  enabled: true
+providers:
+  priority: [copilot, agy, codex, cursor, claude]
+```
+
+The harness only executes `copilot` with per-call flags and environment variables; the user authenticates once via `copilot login` and quota requires `gh auth login`. Calls run `copilot -p` non-interactively with `--output-format json`, working directory `-C`, and `--no-auto-update`. The harness always passes `--disable-builtin-mcps` to turn off Copilot's built-in GitHub MCP server, preventing unintended external mutations on GitHub.
+
+When `model` is set to `auto` (the default), auto routing tiers are set per call using the `COPILOT_AUTO_TIER` environment variable (`efficiency`, `balance`, or `intelligence`). The default `copilot.implementation_sequence` steps through `balance`, `intelligence`, and `intelligence` with `--reasoning-effort high`. Reviews use `copilot.review_model` (`auto`), `copilot.review_auto_tier` (`intelligence`), and `copilot.review_effort` (`null`). Escalation uses `copilot.escalation_model` (`auto`), `copilot.escalation_auto_tier` (`intelligence`), and `copilot.escalation_effort` (`high`).
+
+Tool access is strictly bounded by phase:
+- Implementation calls pass `--allow-all-tools` with `--deny-tool` rules preventing mutating repository and remote actions: `shell(git push)`, `shell(git commit)`, `shell(git reset)`, `shell(git checkout)`, `shell(git rebase)`, and `shell(gh)`.
+- Reviews and plan repair run read-only using `--deny-tool write` and `--allow-tool` only for repository inspection: `shell(git diff:*)`, `shell(git log:*)`, `shell(git show:*)`, and `shell(git status:*)`. (In non-interactive mode, Copilot denies any tool not approved by an allow rule.)
+
+Copilot premium request quota is checked with `gh api copilot_internal/user` (configurable via `copilot.quota_command`). It retrieves `copilot_plan`, monthly `quota_reset_date_utc`, and `quota_snapshots.premium_interactions` (`entitlement`, `remaining`, `percent_remaining`, `unlimited`). When enabled, `harness limits` (and `harness limits --json`) displays plan details, percent used, remaining requests, and reset time. If premium requests are exhausted, quota waiting pauses until the monthly reset date.
 
 ## Start a new project
 
@@ -191,7 +211,7 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
 | `brief-check TASK [--timeout-minutes N]` | Run a read-only Codex read-through of one task brief. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
-| `limits [--json]` | Codex, Cursor, Claude, and enabled Antigravity usage limits (independent blocks). |
+| `limits [--json]` | Codex, Cursor, Claude, Antigravity, and Copilot usage limits (independent blocks). |
 | `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |
 | `models import PROJECT [PROJECT ...]` | Import legacy project usage logs into the shared outcomes log. |
 | `setup-machine` | Post-install machine setup invoked by install scripts. |

@@ -4,6 +4,9 @@ Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](
 
 ## Unreleased
 
+- Optional GitHub Copilot CLI provider (`copilot`): authenticates once via `copilot login`, executes non-interactively with `--output-format json`, disables built-in MCPs (`--disable-builtin-mcps`), and sets `COPILOT_AUTO_TIER` to `efficiency`, `balance`, or `intelligence`.
+- Copilot tool boundaries deny mutating Git and gh operations for implementations, and restrict reviews and plan repair to `--deny-tool write` plus read-only `git diff`, `git log`, `git show`, and `git status` allow rules.
+- Copilot premium-interaction quota is read via `gh api copilot_internal/user`, displayed in `harness limits` (`--json`), and incorporated into quota waiting when monthly quota is exhausted.
 - Added the checked-in Spec Kit setup (`.specify/`, with generated designs under `specs/`) and `skills/write-harness-briefs/SKILL.md` for turning an approved design into scoped task briefs and roadmap entries.
 - `harness validate <SPRINT>` now reports brief findings with the codes `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`.
 - Added `harness brief-check <TASK>`, a read-only Codex read-through that exits 0 when inferred work matches `allowed_paths`, 1 for discrepancies, and 2 when Codex is unavailable or the check fails.
