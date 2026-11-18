@@ -56,8 +56,9 @@ copilot:
   enabled: true
 
 agy:
-  # Back on after 0.21 (2026-11-06): S11-T4 fixed --effort for Claude models, S11-T8/T13 the exploration prompt.
-  enabled: true
+  # Off 2026-11-18 (user OK): in S14 agy failed most tries (denied commands, 503, stopped after one step) and used ~60% of its week.
+  # Turn back on once the S15 stage-1 agy fixes are merged.
+  enabled: false
 
 codex:
   enabled: true
