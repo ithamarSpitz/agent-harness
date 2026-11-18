@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import HarnessConfig
-from .limits import LimitsPaths, load_codex, load_cursor
+from .copilot_usage import CopilotQuota, fetch_copilot_quota
+from .limits import LimitsPaths, _copilot_settings, load_codex, load_cursor
 from .state import StateStore
 from .models import TaskStatus
 
@@ -86,11 +87,18 @@ def _window_resets_at(window: object) -> datetime | None:
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
-def default_limits_source(now: datetime) -> list[QuotaResetInfo]:
+def default_limits_source(
+    now: datetime,
+    *,
+    config: HarnessConfig | None = None,
+    copilot_source: Callable[..., CopilotQuota] | None = None,
+) -> list[QuotaResetInfo]:
     """Read Codex/Cursor limits and return reset times for exhausted providers.
 
     Codex: each rate-limit window at 100 % contributes its ``resets_at``.
     Cursor: when auto or API pool is used up, contribute billing cycle end.
+    Copilot: when its premium-interaction quota is exhausted, contribute
+    the monthly reset time.
     Failures (missing auth, network, parse errors) yield an empty contribution
     so the caller falls back to the configured probe interval.
     """
@@ -131,6 +139,24 @@ def default_limits_source(now: datetime) -> list[QuotaResetInfo]:
                         reset_at=datetime.fromtimestamp(end_ts, tz=timezone.utc),
                     )
                 )
+    copilot_enabled, copilot_quota_command = _copilot_settings(config)
+    if copilot_enabled:
+        source = copilot_source or fetch_copilot_quota
+        try:
+            copilot = source(command=copilot_quota_command)
+        except Exception:
+            copilot = None
+        if (
+            copilot is not None
+            and not copilot.unlimited
+            and copilot.remaining <= 0
+        ):
+            found.append(
+                QuotaResetInfo(
+                    provider="copilot",
+                    reset_at=copilot.reset_time.astimezone(timezone.utc),
+                )
+            )
     return found
 
 
