@@ -844,6 +844,18 @@ sprints:
         - S14-T7
       S14-T9:
         file: tasks/sprint-14-copilot-cli/09-docs.md
+        stage: 8
+        depends_on:
+        - S14-T8
+        - S14-T10
+        - S14-T11
+      S14-T10:
+        file: tasks/sprint-14-copilot-cli/10-copilot-quota-wait.md
         stage: 6
         depends_on:
         - S14-T8
+      S14-T11:
+        file: tasks/sprint-14-copilot-cli/11-agy-quota-wait.md
+        stage: 7
+        depends_on:
+        - S14-T10

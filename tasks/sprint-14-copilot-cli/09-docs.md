@@ -1,15 +1,18 @@
 ---
 id: S14-T9
-stage: 6
+stage: 8
 model_class: worker
 timeout_minutes: 30
 review: true
 allow_protected: false
 depends_on:
   - S14-T8
+  - S14-T10
+  - S14-T11
 allowed_paths:
   - README.md
   - CHANGELOG.md
+  - SPEC.md
 context:
   - spec
 environment: null
@@ -39,12 +42,13 @@ Facts checked on this machine on 2026-11-07 (Copilot CLI 1.0.107, installed at `
 
 1. README: in the providers part, a short Copilot section: install and sign in (the user does `copilot login` once), the `copilot:` settings, auto tiers as levels, the read-only review rules, the built-in GitHub MCP turned off, and how quota is read and shown.
 2. CHANGELOG: an "Unreleased" entry with the same points in a few lines.
+2a. SPEC.md: the quota-wait sentence (around line 78, "Otherwise it reads live Codex and Cursor limits") names every provider whose limits the merged `default_limits_source` in `harness/quota.py` reads (after S14-T10 and S14-T11: Copilot and agy too).
 3. Describe only what the code does; if code and this brief disagree, follow the code and say so in your report. Code gaps are not fixed here; report them.
 
 # Acceptance criteria
 
 1. Every command, flag, setting and path named in the new text exists in the code.
-2. Nothing outside these two files changes.
+2. Nothing outside these three files changes.
 
 # Rules
 
