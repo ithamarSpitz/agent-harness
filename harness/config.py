@@ -208,11 +208,7 @@ class CopilotConfig:
         default_factory=lambda: [
             {"model": "auto", "auto_tier": "balance"},
             {"model": "auto", "auto_tier": "intelligence"},
-            {
-                "model": "auto",
-                "auto_tier": "intelligence",
-                "effort": "high",
-            },
+            {"model": "auto", "auto_tier": "intelligence"},
         ]
     )
     review_model: str = "auto"
@@ -220,7 +216,7 @@ class CopilotConfig:
     review_effort: str | None = None
     escalation_model: str = "auto"
     escalation_auto_tier: str | None = "intelligence"
-    escalation_effort: str | None = "high"
+    escalation_effort: str | None = None
     quota_command: list[str] = field(
         default_factory=lambda: ["gh", "api", "copilot_internal/user"]
     )
@@ -626,6 +622,14 @@ class HarnessConfig:
                 raise ValueError(
                     f"{effort_key} value {effort!r} must be one of none, minimal, "
                     "low, medium, high, xhigh, max"
+                )
+            if model == "auto" and effort is not None:
+                profile_key = effort_key.removesuffix(".effort").removesuffix(
+                    "_effort"
+                )
+                raise ValueError(
+                    f"{profile_key}: model auto does not take an effort; "
+                    "remove effort or name a concrete model"
                 )
 
         for index, profile in enumerate(config.implementation_sequence):

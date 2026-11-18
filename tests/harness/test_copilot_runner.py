@@ -51,16 +51,15 @@ def _write_config(tmp_path: Path, command: str = "copilot") -> HarnessConfig:
                 {
                     "model": "auto",
                     "auto_tier": "balance",
-                    "effort": "medium",
                 },
                 {"model": "gpt-5.6-luna", "effort": "high"},
             ],
             "review_model": "auto",
             "review_auto_tier": "intelligence",
-            "review_effort": "low",
+            "review_effort": None,
             "escalation_model": "auto",
             "escalation_auto_tier": "intelligence",
-            "escalation_effort": "max",
+            "escalation_effort": None,
         },
         "verification": {"global_task_commands": [], "stage_commands": []},
         "paths": {"protected": [], "review_required": []},
@@ -168,8 +167,6 @@ def test_review_exact_argv_and_read_only_rules(tmp_path: Path) -> None:
         "--disable-builtin-mcps",
         "--model",
         "auto",
-        "--reasoning-effort",
-        "low",
         "--deny-tool",
         "write",
         *_pairs("--allow-tool", READ_ALLOWS),
@@ -230,13 +227,34 @@ def test_stream_without_result_event_fails(tmp_path: Path) -> None:
 def test_attempt_sequence_uses_second_and_then_last_entry(tmp_path: Path) -> None:
     runner = CopilotAgentRunner(_write_config(tmp_path), tmp_path / "logs")
 
-    assert runner._implementation_profile(2) == ("auto", "balance", "medium")
+    assert runner._implementation_profile(2) == ("auto", "balance", None)
     assert runner._implementation_profile(5) == ("gpt-5.6-luna", None, "high")
     assert runner._implementation_profile(1, model_class="escalation") == (
         "auto",
         "intelligence",
-        "max",
+        None,
     )
+
+
+def test_command_omits_effort_for_auto_and_keeps_it_for_concrete_model(
+    tmp_path: Path,
+) -> None:
+    runner = CopilotAgentRunner(_write_config(tmp_path), tmp_path / "logs")
+
+    auto_command = runner._command(
+        "copilot", "prompt", tmp_path, "auto", "high", read_only=False
+    )
+    concrete_command = runner._command(
+        "copilot", "prompt", tmp_path, "gpt-5.4", "high", read_only=False
+    )
+
+    assert "--reasoning-effort" not in auto_command
+    assert ["--reasoning-effort", "high"] == concrete_command[
+        concrete_command.index("--reasoning-effort") : concrete_command.index(
+            "--reasoning-effort"
+        )
+        + 2
+    ]
 
 
 def test_profile_without_auto_tier_clears_inherited_tier(

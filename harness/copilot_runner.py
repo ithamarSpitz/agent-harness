@@ -232,7 +232,7 @@ class CopilotAgentRunner:
             "--model",
             model,
         ]
-        if effort is not None:
+        if effort is not None and model != "auto":
             command += ["--reasoning-effort", effort]
         if prompt_dir is not None:
             command += ["--add-dir", str(prompt_dir)]
