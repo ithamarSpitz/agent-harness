@@ -859,3 +859,56 @@ sprints:
         stage: 7
         depends_on:
         - S14-T10
+  S15-field-fixes-2:
+    name: Fixes from S14 and BookNook S16 - Copilot auto+effort, agy permissions/503/no report, attempt count, board redraw, protected block
+    tasks:
+      S15-T1:
+        file: tasks/sprint-15-field-fixes-2/01-copilot-no-auto-effort.md
+        stage: 1
+        depends_on: []
+      S15-T2:
+        file: tasks/sprint-15-field-fixes-2/02-copilot-flag-error-not-an-attempt.md
+        stage: 2
+        depends_on:
+        - S15-T1
+      S15-T3:
+        file: tasks/sprint-15-field-fixes-2/03-agy-permissions-like-others.md
+        stage: 1
+        depends_on: []
+      S15-T4:
+        file: tasks/sprint-15-field-fixes-2/04-agy-503-is-capacity.md
+        stage: 2
+        depends_on:
+        - S15-T3
+      S15-T5:
+        file: tasks/sprint-15-field-fixes-2/05-agy-stops-after-one-step.md
+        stage: 3
+        depends_on:
+        - S15-T4
+      S15-T6:
+        file: tasks/sprint-15-field-fixes-2/06-attempts-count-real-tries.md
+        stage: 3
+        depends_on:
+        - S15-T2
+        - S15-T7
+        - S15-T8
+      S15-T7:
+        file: tasks/sprint-15-field-fixes-2/07-board-redraws-cleanly.md
+        stage: 1
+        depends_on: []
+      S15-T8:
+        file: tasks/sprint-15-field-fixes-2/08-protected-path-blocks-at-once.md
+        stage: 2
+        depends_on: []
+      S15-T9:
+        file: tasks/sprint-15-field-fixes-2/09-docs.md
+        stage: 4
+        depends_on:
+        - S15-T1
+        - S15-T2
+        - S15-T3
+        - S15-T4
+        - S15-T5
+        - S15-T6
+        - S15-T7
+        - S15-T8
