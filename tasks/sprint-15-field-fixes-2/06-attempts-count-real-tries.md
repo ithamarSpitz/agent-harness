@@ -37,7 +37,7 @@ S14-T10 showed `try 9/3` on 2026-11-18. `Scheduler` increments `runtime.attempt`
 
 # Decisions (do not reopen)
 
-1. After `self.runner.implement(...)` returns, if the result is a capacity wait, transient error, `launch_failure`, `config_fault` or `quota_exhausted`, give the attempt back (`runtime.attempt -= 1`) before saving. Real tries (ok, failed work, verification or review failure) keep it.
+1. After `self.runner.implement(...)` returns, if the result is a capacity wait, transient error, `launch_failure`, `config_fault` or `quota_exhausted`, give the attempt back (`runtime.attempt -= 1`) before saving. Real tries (ok, failed work, verification or review failure) keep it. `AgentResult.config_fault` already exists: S15-T2 (a dependency of this task) adds it in `harness/agent_runner.py`; read it, do not add it again.
 2. On resume, a task found in IMPLEMENTING with no recorded result for its current attempt reuses that attempt number instead of adding one.
 3. The board's M is the same limit the scheduler enforces for that task (with routing: the runner's `max_implementation_attempts(task)`), and N is shown as `min(N, M)`.
 4. Retry budgets per provider (`provider_attempts`) are unchanged.

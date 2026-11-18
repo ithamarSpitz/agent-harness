@@ -38,7 +38,7 @@ BookNook item 21 follow-up: the auto+effort error happened twice in S16 (T4, the
 1. Add `config_fault: bool = False` to `AgentResult`.
 2. New constant `COPILOT_CONFIG_ERROR_PATTERNS` in `copilot_runner.py` with at least `"does not support reasoning effort"`, `"unknown option"`, `"error: option"`, `"unexpected argument"` (lowercase match like the others). A failed call matching it, and no quota/auth/model-unavailable pattern, returns `config_fault=True` with `error` = the first matching output line.
 3. In `_implement_with_routing`, a `config_fault` result advances that provider's step (`_consume_provider_attempt`), does not disable the provider, and immediately tries the same provider again if it has steps left; when none are left it falls through to the next provider as for an exhausted sequence. The loop must not spin: each config fault consumes exactly one step.
-4. A `config_fault` is logged once per task and step as a WARNING naming the step index and the error line.
+4. A `config_fault` is logged once per task and step to the existing per-task routing log (`write_log(log_dir, f"{task.id}-routing.log", ...)`, as at `provider_runner.py` line 587), as a line starting `WARNING` that names the step index and the error line. Do not add Python `logging`.
 5. Review and plan-repair calls with a config fault fall back to the next provider for that call without disabling Copilot for the task.
 
 # Acceptance criteria
