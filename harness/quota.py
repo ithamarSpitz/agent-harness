@@ -14,8 +14,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import HarnessConfig
+from .agy_usage import AgyBucket
 from .copilot_usage import CopilotQuota, fetch_copilot_quota
-from .limits import LimitsPaths, _copilot_settings, load_codex, load_cursor
+from .limits import (
+    LimitsPaths,
+    _agy_settings,
+    _copilot_settings,
+    load_agy,
+    load_codex,
+    load_cursor,
+)
 from .state import StateStore
 from .models import TaskStatus
 
@@ -92,11 +100,13 @@ def default_limits_source(
     *,
     config: HarnessConfig | None = None,
     copilot_source: Callable[..., CopilotQuota] | None = None,
+    agy_source: Callable[..., list[AgyBucket]] | None = None,
 ) -> list[QuotaResetInfo]:
-    """Read Codex/Cursor limits and return reset times for exhausted providers.
+    """Read Codex/Cursor/agy/Copilot limits and return exhausted reset times.
 
     Codex: each rate-limit window at 100 % contributes its ``resets_at``.
     Cursor: when auto or API pool is used up, contribute billing cycle end.
+    agy: each pool at 0 % remaining contributes its pool reset time.
     Copilot: when its premium-interaction quota is exhausted, contribute
     the monthly reset time.
     Failures (missing auth, network, parse errors) yield an empty contribution
@@ -157,6 +167,46 @@ def default_limits_source(
                     reset_at=copilot.reset_time.astimezone(timezone.utc),
                 )
             )
+    try:
+        agy_enabled, agy_command = _agy_settings(config)
+    except AttributeError:
+        agy_enabled, agy_command = False, "agy"
+    if agy_enabled:
+        try:
+            if agy_source is None:
+                _, agy = load_agy(command=agy_command, now=now)
+            else:
+                _, agy = load_agy(
+                    command=agy_command,
+                    source=agy_source,
+                    now=now,
+                )
+        except Exception:
+            agy = {"error": "unavailable"}
+        pools = agy.get("pools") if isinstance(agy, dict) else None
+        if isinstance(pools, list):
+            for pool in pools:
+                if not isinstance(pool, dict):
+                    continue
+                raw_remaining = pool.get("remaining_percent")
+                raw_reset_ts = pool.get("resets_at")
+                if raw_remaining is None or raw_reset_ts is None:
+                    continue
+                try:
+                    remaining = float(raw_remaining)
+                    reset_ts = float(raw_reset_ts)
+                except (TypeError, ValueError):
+                    continue
+                if remaining <= 0.0 and reset_ts > 0:
+                    found.append(
+                        QuotaResetInfo(
+                            provider="agy",
+                            reset_at=datetime.fromtimestamp(
+                                reset_ts,
+                                tz=timezone.utc,
+                            ),
+                        )
+                    )
     return found
 
 
