@@ -147,7 +147,7 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
     manifests = RunManifestManager(root, runtime_root, state)
     validator = ProjectValidator(root, roadmap, config)
     def routing_limits(now):
-        found = list(default_limits_source(now))
+        found = list(default_limits_source(now, config=config))
         for key, value in state.meta().items():
             if not key.endswith(".routing_quota_reset_at"):
                 continue
