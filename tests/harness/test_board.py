@@ -464,3 +464,19 @@ def test_snapshot_from_state_reads_latest_recorded_routing_reason(tmp_path: Path
 
     assert snapshot.stages[0].tasks[0].routing_reason == "claude: 58% free"
     assert "    claude: 58% free" in render_board(snapshot, 120)
+
+
+def test_snapshot_from_state_uses_routing_limit_and_clamps_attempt(tmp_path: Path):
+    task = TaskSpec(id="T1", file=Path("tasks/t1.md"), sprint="S9", stage=1)
+    sprint = SprintSpec(id="S9", name="Routing", tasks={"T1": task})
+    state = StateStore(tmp_path / ".harness" / "state.json")
+    runtime = state.get("T1")
+    runtime.status = TaskStatus.IMPLEMENTING
+    runtime.attempt = 4
+    state.set_meta("S9.T1.board.max_attempts", 3)
+
+    snapshot = snapshot_from_state(state, sprint, datetime.now(timezone.utc))
+
+    board_task = snapshot.stages[0].tasks[0]
+    assert board_task.max_attempts == 3
+    assert board_task.attempt == 3

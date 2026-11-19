@@ -1468,6 +1468,8 @@ class Scheduler:
     ) -> TaskOutcome:
         runtime = self.state.get(task.id)
         max_attempts, timeout = self._defaults(task, model_class_override=model_class_override)
+        self.state.set_meta(f"{task.sprint}.{task.id}.board.max_attempts", max_attempts)
+        self.state.save()
 
         if runtime.status in {TaskStatus.DONE, TaskStatus.PASSED}:
             return TaskOutcome(task.id, True)
@@ -1544,7 +1546,8 @@ class Scheduler:
                 return resumed
 
         previous_failure = runtime.last_error or runtime.review_feedback
-        while runtime.attempt < max_attempts and (
+        reuse_in_flight_attempt = runtime.status == TaskStatus.IMPLEMENTING and runtime.attempt > 0
+        while (runtime.attempt < max_attempts or reuse_in_flight_attempt) and (
             not getattr(self.runner, "manages_model_routing", False)
             or self.runner.has_implementation_budget(task, model_class_override=model_class_override)
         ):
@@ -1553,7 +1556,9 @@ class Scheduler:
                 return interrupted
             self._reload_attempt_brief(task)
             _, timeout = self._defaults(task, model_class_override=model_class_override)
-            runtime.attempt += 1
+            if not reuse_in_flight_attempt:
+                runtime.attempt += 1
+            reuse_in_flight_attempt = False
             self._set_task_status(task, runtime, TaskStatus.IMPLEMENTING)
             runtime.waiting_phase = None
             runtime.waiting_provider = None
@@ -1600,6 +1605,12 @@ class Scheduler:
                     runtime.attempt -= 1
                 self.state.save()
                 return self._block_launch_failure(task, error, worktree)
+            if result.config_fault:
+                if runtime.attempt > 0:
+                    runtime.attempt -= 1
+                runtime.last_error = result.error or f"{result.provider} configuration fault"
+                self.state.save()
+                return self._block_task(task, runtime.last_error, worktree)
             runtime.resource_launch_failures = 0
             paused = self._handle_agent_wait(
                 task, worktree, result, phase="implement", decrement_attempt=True
