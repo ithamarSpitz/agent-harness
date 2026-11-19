@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import yaml
+
+import harness.provider_runner as provider_runner
+from harness.adapters.base import BaseAdapter
+from harness.config import HarnessConfig
+from harness.models import TaskSpec
+from harness.provider_runner import ProviderAgentRunner
+from harness.state import StateStore
+
+
+class _Runner:
+    log_dir = None
+
+    def availability(self, refresh: bool = False):
+        return True, ""
+
+
+def _router(tmp_path: Path, *, copilot_enabled: bool = True) -> ProviderAgentRunner:
+    path = tmp_path / "harness.yaml"
+    path.write_text(
+        yaml.safe_dump({
+            "cursor": {"enabled": True},
+            "codex": {"enabled": True},
+            "copilot": {"enabled": copilot_enabled},
+        }),
+        encoding="utf-8",
+    )
+    config = HarnessConfig.load(path)
+    return ProviderAgentRunner(
+        config, StateStore(tmp_path / "state.json"), _Runner(), _Runner(),  # type: ignore[arg-type]
+        copilot=_Runner(),  # type: ignore[arg-type]
+        headroom_reader=lambda: {},
+    )
+
+
+def _task() -> TaskSpec:
+    return SimpleNamespace(id="T1", sprint="S1", review_model_class=None)  # type: ignore[return-value]
+
+
+def _spy(monkeypatch) -> dict:
+    seen: dict = {}
+
+    def fake(snapshot, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(
+            provider=None, reason="spy", auto=False, wait_until=None
+        )
+
+    monkeypatch.setattr(provider_runner, "choose_provider", fake)
+    return seen
+
+
+def test_registry_holds_five_names_in_order(tmp_path: Path):
+    assert _router(tmp_path).adapters.names() == [
+        "agy", "copilot", "codex", "cursor", "claude"
+    ]
+
+
+def test_disabled_copilot_missing_from_enabled_map(tmp_path: Path, monkeypatch):
+    seen = _spy(monkeypatch)
+    router = _router(tmp_path, copilot_enabled=False)
+    router._choose(_task(), "implement", model_class="worker")
+    assert seen["enabled"]["copilot"] is False
+    assert seen["enabled"]["codex"] is True
+    assert list(seen["enabled"]) == ["agy", "copilot", "codex", "cursor", "claude"]
+
+
+def test_extra_adapter_is_offered_to_choose_provider(tmp_path: Path, monkeypatch):
+    class Sixth(BaseAdapter):
+        name = "sixth"
+
+        def enabled(self) -> bool:
+            return True
+
+        def implementation_budget(self) -> int:
+            return 2
+
+    seen = _spy(monkeypatch)
+    router = _router(tmp_path)
+    router.adapters.register(Sixth())
+    router._choose(_task(), "implement", model_class="worker")
+    assert seen["enabled"]["sixth"] is True
+    assert router._has_other_candidate(_task(), "implement", "codex", set())
