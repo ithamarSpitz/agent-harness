@@ -113,6 +113,90 @@ def test_copilot_reviews_its_own_work_when_it_is_only_provider_with_usage(
     assert copilot.review_calls == 1
 
 
+class ScriptedCopilot(FakeProvider):
+    def __init__(self, *, implement_faults: int, review_fault: bool = False) -> None:
+        super().__init__("copilot")
+        self.implement_faults = implement_faults
+        self.review_fault = review_fault
+
+    def _fault(self) -> AgentResult:
+        return AgentResult(
+            False, "", 'Error: Model "auto" does not support reasoning effort',
+            provider="copilot", config_fault=True,
+        )
+
+    def implement(self, *_args, **_kwargs):
+        self.implement_calls += 1
+        if self.implement_calls <= self.implement_faults:
+            return self._fault()
+        return AgentResult(True, "ok", provider="copilot")
+
+    def review(self, *_args, **_kwargs):
+        self.review_calls += 1
+        if self.review_fault:
+            return self._fault()
+        return AgentResult(True, "VERDICT: PASS", provider="copilot")
+
+
+def _two_step_router(tmp_path: Path, copilot: FakeProvider, codex: FakeProvider):
+    router, state = _router(tmp_path, copilot, codex)
+    router.config.copilot.implementation_sequence = (
+        router.config.copilot.implementation_sequence * 2
+    )
+    return router, state
+
+
+def test_config_fault_advances_step_and_keeps_copilot(tmp_path: Path) -> None:
+    copilot, codex = ScriptedCopilot(implement_faults=1), FakeProvider("codex")
+    router, state = _two_step_router(tmp_path, copilot, codex)
+    task = _task(tmp_path)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
+    result = router.implement(task, workspace, 1, 1, None)
+
+    assert result.ok and result.provider == "copilot"
+    assert copilot.implement_calls == 2
+    assert codex.implement_calls == 0
+    assert state.get_meta("S1.T1.provider.copilot.disabled") is None
+    assert router._provider_attempt(task, "copilot") == 2
+
+
+def test_all_config_faults_fall_through_without_disabling(tmp_path: Path) -> None:
+    copilot, codex = ScriptedCopilot(implement_faults=99), FakeProvider("codex")
+    router, state = _two_step_router(tmp_path, copilot, codex)
+    task = _task(tmp_path)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
+    result = router.implement(task, workspace, 1, 1, None)
+
+    assert result.provider == "codex" and result.ok
+    assert copilot.implement_calls == 2
+    assert state.get_meta("S1.T1.provider.copilot.disabled") is None
+
+
+def test_review_config_fault_uses_other_provider(tmp_path: Path) -> None:
+    copilot = ScriptedCopilot(implement_faults=0, review_fault=True)
+    codex = FakeProvider("codex")
+    router, state = _router(tmp_path, copilot, codex)
+    router.config.codex.enabled = True
+    task = _task(tmp_path)
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
+    # Make Copilot the preferred reviewer by putting codex out of the way first.
+    result = router._review_with_routing(
+        task, workspace, "base", "ok", 1, env=None,
+        code_map_offered=False, on_process_start=None,
+    )
+
+    assert result.ok
+    assert result.provider in {"codex", "copilot"}
+    assert state.get_meta("S1.T1.provider.copilot.disabled") is None
+    assert router.implement(task, workspace, 1, 1, None).provider == "copilot"
+
+
 def test_copilot_quota_failure_falls_back_to_codex(tmp_path: Path) -> None:
     copilot, codex = FakeProvider("copilot", quota=True), FakeProvider("codex")
     router, state = _router(tmp_path, copilot, codex)

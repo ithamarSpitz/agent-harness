@@ -43,6 +43,12 @@ COPILOT_AUTH_PATTERNS = (
 COPILOT_MODEL_UNAVAILABLE_PATTERNS = (
     "from --model flag is not available",
 )
+COPILOT_CONFIG_ERROR_PATTERNS = (
+    "does not support reasoning effort",
+    "unknown option",
+    "error: option",
+    "unexpected argument",
+)
 COPILOT_PROVIDER_BUSY_PATTERNS = (
     "rate limit",
     "429",
@@ -523,8 +529,22 @@ class CopilotAgentRunner:
             and not stalled
             and self._matches(raw_output, COPILOT_AUTH_PATTERNS)
         )
+        config_error_line: str | None = None
+        if (
+            call_failed
+            and not quota_exhausted
+            and not model_unavailable
+            and not auth_failure
+            and not timed_out
+            and not stalled
+        ):
+            for line in raw_output.splitlines():
+                if self._matches(line, COPILOT_CONFIG_ERROR_PATTERNS):
+                    config_error_line = line.strip()
+                    break
+        config_fault = config_error_line is not None
         waiting_cause: str | None
-        if quota_exhausted or model_unavailable or auth_failure:
+        if quota_exhausted or model_unavailable or auth_failure or config_fault:
             waiting_cause = None
         elif timed_out or stalled:
             waiting_cause = "timeout"
@@ -541,6 +561,8 @@ class CopilotAgentRunner:
             error = "Copilot usage quota exhausted"
         elif model_unavailable:
             error = f"Copilot model unavailable: {model}"
+        elif config_fault:
+            error = config_error_line
         elif capacity_exhausted:
             error = "Copilot provider capacity temporarily exhausted"
         elif auth_failure:
@@ -568,6 +590,7 @@ class CopilotAgentRunner:
             waiting_cause=waiting_cause,
             auth_failure=auth_failure,
             model_unavailable=model_unavailable,
+            config_fault=config_fault,
             provider="copilot",
         )
         self._record_usage(

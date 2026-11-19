@@ -25,6 +25,7 @@ class AgentResult:
     waiting_cause: str | None = None
     auth_failure: bool = False
     model_unavailable: bool = False
+    config_fault: bool = False
     provider: str = "cursor"
     input_tokens: int | None = None
     cached_input_tokens: int | None = None
