@@ -4,6 +4,13 @@ Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](
 
 ## Unreleased
 
+- Copilot `auto` profiles no longer receive reasoning effort; invalid flag or option errors skip one implementation step without spending an attempt or disabling the provider.
+- Agy implementation calls use `--dangerously-skip-permissions`, while review and plan-repair calls remain read-only.
+- Agy `503` no-capacity responses are provider-capacity waits and do not spend an implementation attempt.
+- Agy successful calls without the requested `STATUS` or `VERDICT` report are treated as provider faults and fall back without spending an attempt.
+- Implementation attempt counts now reflect real implementer tries, and the board uses the same routed limit without displaying a try number above it.
+- The live board redraws cleanly in Windows Terminal, including local event times and no scrolling prompt or stale characters.
+- Protected-file verification failures block immediately when `allow_protected` is false; `harness add-task` refuses to queue a brief whose `allowed_paths` match a protected pattern when `allow_protected` is false.
 - Optional GitHub Copilot CLI provider (`copilot`): authenticates once via `copilot login`, executes non-interactively with `--output-format json`, disables built-in MCPs (`--disable-builtin-mcps`), and sets `COPILOT_AUTO_TIER` to `efficiency`, `balance`, or `intelligence`.
 - Copilot tool boundaries deny mutating Git and gh operations for implementations, and restrict reviews and plan repair to `--deny-tool write` plus read-only `git diff`, `git log`, `git show`, and `git status` allow rules.
 - Copilot premium-interaction quota is read via `gh api copilot_internal/user`, displayed in `harness limits` (`--json`), and incorporated into quota waiting when monthly quota is exhausted.

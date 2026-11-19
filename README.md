@@ -48,7 +48,7 @@ providers:
 
 `agy.effort_models` is a list of model-name prefixes and defaults to `[gemini-]`. The harness passes a profile's configured `effort` to `agy --effort` only when its model matches one of these prefixes; use `null` for a profile that should have no effort value. This avoids sending an unsupported flag to other model families.
 
-The harness only runs the `agy` command with per-call settings; it does not install, update, sign in, read credentials, or change saved Antigravity configuration. Agy implementations use `--mode accept-edits`; reviews and plan repair use read-only `--mode plan`. The harness does not use `--dangerously-skip-permissions`: probes of agy 1.5.1 did not establish that its sandbox prevents writes outside the worktree, so the narrower demonstrated modes remain the safe default. Override `agy.command` only when the executable is not on PATH. To enable Claude:
+The harness only runs the `agy` command with per-call settings; it does not install, update, sign in, read credentials, or change saved Antigravity configuration. Agy implementations use `--mode accept-edits` and `--dangerously-skip-permissions`; reviews and plan repair use read-only `--mode plan` without that flag. Harness scope checks still enforce allowed and protected paths after implementation. Override `agy.command` only when the executable is not on PATH. To enable Claude:
 
 ```yaml
 claude:
@@ -70,7 +70,7 @@ providers:
 
 The harness only executes `copilot` with per-call flags and environment variables; the user authenticates once via `copilot login` and quota requires `gh auth login`. Calls run `copilot -p` non-interactively with `--output-format json`, working directory `-C`, and `--no-auto-update`. The harness always passes `--disable-builtin-mcps` to turn off Copilot's built-in GitHub MCP server, preventing unintended external mutations on GitHub.
 
-When `model` is set to `auto` (the default), auto routing tiers are set per call using the `COPILOT_AUTO_TIER` environment variable (`efficiency`, `balance`, or `intelligence`). The default `copilot.implementation_sequence` steps through `balance`, `intelligence`, and `intelligence` with `--reasoning-effort high`. Reviews use `copilot.review_model` (`auto`), `copilot.review_auto_tier` (`intelligence`), and `copilot.review_effort` (`null`). Escalation uses `copilot.escalation_model` (`auto`), `copilot.escalation_auto_tier` (`intelligence`), and `copilot.escalation_effort` (`high`).
+When `model` is set to `auto` (the default), auto routing tiers are set per call using the `COPILOT_AUTO_TIER` environment variable (`efficiency`, `balance`, or `intelligence`). The default `copilot.implementation_sequence` steps through `balance`, `intelligence`, and `intelligence`, with no reasoning effort; `auto` cannot be combined with `--reasoning-effort`. Reviews use `copilot.review_model` (`auto`), `copilot.review_auto_tier` (`intelligence`), and `copilot.review_effort` (`null`). Escalation uses `copilot.escalation_model` (`auto`), `copilot.escalation_auto_tier` (`intelligence`), and `copilot.escalation_effort` (`null`). A concrete Copilot model may use a configured effort. A Copilot flag or option error skips that implementation step without spending a task attempt or disabling Copilot; review and plan-repair config faults fall back to another provider.
 
 Tool access is strictly bounded by phase:
 - Implementation calls pass `--allow-all-tools` with `--deny-tool` rules preventing mutating repository and remote actions: `shell(git push)`, `shell(git commit)`, `shell(git reset)`, `shell(git checkout)`, `shell(git rebase)`, and `shell(gh)`.
@@ -143,6 +143,8 @@ harness resume SPRINT
 ```
 
 `--dry-run` prints the stage plan without calling agents. A real `run` requires a clean integration checkout. In an ANSI terminal, `run` and `resume` show the live board; pass `--no-board` for plain progress output.
+
+An attempt is counted only when an implementer actually runs. Capacity waits, transient errors, provider launch fallbacks, quota waits, and Copilot configuration faults give the attempt back. If verification reports a protected file changed while `allow_protected: false`, the task is **BLOCKED** immediately instead of retrying.
 
 When a task is **BLOCKED**:
 
