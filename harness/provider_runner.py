@@ -1101,6 +1101,7 @@ class ProviderAgentRunner:
                 env=env, code_map_offered=code_map_offered,
                 on_process_start=on_process_start,
             )
+        # Routing-off path: still names Codex and Cursor on purpose.
         if self._preferred_provider(task, "review") == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -1222,6 +1223,7 @@ class ProviderAgentRunner:
                 task, workspace, failure_summary, timeout_minutes,
                 model_class=model_class, env=env,
             )
+        # Routing-off path: still names Codex and Cursor on purpose.
         if self._preferred_provider(task, "plan_repair") == "codex":
             try:
                 available, _ = self.codex.availability()
@@ -1284,39 +1286,21 @@ class ProviderAgentRunner:
                 return last_result or AgentResult(
                     False, "", choice.reason, provider="none", quota_exhausted=True
                 )
+            override: str | None = None
+            chosen = self.adapters.get(provider)
             try:
-                if provider == "agy" and self.agy is not None:
-                    result = self.agy.plan_change(
-                        task, workspace, failure_summary, timeout_minutes,
-                        model_class=model_class, env=env,
-                    )
-                elif provider == "copilot" and self.copilot is not None:
-                    result = self.copilot.plan_change(
-                        task, workspace, failure_summary, timeout_minutes,
-                        model_class=model_class, env=env,
-                    )
-                elif provider == "codex":
-                    available, _ = self.codex.availability()
-                    if not available:
-                        result = AgentResult(
-                            False, "", "Codex CLI/auth unavailable",
-                            provider="codex", auth_failure=True,
-                        )
-                    else:
-                        result = self.codex.plan_change(
-                            task, workspace, failure_summary, timeout_minutes,
-                            model=self.config.codex.planner_model, env=env,
-                        )
-                elif provider == "claude" and self.claude is not None:
-                    result = self.claude.plan_change(
-                        task, workspace, failure_summary, timeout_minutes, env=env
+                if chosen is None:
+                    result = AgentResult(
+                        False, "", f"no adapter for {provider}",
+                        provider=provider, launch_failure=True,
                     )
                 else:
-                    result = self.cursor.plan_change(
+                    result = cast(AgentResult, chosen.plan_change(
                         task, workspace, failure_summary, timeout_minutes,
                         model_class=model_class, env=env,
-                    )
+                    ))
             except Exception as exc:
+                override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
@@ -1328,7 +1312,8 @@ class ProviderAgentRunner:
                 continue
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
-                self._disable_provider(task, provider, self._fallback_reason(result))
+                reason = override or result.fallback_reason or self._fallback_reason(result)
+                self._disable_provider(task, provider, reason)
                 unavailable.add(provider)
                 continue
             return result
