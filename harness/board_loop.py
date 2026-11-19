@@ -526,7 +526,8 @@ class BoardLoop:
             )
             self._screen.draw(lines)
         else:
-            self._screen.draw(board_lines)
+            height = max(0, self._screen.size().lines)
+            self._screen.draw(board_lines[:height])
         self._last_fingerprint = self._fingerprint(self._sprint())
         return snapshot
 

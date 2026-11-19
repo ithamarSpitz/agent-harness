@@ -23,11 +23,44 @@ class EncodedStringIO(io.StringIO):
 def test_screen_redraws_previous_block_and_clears_leftovers() -> None:
     stream = io.StringIO()
     screen = terminal.Screen(stream)
+    screen.size = lambda: os.terminal_size((80, 24))  # type: ignore[method-assign]
 
     screen.draw(["first", "second"])
     screen.draw(["replacement"])
 
-    assert stream.getvalue() == "first\nsecond\n\x1b[J\x1b[2Areplacement\n\x1b[J"
+    assert stream.getvalue() == (
+        "\r\x1b[2Kfirst\n\x1b[2Ksecond\x1b[J"
+        "\x1b[1A\r\x1b[2Kreplacement\x1b[J"
+    )
+    assert stream.getvalue().count("\x1b[2K") == 3
+    assert not stream.getvalue().rstrip().endswith("\n")
+
+
+def test_screen_clears_shorter_second_line_and_moves_up_two() -> None:
+    stream = io.StringIO()
+    screen = terminal.Screen(stream)
+    screen.size = lambda: os.terminal_size((80, 24))  # type: ignore[method-assign]
+
+    screen.draw(["first", "second", "third"])
+    screen.draw(["first", "x", "third"])
+
+    value = stream.getvalue()
+    assert value.count("\x1b[2K") == 6
+    assert value.count("\x1b[2A") == 1
+    assert "\x1b[2A\r\x1b[2Kfirst\n\x1b[2Kx\n\x1b[2Kthird\x1b[J" in value
+    assert value.count("\n") == 4
+
+
+def test_screen_full_height_frame_has_lines_minus_one_newlines() -> None:
+    stream = io.StringIO()
+    screen = terminal.Screen(stream)
+    screen.size = lambda: os.terminal_size((80, 3))  # type: ignore[method-assign]
+
+    screen.draw(["one", "two", "three"])
+
+    value = stream.getvalue()
+    assert value.count("\n") == 2
+    assert not value.endswith("\n")
 
 
 def test_screen_size_uses_terminal_size(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,14 +70,26 @@ def test_screen_size_uses_terminal_size(monkeypatch: pytest.MonkeyPatch) -> None
     assert terminal.Screen(io.StringIO()).size() == expected
 
 
-def test_screen_close_flushes_below_drawn_block() -> None:
+def test_screen_close_moves_below_drawn_block() -> None:
     stream = io.StringIO()
     screen = terminal.Screen(stream)
     screen.draw(["line"])
 
     screen.close()
 
-    assert stream.getvalue().endswith("line\n\x1b[J")
+    assert stream.getvalue().endswith("\r\x1b[2Kline\x1b[J\r\n")
+
+
+def test_screen_truncates_colored_line_by_visible_width() -> None:
+    stream = io.StringIO()
+    screen = terminal.Screen(stream)
+    screen.size = lambda: os.terminal_size((10, 24))  # type: ignore[method-assign]
+
+    screen.draw(["  T1 \x1b[32mDONE\x1b[0m try"])
+
+    value = stream.getvalue()
+    assert "\x1b[32mDONE\x1b[0m" in value
+    assert "DONE" in value
 
 
 @pytest.mark.parametrize(

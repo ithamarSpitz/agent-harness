@@ -18,6 +18,60 @@ _RED = "\x1b[31m"
 _RUNNING_STATUSES = {"IMPLEMENTING", "CHECKING", "REVIEWING", "MERGING"}
 _PASSED_STATUSES = {"PASSED", "DONE"}
 _RETRY_STATUSES = {"RETRY", "BLOCKED"}
+_ANSI_CSI_PREFIX = "\x1b["
+
+
+def _truncate_ansi(line: str, width: int) -> str:
+    """Truncate visible text while preserving ANSI sequences and reset color."""
+    if width <= 0:
+        return ""
+
+    output: list[str] = []
+    visible = 0
+    active_sgr = False
+    index = 0
+    truncated = False
+
+    while index < len(line):
+        if line.startswith(_ANSI_CSI_PREFIX, index):
+            end = index + 2
+            while end < len(line):
+                char = line[end]
+                end += 1
+                if "\x40" <= char <= "\x7e":
+                    break
+            sequence = line[index:end]
+            if visible >= width:
+                truncated = True
+                if sequence.endswith("m") and (
+                    sequence == "\x1b[0m" or sequence == "\x1b[m"
+                ):
+                    if active_sgr:
+                        output.append(sequence)
+                    active_sgr = False
+                index = end
+                if not sequence.endswith("m"):
+                    break
+                continue
+            output.append(sequence)
+            if sequence.endswith("m"):
+                if sequence == "\x1b[0m" or sequence == "\x1b[m":
+                    active_sgr = False
+                else:
+                    active_sgr = True
+            index = end
+            continue
+
+        if visible >= width:
+            truncated = True
+            break
+        output.append(line[index])
+        visible += 1
+        index += 1
+
+    if truncated and active_sgr:
+        output.append("\x1b[0m")
+    return "".join(output)
 
 
 def enable_ansi() -> bool:
@@ -80,11 +134,15 @@ class Screen:
         self._height = 0
 
     def draw(self, lines: list[str]) -> None:
-        if self._height:
-            self.stream.write(f"\x1b[{self._height}A")
-        for line in lines:
-            self.stream.write(line)
-            self.stream.write("\n")
+        if self._height > 1:
+            self.stream.write(f"\x1b[{self._height - 1}A")
+        self.stream.write("\r")
+        width = self.size().columns
+        for index, line in enumerate(lines):
+            self.stream.write("\x1b[2K")
+            self.stream.write(_truncate_ansi(line, width))
+            if index + 1 < len(lines):
+                self.stream.write("\n")
         self.stream.write("\x1b[J")
         self.stream.flush()
         self._height = len(lines)
@@ -93,5 +151,7 @@ class Screen:
         return shutil.get_terminal_size()
 
     def close(self) -> None:
+        if self._height > 0:
+            self.stream.write("\r\n")
         self.stream.flush()
 
