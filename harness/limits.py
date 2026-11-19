@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from . import __version__
 from .agy_usage import AgyBucket, fetch_agy_usage
 from .copilot_usage import CopilotQuota, fetch_copilot_quota
+from .kiro_usage import KiroQuota, KiroUsageError, fetch_kiro_usage
 from .process_utils import prepare_external_argv, resolve_codex_argv, stop_process_tree
 
 if TYPE_CHECKING:
@@ -78,6 +79,7 @@ def default_cursor_state_db() -> Path:
 UrlOpener = Callable[..., Any]
 AgyUsageSource = Callable[..., list[AgyBucket]]
 CopilotQuotaSource = Callable[..., CopilotQuota]
+KiroUsageSource = Callable[..., KiroQuota]
 
 
 _AGY_CONFIG_WARNED: set[tuple[str, str]] = set()
@@ -170,6 +172,29 @@ def _copilot_settings(
         # _agy_settings owns the existing once-only warning for invalid config.
         return False, None
     return bool(loaded.copilot.enabled), list(loaded.copilot.quota_command)
+
+
+def _kiro_settings(
+    config: HarnessConfig | None = None,
+    *,
+    root: Path | None = None,
+    config_path: Path | None = None,
+) -> tuple[bool, list[str] | None]:
+    """Return whether Kiro is enabled and its quota command."""
+    if config is not None:
+        return bool(config.kiro.enabled), list(config.kiro.quota_command)
+    try:
+        path, machine_only = _limits_config_path(root=root, config_path=config_path)
+        if not path.is_file():
+            return False, None
+        from .config import HarnessConfig as _HarnessConfig
+
+        machine_path = path / ".unused-machine-config" if machine_only else None
+        loaded = _HarnessConfig.load(path, machine_path=machine_path)
+    except Exception:
+        # _agy_settings owns the existing once-only warning for invalid config.
+        return False, None
+    return bool(loaded.kiro.enabled), list(loaded.kiro.quota_command)
 
 
 class _ClaudeNoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -997,6 +1022,37 @@ def load_copilot(
     }
 
 
+def load_kiro(
+    command: list[str] | None,
+    source: KiroUsageSource = fetch_kiro_usage,
+    now: datetime | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    now = now or datetime.now().astimezone()
+    try:
+        quota = source(command=command)
+    except KiroUsageError as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        return ["Kiro", f"  unavailable: {reason}"], {"error": reason}
+
+    plan = quota.plan.strip()
+    if plan.upper().startswith("KIRO "):
+        plan = plan[5:].strip()
+    plan = plan.lower()
+    days = _days_left(quota.reset_time, now=now)
+    line = (
+        f"  credits  {quota.used:.2f} of {quota.limit:g} used "
+        f"({quota.used_percent:.1f}%), resets {format_local_date(quota.reset_time)} "
+        f"({days} days left)"
+    )
+    return [f"Kiro ({plan})", line], {
+        "plan": plan,
+        "used": quota.used,
+        "limit": quota.limit,
+        "used_percent": quota.used_percent,
+        "resets_at": quota.reset_time.isoformat(),
+    }
+
+
 def render_limits(
     paths: LimitsPaths,
     *,
@@ -1011,6 +1067,9 @@ def render_limits(
     copilot_enabled: bool = False,
     copilot_quota_command: list[str] | None = None,
     copilot_source: CopilotQuotaSource | None = None,
+    kiro_enabled: bool = False,
+    kiro_quota_command: list[str] | None = None,
+    kiro_source: KiroUsageSource = fetch_kiro_usage,
 ) -> str:
     now = now or datetime.now().astimezone()
     codex_lines, codex_json = load_codex(
@@ -1037,6 +1096,14 @@ def render_limits(
             source=copilot_source,
             now=now,
         )
+    kiro_lines: list[str] | None = None
+    kiro_json: dict[str, Any] | None = None
+    if kiro_enabled:
+        kiro_lines, kiro_json = load_kiro(
+            kiro_quota_command,
+            source=kiro_source,
+            now=now,
+        )
     if as_json:
         payload: dict[str, Any] = {
             "codex": codex_json,
@@ -1047,6 +1114,8 @@ def render_limits(
             payload["agy"] = agy_json
         if copilot_json is not None:
             payload["copilot"] = copilot_json
+        if kiro_json is not None:
+            payload["kiro"] = kiro_json
         return json.dumps(payload, indent=2, sort_keys=True)
     blocks = ["\n".join(codex_lines), "\n".join(cursor_lines), "\n".join(claude_lines)]
     from .home import harness_home
@@ -1066,6 +1135,13 @@ def render_limits(
             "Copilot  off (set copilot.enabled: true in harness.yaml or "
             f"{machine_config})"
         )
+    if kiro_lines is not None:
+        blocks.append("\n".join(kiro_lines))
+    else:
+        blocks.append(
+            "Kiro  off (set kiro.enabled: true in harness.yaml or "
+            f"{machine_config})"
+        )
     return "\n\n".join(blocks)
 
 
@@ -1082,6 +1158,9 @@ def run_limits(
     copilot_enabled: bool | None = None,
     copilot_quota_command: list[str] | None = None,
     copilot_source: CopilotQuotaSource | None = None,
+    kiro_enabled: bool | None = None,
+    kiro_quota_command: list[str] | None = None,
+    kiro_source: KiroUsageSource = fetch_kiro_usage,
     config: HarnessConfig | None = None,
     root: Path | None = None,
     config_path: Path | None = None,
@@ -1103,6 +1182,14 @@ def run_limits(
             copilot_enabled = configured_copilot_enabled
         if copilot_quota_command is None:
             copilot_quota_command = configured_quota_command
+    if kiro_enabled is None or kiro_quota_command is None:
+        configured_kiro_enabled, configured_kiro_command = _kiro_settings(
+            config, root=root, config_path=config_path
+        )
+        if kiro_enabled is None:
+            kiro_enabled = configured_kiro_enabled
+        if kiro_quota_command is None:
+            kiro_quota_command = configured_kiro_command
     print(
         render_limits(
             paths,
@@ -1116,6 +1203,9 @@ def run_limits(
             copilot_enabled=copilot_enabled,
             copilot_quota_command=copilot_quota_command,
             copilot_source=copilot_source,
+            kiro_enabled=kiro_enabled,
+            kiro_quota_command=kiro_quota_command,
+            kiro_source=kiro_source,
         )
     )
     return 0
