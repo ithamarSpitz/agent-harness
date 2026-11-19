@@ -30,6 +30,37 @@ def test_parse_copilot_user_fixture() -> None:
     )
 
 
+def test_parse_used_up_quota_clamps_negative_remaining_fields() -> None:
+    payload = {
+        "copilot_plan": "individual",
+        "quota_reset_date_utc": "2026-12-01T00:00:00Z",
+        "quota_snapshots": {
+            "premium_interactions": {
+                "entitlement": 200,
+                "overage_count": 0,
+                "overage_permitted": False,
+                "percent_remaining": -0.5,
+                "remaining": -1,
+                "unlimited": False,
+            }
+        },
+    }
+
+    quota = parse_copilot_user(json.dumps(payload))
+
+    assert quota.entitlement == 200
+    assert quota.remaining == 0
+    assert quota.percent_remaining == 0
+
+
+def test_parse_string_remaining_stays_invalid() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload["quota_snapshots"]["premium_interactions"]["remaining"] = "0"
+
+    with pytest.raises(CopilotUsageError, match="^invalid remaining$"):
+        parse_copilot_user(json.dumps(payload))
+
+
 def test_parse_missing_premium_interactions_raises_small_error() -> None:
     payload = {
         "copilot_plan": "individual",

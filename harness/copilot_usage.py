@@ -32,13 +32,19 @@ def _integer(value: Any, field: str) -> int:
     return value
 
 
+def _remaining(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CopilotUsageError("invalid remaining")
+    return max(value, 0)
+
+
 def _percentage(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CopilotUsageError("invalid percent_remaining")
     result = float(value)
-    if not math.isfinite(result) or not 0 <= result <= 100:
+    if not math.isfinite(result) or result > 100:
         raise CopilotUsageError("invalid percent_remaining")
-    return result
+    return max(result, 0.0)
 
 
 def _reset_time(value: Any) -> datetime:
@@ -81,7 +87,7 @@ def parse_copilot_user(text: str) -> CopilotQuota:
     return CopilotQuota(
         plan=plan,
         entitlement=_integer(premium.get("entitlement"), "entitlement"),
-        remaining=_integer(premium.get("remaining"), "remaining"),
+        remaining=_remaining(premium.get("remaining")),
         percent_remaining=_percentage(premium.get("percent_remaining")),
         unlimited=unlimited,
         reset_time=_reset_time(payload.get("quota_reset_date_utc")),
