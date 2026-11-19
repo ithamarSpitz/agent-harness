@@ -1311,6 +1311,7 @@ class Scheduler:
                     base_ref,
                     env=task_env,
                     on_process_start=on_process_start,
+                    attempt=runtime.attempt,
                 )
             self._record_verification_usage(
                 task, runtime.attempt, verification.ok,
