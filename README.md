@@ -125,7 +125,27 @@ Commit harness, roadmap, and task files before the first automated run. Map stab
 
 Use the checked-in Spec Kit workflows under `.specify/` to settle the feature spec and plan; Spec Kit writes those artifacts under `specs/<NNN-feature>/`. Then follow [`skills/write-harness-briefs/SKILL.md`](skills/write-harness-briefs/SKILL.md) to turn the approved design into small task briefs and a roadmap entry.
 
-Run `harness validate <SPRINT>` before execution. Its brief findings use these codes: `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`. After fixing those findings, run `harness brief-check <TASK>` for each task. The latter asks the configured Codex planner, in read-only mode, which files and changes it infers from the brief and compares them with `allowed_paths`. Exit code 0 means the read-through matches, 1 means it found a discrepancy, and 2 means Codex is unavailable or the model check failed.
+Run `harness validate <SPRINT>` before execution. Its brief findings use these codes: `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`, plus the warning `test-not-allowed` (a file under `tests/` imports a `harness/*.py` module the brief changes but is not in `allowed_paths`). After fixing those findings, run `harness brief-check <TASK>` for each task. The latter asks the configured Copilot or Codex planner, in read-only mode, which files and changes it infers from the brief and compares them with `allowed_paths`. Exit code 0 means the read-through matches, 1 means it found a discrepancy, and 2 means the planner is unavailable or the model check failed.
+
+## Providers
+
+Each coding CLI (Codex, Cursor, Claude Code, agy, Copilot) is wrapped by one adapter in `harness/adapters/`. Routing uses the adapters for provider-specific calls, while provider selection and budget handling remain in the router. An adapter has these parts:
+
+- **Find**: `find()` reports whether the CLI is installed, its version, and sign-in state when known.
+- **Quota**: whether the provider is enabled and its implementation budget (`enabled()`, `implementation_budget()`).
+- **Run**: `implement()`, `review()` and `plan_change()`.
+- **Classify**: `classify()` maps a result to one `Fault` (`ok`, `task`, `quota`, `auth`, `model_unavailable`, `config`, `launch`, `capacity`, `transient`).
+- **Levels**: `levels()` gives the worker, hard-worker and escalation models.
+
+Adapters are collected in an `AdapterRegistry` (`harness/adapters/__init__.py`).
+
+Machine-wide settings can live in `<harness home>/config.yaml` (`HARNESS_HOME`, default `~/.harness`). The project's `harness.yaml` is merged over it: mappings merge key by key, lists and scalars replace, and the project wins. Example, holding no secrets:
+
+```yaml
+# <harness home>/config.yaml
+agy:
+  enabled: true
+```
 
 ## Run a sprint
 
@@ -211,7 +231,7 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `manifest SPRINT` | Active or latest run manifest for a sprint. |
 | `usage` | Local agent invocation log summary. |
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
-| `brief-check TASK [--timeout-minutes N]` | Run a read-only Codex read-through of one task brief. |
+| `brief-check TASK [--timeout-minutes N]` | Run a read-only Copilot or Codex read-through of one task brief. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
 | `limits [--json]` | Codex, Cursor, Claude, Antigravity, and Copilot usage limits (independent blocks). |
 | `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |

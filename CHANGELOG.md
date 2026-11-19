@@ -4,6 +4,23 @@ Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](
 
 ## Unreleased
 
+- S16-T1: provider adapter protocol, shared types (`FindResult`, `Levels`, `Fault`, `CallContext`) and `AdapterRegistry` in `harness/adapters/`.
+- S16-T2: Codex adapter.
+- S16-T3: Claude Code adapter.
+- S16-T4: Cursor adapter.
+- S16-T5: agy adapter.
+- S16-T6: Copilot adapter.
+- S16-T7: optional machine config `<harness home>/config.yaml`, merged under the project's `harness.yaml` (mappings merge, lists and scalars replace, project wins).
+- S16-T8: the router builds the adapter registry and uses it for enabled sets and implementation budgets.
+- S16-T9: implementation calls go through the adapter.
+- S16-T10: review calls go through the adapter.
+- S16-T11: plan repair goes through the adapter.
+- S16-T12: an adapter-boundary test checks provider naming in the routing loops.
+- S16-T13: README, CHANGELOG and SPEC describe adapters, the machine config and the new lint.
+- S16-T14: `harness validate` warns with `test-not-allowed` when a test imports a changed module but is not in `allowed_paths`.
+- S16-T15: saving `state.json` retries when Windows denies the replace.
+- S16-T16: `harness brief-check` goes through the adapter.
+- S16-T17: `harness limits` shows agy and Copilot outside a project.
 - Copilot `auto` profiles no longer receive reasoning effort; invalid flag or option errors skip one implementation step without spending an attempt or disabling the provider.
 - Agy implementation calls use `--dangerously-skip-permissions`, while review and plan-repair calls remain read-only.
 - Agy `503` no-capacity responses are provider-capacity waits and do not spend an implementation attempt.
