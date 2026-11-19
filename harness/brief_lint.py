@@ -274,6 +274,69 @@ def lint_brief(
             )
         )
 
+    # 9. test-not-allowed (warning)
+    test_findings = _test_not_allowed(task, root)
+
     # Sort errors first, then by code, then message
     findings.sort(key=lambda f: (0 if f.level == "error" else 1, f.code, f.message))
-    return findings
+    return findings + test_findings
+
+
+MAX_TEST_FINDINGS = 10
+
+
+def _import_regex(name: str) -> re.Pattern[str]:
+    n = re.escape(name)
+    return re.compile(
+        rf"^[ \t]*(?:"
+        rf"import[ \t]+(?:[\w.]+[ \t]*,[ \t]*)*harness\.{n}\b"
+        rf"|from[ \t]+harness\.{n}[ \t]+import\b"
+        rf"|from[ \t]+harness[ \t]+import[ \t]+[^\n]*?\b{n}\b"
+        rf"|from[ \t]+\.{n}\b"
+        rf")",
+        re.MULTILINE,
+    )
+
+
+def _test_not_allowed(task: TaskSpec, root: Path) -> list[BriefFinding]:
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        return []
+    modules: list[str] = []
+    for entry in task.allowed_paths:
+        parts = entry.replace("\\", "/").split("/")
+        if len(parts) == 2 and parts[0] == "harness" and parts[1].endswith(".py"):
+            stem = parts[1][:-3]
+            if stem.isidentifier() and stem not in modules:
+                modules.append(stem)
+    if not modules:
+        return []
+    regexes = {name: _import_regex(name) for name in modules}
+    messages: list[str] = []
+    for test_file in sorted(tests_dir.rglob("*.py")):
+        rel = test_file.relative_to(root).as_posix()
+        if any(_matches(rel, pat) for pat in task.allowed_paths):
+            continue
+        try:
+            content = test_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for name, regex in regexes.items():
+            if regex.search(content):
+                messages.append(
+                    f"{rel} imports harness.{name} (changed by this brief) "
+                    "but is not in allowed_paths"
+                )
+    result = [
+        BriefFinding(level="warning", code="test-not-allowed", message=m)
+        for m in messages[:MAX_TEST_FINDINGS]
+    ]
+    if len(messages) > MAX_TEST_FINDINGS:
+        result.append(
+            BriefFinding(
+                level="warning",
+                code="test-not-allowed",
+                message=f"... and {len(messages) - MAX_TEST_FINDINGS} more",
+            )
+        )
+    return result
