@@ -718,6 +718,24 @@ class ProviderAgentRunner:
         runtime.provider_attempts[provider] = self._provider_attempt(task, provider) + 1
         self.state.save()
 
+    def _log_config_fault(
+        self, task: TaskSpec, provider: str, phase: str, step: int, result: AgentResult
+    ) -> None:
+        key = (task.id, provider, phase, step)
+        logged = self.__dict__.setdefault("_config_fault_logged", set())
+        if key in logged:
+            return
+        logged.add(key)
+        log_dir = getattr(self.codex, "log_dir", None)
+        if log_dir is None:
+            return
+        write_log(
+            log_dir,
+            f"{task.id}-routing.log",
+            f"WARNING {provider} {phase} config fault at step {step}: "
+            f"{result.error or 'unknown error'}\n",
+        )
+
     def active_provider(self, task: TaskSpec, *, model_class_override: str | None = None) -> str:
         if model_class_override is not None:
             if not self.config.cursor.enabled:
@@ -1113,6 +1131,14 @@ class ProviderAgentRunner:
             ):
                 self._remember_cursor_auto_exhaustion()
 
+            if result.config_fault:
+                # A flag/option error happened before any model work: spend
+                # exactly one step of this provider's sequence and retry.
+                last_result = result
+                step = self._provider_attempt(task, provider)
+                self._consume_provider_attempt(task, provider)
+                self._log_config_fault(task, provider, "implement", step + 1, result)
+                continue
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
                 if not self._has_other_candidate(task, "implement", provider, unavailable):
@@ -1319,6 +1345,11 @@ class ProviderAgentRunner:
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
                 )
+            if result.config_fault:
+                last_result = result
+                self._log_config_fault(task, provider, "review", 0, result)
+                unavailable.add(provider)
+                continue
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
                 if not self._has_other_candidate(task, "review", provider, unavailable):
@@ -1439,6 +1470,11 @@ class ProviderAgentRunner:
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
                 )
+            if result.config_fault:
+                last_result = result
+                self._log_config_fault(task, provider, "plan_repair", 0, result)
+                unavailable.add(provider)
+                continue
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
                 self._disable_provider(task, provider, self._fallback_reason(result))

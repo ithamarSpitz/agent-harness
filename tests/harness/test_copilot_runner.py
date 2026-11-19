@@ -224,6 +224,33 @@ def test_stream_without_result_event_fails(tmp_path: Path) -> None:
     assert result.error == "Copilot JSON stream contained no successful result event"
 
 
+def test_reasoning_effort_config_error_is_config_fault(tmp_path: Path) -> None:
+    message = (
+        'Error: Model "auto" does not support reasoning effort configuration '
+        '(requested: "high")'
+    )
+    fake = make_python_script(
+        tmp_path / "bad-flag.py",
+        "import sys\n"
+        "if '--version' in sys.argv:\n"
+        "    print('copilot fake-1.0')\n"
+        "else:\n"
+        f"    print({message!r}, file=sys.stderr)\n"
+        "    sys.exit(1)\n",
+    )
+    runner = CopilotAgentRunner(_write_config(tmp_path, str(fake)), tmp_path / "logs")
+
+    result = runner.implement(_task(tmp_path), tmp_path, 1, 1, None)
+
+    assert result.config_fault is True
+    assert not result.ok
+    assert not getattr(result, "launch_failure", False)
+    assert not result.model_unavailable
+    assert not result.quota_exhausted
+    assert not result.auth_failure
+    assert result.error == message
+
+
 def test_attempt_sequence_uses_second_and_then_last_entry(tmp_path: Path) -> None:
     runner = CopilotAgentRunner(_write_config(tmp_path), tmp_path / "logs")
 
