@@ -418,6 +418,42 @@ def test_agy_failed_call_with_limit_text_is_classified(
     assert (result.quota_scope is not None) is quota
 
 
+def test_agy_capacity_503_in_result_error_is_not_a_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    stream = '{"event":"result","result":{"status":"ERROR","error":"API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server","retryable":false}}'
+    runner, _usage = _fake_result_runner(tmp_path, stream)
+
+    result = _invoke_review(runner, tmp_path, "CAPACITY")
+
+    assert not result.ok
+    assert result.capacity_exhausted
+    assert result.waiting_cause == "provider_busy"
+    assert not result.quota_exhausted
+
+
+def test_agy_quota_wins_over_capacity_503_in_result_error(
+    tmp_path: Path,
+) -> None:
+    stream = json.dumps(
+        {
+            "event": "result",
+            "result": {
+                "status": "ERROR",
+                "error": "Quota exhausted: UNAVAILABLE (code 503): No capacity available",
+                "retryable": False,
+            },
+        }
+    )
+    runner, _usage = _fake_result_runner(tmp_path, stream)
+
+    result = _invoke_review(runner, tmp_path, "QUOTA_CAPACITY")
+
+    assert not result.ok
+    assert result.quota_exhausted
+    assert not result.capacity_exhausted
+
+
 def test_agy_nonzero_exit_fails_even_with_success_result(tmp_path: Path) -> None:
     stream = _result_stream()
     fake = make_python_script(
