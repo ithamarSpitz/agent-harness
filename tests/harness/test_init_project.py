@@ -307,3 +307,34 @@ def test_existing_repo_with_origin_is_not_committed_or_pushed(tmp_path: Path, mo
     assert remote_refs.returncode == 1
     assert "GitHub: skipped (origin exists)" in out
     assert "files are ready to commit" in out
+
+
+def test_init_gitignore_new_has_cache_lines(tmp_path: Path):
+    init_repo(tmp_path)
+    run_init_capture(tmp_path, no_github=True)
+    got = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert got == [
+        ".harness/",
+        "__pycache__/",
+        "*.py[cod]",
+        ".pytest_cache/",
+        ".mypy_cache/",
+        ".ruff_cache/",
+        "node_modules/",
+    ]
+
+
+def test_init_gitignore_existing_keeps_content_and_is_idempotent(tmp_path: Path):
+    init_repo(tmp_path)
+    write(tmp_path / ".gitignore", "node_modules/\nmine.log\n")
+    run_init_capture(tmp_path, no_github=True)
+    path = tmp_path / ".gitignore"
+    got = path.read_text(encoding="utf-8").splitlines()
+    assert got[:2] == ["node_modules/", "mine.log"]
+    assert got.count("node_modules/") == 1
+    for line in (".harness/", "__pycache__/", "*.py[cod]", ".pytest_cache/",
+                 ".mypy_cache/", ".ruff_cache/"):
+        assert got.count(line) == 1
+    before = path.read_text(encoding="utf-8")
+    run_init_capture(tmp_path, no_github=True)
+    assert path.read_text(encoding="utf-8") == before
