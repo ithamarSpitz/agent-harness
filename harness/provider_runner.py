@@ -1176,50 +1176,20 @@ class ProviderAgentRunner:
                 self._record_switch(task, switched[0], switched[1], provider)
                 switched = None
             override = None
+            chosen = self.adapters.get(provider)
             try:
-                if provider == "agy" and self.agy is not None:
-                    result = self.agy.review(
-                        task, workspace, base_ref, verification_summary,
-                        timeout_minutes, env=env,
-                        code_map_offered=code_map_offered,
-                        on_process_start=on_process_start,
-                    )
-                elif provider == "copilot" and self.copilot is not None:
-                    result = self.copilot.review(
-                        task, workspace, base_ref, verification_summary,
-                        timeout_minutes, env=env,
-                        code_map_offered=code_map_offered,
-                        on_process_start=on_process_start,
-                    )
-                elif provider == "codex":
-                    available, _ = self.codex.availability()
-                    if not available:
-                        override = "auth_or_cli_unavailable"
-                        result = AgentResult(
-                            False, "", "Codex CLI/auth unavailable",
-                            provider="codex", auth_failure=True,
-                        )
-                    else:
-                        result = self.codex.review(
-                            task, workspace, base_ref, verification_summary,
-                            timeout_minutes, model=self.config.codex.review_model,
-                            env=env, code_map_offered=code_map_offered,
-                            on_process_start=on_process_start,
-                        )
-                elif provider == "claude" and self.claude is not None:
-                    result = self.claude.review(
-                        task, workspace, base_ref, verification_summary,
-                        timeout_minutes, env=env,
-                        code_map_offered=code_map_offered,
-                        on_process_start=on_process_start,
+                if chosen is None:
+                    result = AgentResult(
+                        False, "", f"no adapter for {provider}",
+                        provider=provider, launch_failure=True,
                     )
                 else:
-                    result = self.cursor.review(
+                    result = cast(AgentResult, chosen.review(
                         task, workspace, base_ref, verification_summary,
                         timeout_minutes, env=env,
                         code_map_offered=code_map_offered,
                         on_process_start=on_process_start,
-                    )
+                    ))
             except Exception as exc:
                 override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
@@ -1235,7 +1205,7 @@ class ProviderAgentRunner:
                 last_result = result
                 if not self._has_other_candidate(task, "review", provider, unavailable):
                     return result
-                reason = override or self._fallback_reason(result)
+                reason = override or result.fallback_reason or self._fallback_reason(result)
                 self._disable_provider(task, provider, reason)
                 switched = (provider, reason)
                 unavailable.add(provider)

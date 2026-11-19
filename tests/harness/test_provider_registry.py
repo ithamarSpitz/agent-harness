@@ -139,3 +139,51 @@ def test_implement_missing_adapter_is_launch_failure(tmp_path: Path, monkeypatch
     )
     assert result.error == "no adapter for ghost"
     assert result.launch_failure
+
+
+def test_review_calls_chosen_adapter(tmp_path: Path, monkeypatch):
+    from harness.runner import AgentResult
+
+    seen: list[tuple] = []
+
+    class Fake(BaseAdapter):
+        name = "fake"
+
+        def enabled(self) -> bool:
+            return True
+
+        def review(self, *args, **kwargs) -> AgentResult:
+            seen.append((*args, kwargs))
+            return AgentResult(True, "VERDICT: PASS", provider="fake")
+
+    router = _router(tmp_path)
+    router.adapters.register(Fake())
+    monkeypatch.setattr(
+        router, "_choose",
+        lambda *a, **k: SimpleNamespace(provider="fake", reason="test"),
+    )
+    task = _task()
+    result = router._review_with_routing(
+        task, tmp_path, "base", "verification ok", 5,
+        env={"TEST": "1"}, code_map_offered=True, on_process_start=None,
+    )
+    assert result.provider == "fake"
+    assert seen == [(
+        task, tmp_path, "base", "verification ok", 5,
+        {"env": {"TEST": "1"}, "code_map_offered": True, "on_process_start": None},
+    )]
+
+
+def test_review_missing_adapter_is_launch_failure(tmp_path: Path, monkeypatch):
+    router = _router(tmp_path)
+    monkeypatch.setattr(
+        router, "_choose",
+        lambda *a, **k: SimpleNamespace(provider="ghost", reason="test"),
+    )
+    monkeypatch.setattr(router, "_has_other_candidate", lambda *a, **k: False)
+    result = router._review_with_routing(
+        _task(), tmp_path, "base", "verification ok", 5,
+        env=None, code_map_offered=False, on_process_start=None,
+    )
+    assert result.error == "no adapter for ghost"
+    assert result.launch_failure
