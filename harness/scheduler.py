@@ -1317,6 +1317,16 @@ class Scheduler:
                 self._clock() - verification_started,
             )
             if not verification.ok:
+                if not task.allow_protected:
+                    prefix = "Protected files changed: "
+                    for failure in verification.failures:
+                        if failure.startswith(prefix):
+                            return self._block_task(
+                                task,
+                                f"{failure}. The brief must set allow_protected: true "
+                                "(or the change belongs in another task).",
+                                worktree,
+                            )
                 if blocked_open_issues is not None:
                     return self._block_task(task, blocked_open_issues, worktree)
                 self._set_task_status(task, runtime, TaskStatus.RETRY)

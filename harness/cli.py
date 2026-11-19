@@ -35,7 +35,8 @@ from .memory import free_memory_gb
 from .models import TaskRuntime, TaskStatus
 from .plan_change import PlanChangeManager, _relative_brief_path
 from .quota import KeepAwake, QuotaManager, QuotaResetInfo, default_limits_source
-from .roadmap import Roadmap, RoadmapError
+from .brief_lint import lint_brief
+from .roadmap import Roadmap, RoadmapError, task_spec_from_brief
 from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .agy_runner import AgyAgentRunner
@@ -274,6 +275,25 @@ def cmd_add_task(
         print(f"Invalid --stage value {stage_choice!r}; expected auto, current, or next", file=sys.stderr)
         return 2
     try:
+        task_id, _fm = runtime.scheduler.task_queue.validate_brief_for_queue(
+            brief_path, sprint_id, runtime.roadmap
+        )
+        try:
+            spec = task_spec_from_brief(task_id, sprint_id, brief_path, stage=1)
+            brief_text = brief_path.read_text(encoding="utf-8-sig")
+        except (OSError, ValueError, TypeError, RoadmapError):
+            spec = None
+            brief_text = ""
+        if spec is not None:
+            findings = lint_brief(
+                spec, brief_text, runtime.root, runtime.config.paths.protected
+            )
+            for finding in findings:
+                label = "ERROR" if finding.level == "error" else "WARN "
+                print(f"{label} brief {finding.code}: {finding.message}")
+            if any(f.level == "error" for f in findings):
+                print(f"Task {task_id} was not queued.", file=sys.stderr)
+                return 1
         queued = runtime.scheduler.task_queue.enqueue(
             brief_path,
             sprint_id,
