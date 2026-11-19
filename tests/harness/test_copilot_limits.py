@@ -119,7 +119,7 @@ def test_explicit_enable_without_config_uses_default_command(
     assert commands == [None, None]
 
 
-def test_disabled_copilot_is_absent(tmp_path: Path) -> None:
+def test_disabled_copilot_has_off_line_but_is_absent_from_headroom(tmp_path: Path) -> None:
     text = render_limits(_paths(tmp_path), copilot_enabled=False)
     snapshot = headroom_snapshot(
         paths=_paths(tmp_path),
@@ -127,7 +127,7 @@ def test_disabled_copilot_is_absent(tmp_path: Path) -> None:
         max_age_seconds=0,
         copilot_enabled=False,
     )
-    assert "Copilot" not in text
+    assert "Copilot  off" in text
     assert "copilot" not in snapshot
 
 
