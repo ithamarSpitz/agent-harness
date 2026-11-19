@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from harness.board import (
     BoardEvent,
@@ -13,6 +17,46 @@ from harness.board import (
 )
 from harness.models import SprintSpec, TaskSpec, TaskStatus
 from harness.state import StateStore
+
+
+@pytest.fixture(autouse=True)
+def utc_timezone() -> object:
+    if not hasattr(time, "tzset"):
+        yield
+        return
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+def test_render_board_event_uses_fixed_local_timezone() -> None:
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable")
+
+    os.environ["TZ"] = "Etc/GMT-2"
+    time.tzset()
+    snapshot = BoardSnapshot(
+        sprint_id="S15",
+        sprint_title="Local time",
+        current_stage=1,
+        stage_count=1,
+        events=[
+            BoardEvent(
+                datetime(2026, 11, 18, 18, 34, tzinfo=timezone.utc),
+                "S15-T7 CHECKING",
+            )
+        ],
+    )
+
+    assert "20:34 S15-T7 CHECKING" in render_board(snapshot, 80)
 
 
 def _sample_snapshot() -> BoardSnapshot:
@@ -81,6 +125,9 @@ def _sample_snapshot() -> BoardSnapshot:
 
 def test_render_board_unicode_exact_lines():
     snapshot = _sample_snapshot()
+    local_times = [
+        event.time.astimezone() for event in snapshot.events[:5]
+    ]
     assert render_board(snapshot, 120) == [
         "S8   Memory board   stage 2/3   parallel 2/3 (free 10.5 GB, ~4 GB/agent)",
         "Stage 1  ✓ merged",
@@ -90,11 +137,11 @@ def test_render_board_unicode_exact_lines():
         "  S8-T3 WAITING_QUOTA try 0/2",
         "  S8-T4 BLOCKED try 2/2 (added)",
         "",
-        "14:05 S8-T2 IMPLEMENTING",
-        "14:04 stage 1 merged",
-        "14:03 S8-T1 DONE",
-        "14:02 S8-T2 started",
-        "14:01 sprint started",
+        f"{local_times[0].hour:02d}:05 S8-T2 IMPLEMENTING",
+        f"{local_times[1].hour:02d}:04 stage 1 merged",
+        f"{local_times[2].hour:02d}:03 S8-T1 DONE",
+        f"{local_times[3].hour:02d}:02 S8-T2 started",
+        f"{local_times[4].hour:02d}:01 sprint started",
     ]
 
 
@@ -239,10 +286,13 @@ def test_render_board_events_newest_first():
         ],
     )
     lines = render_board(snapshot, 80)
+    newest = datetime(2026, 11, 2, 10, 3, tzinfo=timezone.utc).astimezone()
+    middle = datetime(2026, 11, 2, 10, 1, tzinfo=timezone.utc).astimezone()
+    oldest = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc).astimezone()
     assert lines[-3:] == [
-        "10:03 newest",
-        "10:01 middle",
-        "10:00 oldest",
+        f"{newest.hour:02d}:03 newest",
+        f"{middle.hour:02d}:01 middle",
+        f"{oldest.hour:02d}:00 oldest",
     ]
 
 

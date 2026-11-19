@@ -202,8 +202,8 @@ def _format_routing_reason(task: BoardTask) -> str:
 
 def _aware(when: datetime) -> datetime:
     if when.tzinfo is None:
-        return when.replace(tzinfo=timezone.utc)
-    return when.astimezone(timezone.utc)
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone()
 
 
 def _format_event(event: BoardEvent) -> str:
