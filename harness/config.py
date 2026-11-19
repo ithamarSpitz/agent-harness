@@ -234,6 +234,20 @@ class CopilotConfig:
 
 
 @dataclass(slots=True)
+class KiroConfig:
+    enabled: bool = False
+    command: str = "kiro-cli"
+    implementation_sequence: list[str] = field(
+        default_factory=lambda: ["glm-5", "claude-sonnet-4.5", "claude-sonnet-4.5"]
+    )
+    review_model: str = "claude-sonnet-4.5"
+    escalation_model: str = "claude-sonnet-4.5"
+    quota_command: list[str] = field(
+        default_factory=lambda: ["kiro-cli", "chat", "--no-interactive", "/usage"]
+    )
+
+
+@dataclass(slots=True)
 class ProvidersConfig:
     priority: list[str] = field(default_factory=lambda: ["codex", "cursor"])
 
@@ -399,6 +413,7 @@ class HarnessConfig:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     agy: AgyConfig = field(default_factory=AgyConfig)
     copilot: CopilotConfig = field(default_factory=CopilotConfig)
+    kiro: KiroConfig = field(default_factory=KiroConfig)
 
     @classmethod
     def _load_execution(cls, raw: Any) -> ExecutionConfig:
@@ -683,6 +698,52 @@ class HarnessConfig:
         return config
 
     @staticmethod
+    def _load_kiro(raw: Any) -> KiroConfig:
+        if not isinstance(raw, dict):
+            raise ValueError("kiro must be a mapping")
+        section = dict(raw)
+        known_keys = {
+            "enabled",
+            "command",
+            "implementation_sequence",
+            "review_model",
+            "escalation_model",
+            "quota_command",
+        }
+        for key in section:
+            if key not in known_keys:
+                raise ValueError(f"kiro.{key} is not a known key")
+
+        config = KiroConfig(**section)
+        if not isinstance(config.enabled, bool):
+            raise ValueError("kiro.enabled must be a bool")
+        for key in ("command", "review_model", "escalation_model"):
+            value = getattr(config, key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"kiro.{key} must be a non-empty string")
+
+        if not isinstance(config.implementation_sequence, list):
+            raise ValueError("kiro.implementation_sequence must be a list")
+        if not config.implementation_sequence:
+            raise ValueError("kiro.implementation_sequence must not be empty")
+        for index, model in enumerate(config.implementation_sequence):
+            key = f"kiro.implementation_sequence[{index}]"
+            if not isinstance(model, str) or not model:
+                raise ValueError(f"{key} must be a non-empty string")
+
+        if not isinstance(config.quota_command, list):
+            raise ValueError("kiro.quota_command must be a list")
+        if not config.quota_command:
+            raise ValueError("kiro.quota_command must not be empty")
+        for index, part in enumerate(config.quota_command):
+            if not isinstance(part, str):
+                raise ValueError(f"kiro.quota_command[{index}] must be a string")
+
+        if config.review_model == "auto":
+            raise ValueError("kiro.review_model must not be auto: Auto never reviews")
+        return config
+
+    @staticmethod
     def _load_wait_patterns(raw: Any, config_type: type[CodexConfig] | type[CapacityConfig]):
         section = dict(raw or {})
         defaults = config_type()
@@ -737,4 +798,5 @@ class HarnessConfig:
             claude=cls._load_claude(raw.get("claude", {})),
             agy=cls._load_agy(raw.get("agy", {})),
             copilot=cls._load_copilot(raw.get("copilot", {})),
+            kiro=cls._load_kiro(raw.get("kiro", {})),
         )
