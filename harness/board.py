@@ -397,13 +397,16 @@ def _board_task(
     routing_reason = _meta_text(state, f"{sprint.id}.{task.id}.board.routing_reason")
     if routing_reason is None:
         routing_reason = routing_reasons.get(task.id)
-    max_attempts = task.max_attempts if task.max_attempts is not None else default_max_attempts
+    max_attempts = task.max_attempts
+    if max_attempts is None:
+        recorded_limit = _meta_int(state, f"{sprint.id}.{task.id}.board.max_attempts")
+        max_attempts = recorded_limit if recorded_limit is not None else default_max_attempts
     return BoardTask(
         id=task.id,
         status=runtime.status.value,
         provider=provider,
         model=model,
-        attempt=runtime.attempt,
+        attempt=min(runtime.attempt, max_attempts),
         max_attempts=max_attempts,
         phase_elapsed_seconds=_phase_elapsed_seconds(state, sprint, task, runtime.status, now),
         dependency_ids=list(task.depends_on),
