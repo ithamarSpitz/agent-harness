@@ -13,6 +13,7 @@ from tests.portable import make_python_script
 
 def _fake(tmp_path: Path, line: str, *, success: bool = False):  # type: ignore[no-untyped-def]
     if success:
+        line = f"VERDICT: PASS\n{line}"
         stream = json.dumps(
             {"event": "result", "result": {"status": "SUCCESS", "response": line}}
         )

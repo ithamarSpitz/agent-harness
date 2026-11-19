@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -283,6 +284,37 @@ class AgyAgentRunner:
         )
 
     @staticmethod
+    def _num_turns(output: str) -> int | None:
+        final: dict[str, Any] | None = None
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("event") == "result":
+                candidate = event.get("result")
+                if isinstance(candidate, dict):
+                    final = candidate
+        value = final.get("num_turns") if final is not None else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _has_report(response: str, phase: str) -> bool:
+        if phase not in {"implement", "review"}:
+            return True
+        marker = "STATUS" if phase == "implement" else "VERDICT:"
+        for line in response.splitlines():
+            normalized = line.lstrip()
+            if normalized.startswith(("#", "*")):
+                normalized = normalized[1:].lstrip()
+            if marker == "STATUS":
+                if re.match(r"STATUS\b", normalized, re.IGNORECASE):
+                    return True
+            elif re.match(r"VERDICT:", normalized, re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
     def _matches(output: str, patterns: Iterable[str]) -> bool:
         lowered = output.replace("’", "'").replace("‘", "'").casefold()
         return any(
@@ -482,12 +514,8 @@ class AgyAgentRunner:
         duration = time.monotonic() - started
         with output_lock:
             raw_output = "".join(output_lines)
-        log_output = raw_output
-        if error:
-            log_output = (log_output + "\n" + error).strip() + "\n"
-        write_log(self.log_dir, log_name, log_output)
-
         if return_code is not None and int(return_code) in WINDOWS_RESOURCE_EXIT_CODES:
+            write_log(self.log_dir, log_name, raw_output)
             result = AgentResult(
                 False,
                 raw_output,
@@ -502,6 +530,34 @@ class AgyAgentRunner:
             return result
 
         response, status, usage, denied, diagnostics = self._parse_output(raw_output)
+        report_fault = (
+            return_code == 0
+            and not timed_out
+            and not stalled
+            and status == "SUCCESS"
+            and phase in {"implement", "review"}
+            and not self._has_report(response, phase)
+        )
+        report_error: str | None = None
+        if report_fault:
+            turns = self._num_turns(raw_output)
+            report_error = (
+                f"agy ended after {turns if turns is not None else 'unknown'} "
+                f"turn(s) without a "
+                f"{'STATUS report' if phase == 'implement' else 'VERDICT'}"
+            )
+            error = report_error
+        log_output = raw_output
+        if report_fault:
+            log_output = (
+                log_output.rstrip()
+                + "\nagy response tail:\n"
+                + response[-300:]
+                + "\n"
+            )
+        if error:
+            log_output = (log_output + "\n" + error).strip() + "\n"
+        write_log(self.log_dir, log_name, log_output)
         # Classify limit texts only on calls that failed, and only in stderr /
         # diagnostic lines and the result's own error field, never in the
         # streamed answer: a good answer may legitimately mention "rate limit".
@@ -556,6 +612,7 @@ class AgyAgentRunner:
             and not capacity_exhausted
             and waiting_cause is None
             and not auth_failure
+            and not report_fault
         )
         if denied:
             error = "Agy denied actions: " + ", ".join(denied)
@@ -571,6 +628,8 @@ class AgyAgentRunner:
             error = diagnostics or f"Agy reported status {status or 'missing'}"
         elif return_code != 0 and not timed_out and not stalled:
             error = diagnostics or f"Agent exit code {return_code}"
+        if report_error is not None:
+            error = report_error
 
         result = AgentResult(
             ok=ok,
@@ -588,6 +647,7 @@ class AgyAgentRunner:
             waiting_cause=waiting_cause,
             auth_failure=auth_failure,
             provider="agy",
+            launch_failure=report_fault,
             input_tokens=usage.get("input_tokens"),
             cached_input_tokens=usage.get("cache_read_tokens"),
             output_tokens=usage.get("output_tokens"),

@@ -209,26 +209,32 @@ def test_agy_stream_fixture_extracts_answer_usage_and_success(tmp_path: Path) ->
 
 
 def _result_stream(
-    *, status: str = "SUCCESS", denied_actions: list[dict[str, str]] | None = None
+    *,
+    status: str = "SUCCESS",
+    response: str = "STATUS: done",
+    denied_actions: list[dict[str, str]] | None = None,
+    num_turns: int | None = 1,
 ) -> str:
+    result: dict[str, object] = {
+        "conversation_id": "fake",
+        "status": status,
+        "response": response,
+        "duration_seconds": 0.1,
+        "usage": {
+            "input_tokens": 4,
+            "output_tokens": 3,
+            "thinking_tokens": 2,
+            "cache_read_tokens": 1,
+            "total_tokens": 9,
+        },
+        "denied_actions": denied_actions or [],
+    }
+    if num_turns is not None:
+        result["num_turns"] = num_turns
     return json.dumps(
         {
             "event": "result",
-            "result": {
-                "conversation_id": "fake",
-                "status": status,
-                "response": "answer",
-                "duration_seconds": 0.1,
-                "num_turns": 1,
-                "usage": {
-                    "input_tokens": 4,
-                    "output_tokens": 3,
-                    "thinking_tokens": 2,
-                    "cache_read_tokens": 1,
-                    "total_tokens": 9,
-                },
-                "denied_actions": denied_actions or [],
-            },
+            "result": result,
         }
     )
 
@@ -258,6 +264,7 @@ def test_agy_denied_actions_fail_and_are_listed(tmp_path: Path) -> None:
     runner, usage = _fake_result_runner(
         tmp_path,
         _result_stream(
+            response="STATUS: done",
             denied_actions=[
                 {"action": "command(npm test)", "display_name": "Run npm test"},
                 {"action": "command(git status)", "display_name": ""},
@@ -280,7 +287,7 @@ def test_agy_denied_actions_fail_and_are_listed(tmp_path: Path) -> None:
     )
 
     assert not result.ok
-    assert result.output == "answer"
+    assert result.output == "STATUS: done"
     assert result.error == (
         "Agy denied actions: Run npm test (command(npm test)), command(git status)"
     )
@@ -329,6 +336,74 @@ def test_agy_missing_command_is_launch_failure(
     assert result.launch_failure
     assert result.output == message
     assert message in str(result.error)
+
+
+@pytest.mark.parametrize(
+    ("phase", "response", "expected"),
+    [
+        ("implement", "I'll start by reading the required context files...", "STATUS report"),
+        ("review", "I'll start by reading the required context files...", "VERDICT"),
+    ],
+)
+def test_agy_success_without_expected_report_is_launch_failure(
+    tmp_path: Path, phase: str, response: str, expected: str
+) -> None:
+    runner, _usage = _fake_result_runner(
+        tmp_path, _result_stream(response=response)
+    )
+    result = runner._invoke(
+        task_id="NO-REPORT",
+        phase=phase,
+        prompt="test",
+        workspace=tmp_path,
+        model="gemini-low" if phase == "implement" else "claude-review",
+        effort="low" if phase == "implement" else "high",
+        mode="accept-edits" if phase == "implement" else "plan",
+        settings=_settings(),
+        timeout_minutes=1,
+        log_name="no-report.log",
+    )
+
+    assert result.launch_failure
+    assert not result.ok
+    assert result.error == f"agy ended after 1 turn(s) without a {expected}"
+
+
+def test_agy_success_reports_are_accepted(tmp_path: Path) -> None:
+    runner, _usage = _fake_result_runner(
+        tmp_path, _result_stream(response="STATUS: done")
+    )
+    implementation = runner._invoke(
+        task_id="REPORT",
+        phase="implement",
+        prompt="test",
+        workspace=tmp_path,
+        model="gemini-low",
+        effort="low",
+        mode="accept-edits",
+        settings=_settings(),
+        timeout_minutes=1,
+        log_name="implementation.log",
+    )
+    assert implementation.ok
+
+    runner, _usage = _fake_result_runner(
+        tmp_path, _result_stream(response="VERDICT: PASS")
+    )
+    review = _invoke_review(runner, tmp_path, "REPORT-REVIEW")
+    assert review.ok
+
+
+def test_agy_success_without_report_and_turn_count_is_launch_failure(
+    tmp_path: Path,
+) -> None:
+    runner, _usage = _fake_result_runner(
+        tmp_path, _result_stream(response="incomplete", num_turns=None)
+    )
+    result = _invoke_review(runner, tmp_path, "UNKNOWN-TURNS")
+
+    assert result.launch_failure
+    assert result.error == "agy ended after unknown turn(s) without a VERDICT"
 
 
 def _invoke_review(runner: AgyAgentRunner, tmp_path: Path, name: str):  # type: ignore[no-untyped-def]
@@ -501,7 +576,7 @@ def test_agy_writes_one_user_event_and_logs_version_once(tmp_path: Path) -> None
         "    message = json.loads(lines[0])\n"
         "    print(json.dumps({'event': 'result', 'result': {\n"
         "        'status': 'SUCCESS',\n"
-        "        'response': json.dumps({'count': len(lines), 'message': message}),\n"
+        "        'response': 'STATUS: done\\n' + json.dumps({'count': len(lines), 'message': message}),\n"
         "        'usage': {},\n"
         "    }}))\n",
     )
@@ -525,7 +600,7 @@ def test_agy_writes_one_user_event_and_logs_version_once(tmp_path: Path) -> None
         for index in range(2)
     ]
 
-    payload = json.loads(results[0].output)
+    payload = json.loads(results[0].output.splitlines()[-1])
     assert payload == {
         "count": 1,
         "message": {
