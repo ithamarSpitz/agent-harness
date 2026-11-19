@@ -1010,3 +1010,65 @@ sprints:
         file: tasks/sprint-16-provider-adapters/15-state-save-retries-on-windows.md
         stage: 1
         depends_on: []
+  S17-kiro-cli:
+    name: Kiro CLI as the first provider added the adapter way - quota, config, stream parsing, runner, limits, headroom, adapter, wiring, doctor
+    tasks:
+      S17-T1:
+        file: tasks/sprint-17-kiro-cli/01-kiro-usage.md
+        stage: 1
+        depends_on: []
+      S17-T2:
+        file: tasks/sprint-17-kiro-cli/02-kiro-config.md
+        stage: 1
+        depends_on: []
+      S17-T3:
+        file: tasks/sprint-17-kiro-cli/03-kiro-stream.md
+        stage: 1
+        depends_on: []
+      S17-T4:
+        file: tasks/sprint-17-kiro-cli/04-kiro-runner.md
+        stage: 2
+        depends_on:
+        - S17-T2
+        - S17-T3
+      S17-T5:
+        file: tasks/sprint-17-kiro-cli/05-kiro-limits.md
+        stage: 2
+        depends_on:
+        - S17-T1
+        - S17-T2
+      S17-T6:
+        file: tasks/sprint-17-kiro-cli/06-kiro-headroom.md
+        stage: 3
+        depends_on:
+        - S17-T5
+      S17-T7:
+        file: tasks/sprint-17-kiro-cli/07-kiro-adapter.md
+        stage: 3
+        depends_on:
+        - S17-T2
+        - S17-T4
+      S17-T8:
+        file: tasks/sprint-17-kiro-cli/08-kiro-wiring.md
+        stage: 4
+        depends_on:
+        - S17-T6
+        - S17-T7
+      S17-T9:
+        file: tasks/sprint-17-kiro-cli/09-kiro-doctor.md
+        stage: 5
+        depends_on:
+        - S17-T8
+      S17-T10:
+        file: tasks/sprint-17-kiro-cli/10-docs.md
+        stage: 6
+        depends_on:
+        - S17-T1
+        - S17-T2
+        - S17-T3
+        - S17-T4
+        - S17-T5
+        - S17-T6
+        - S17-T7
+        - S17-T8
+        - S17-T9
