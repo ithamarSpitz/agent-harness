@@ -10,6 +10,7 @@ depends_on:
 allowed_paths:
   - harness/agy_runner.py
   - tests/harness/test_agy_runner.py
+  - tests/harness/test_agy_quota.py
 context:
   - spec
 environment: null
@@ -36,12 +37,15 @@ Seen twice in S14-T10 (2026-11-18), in an implementation (attempt 3) and a revie
 2. A review result with status SUCCESS and no `VERDICT:` line returns the same kind of result with `error=f"agy ended after {num_turns} turn(s) without a VERDICT"`.
 3. The raw response's last 300 characters go to the task log (not the error) to help find the cause later.
 4. Results that contain the expected report are unchanged.
+5. The check applies whether or not the response has `num_turns`; when it is missing, `num_turns` in the error is `unknown`.
+6. Existing tests in `tests/harness/test_agy_quota.py` (and `test_agy_runner.py`) whose fake successful agy output has no `STATUS`/`VERDICT` line are expected to break: add the report line those fakes would really carry (for example `VERDICT: PASS` in review samples, `STATUS: done` in implement samples). Do not change what they assert about quota.
 
 # Acceptance criteria
 
 1. `tests/harness/test_agy_runner.py`: the recorded one-turn SUCCESS line above, for implement, gives `launch_failure=True`, `ok=False` and the error text with `1 turn(s)`.
 2. The same for review gives the VERDICT error.
 3. An implementation response ending with a `STATUS: done` report and a review with `VERDICT: PASS` are `ok=True`.
+4. A SUCCESS result with no `num_turns` and no report gives `launch_failure=True` with `unknown turn(s)`.
 
 # Rules
 
