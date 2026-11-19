@@ -36,6 +36,10 @@ class FakeProvider:
         self.review_calls += 1
         return AgentResult(True, "VERDICT: PASS", provider=self.provider)
 
+    def brief_check(self, *_args, **_kwargs):
+        self.brief_calls = getattr(self, "brief_calls", 0) + 1
+        return AgentResult(True, "BRIEF OK", provider=self.provider)
+
 
 def _config(tmp_path: Path) -> HarnessConfig:
     path = tmp_path / "harness.yaml"
@@ -209,3 +213,45 @@ def test_copilot_quota_failure_falls_back_to_codex(tmp_path: Path) -> None:
     assert result.provider == "codex"
     assert codex.implement_calls == 1
     assert state.get_meta("S1.T1.provider.copilot.disabled") == "quota:premium"
+
+
+def _unavailable(fake: FakeProvider) -> None:
+    fake.availability = lambda **_kwargs: (False, "down")  # type: ignore[method-assign]
+
+
+def test_brief_check_copilot_unavailable_falls_to_codex(tmp_path: Path) -> None:
+    copilot, codex = FakeProvider("copilot"), FakeProvider("codex")
+    _unavailable(copilot)
+    router, state = _router(tmp_path, copilot, codex)
+    result = router.brief_check(_task(tmp_path), tmp_path, "brief", 5)
+    assert result.ok and result.provider == "codex"
+    assert getattr(copilot, "brief_calls", 0) == 0
+    assert state.get_meta("S1.T1.provider.copilot.disabled") == "auth_or_cli_unavailable"
+
+
+def test_brief_check_both_unavailable(tmp_path: Path) -> None:
+    copilot, codex = FakeProvider("copilot"), FakeProvider("codex")
+    _unavailable(copilot)
+    _unavailable(codex)
+    router, state = _router(tmp_path, copilot, codex)
+    result = router.brief_check(_task(tmp_path), tmp_path, "brief", 5)
+    assert (
+        not result.ok
+        and result.provider == "codex"
+        and result.auth_failure
+        and result.error == "Codex CLI/auth unavailable"
+    )
+    assert getattr(codex, "brief_calls", 0) == 0
+    assert state.get_meta("S1.T1.provider.copilot.disabled") == "auth_or_cli_unavailable"
+    assert state.get_meta("S1.T1.provider.codex.disabled") == "auth_or_cli_unavailable"
+
+
+def test_brief_check_copilot_runner_auth_failure_keeps_auth_reason(tmp_path: Path) -> None:
+    copilot, codex = FakeProvider("copilot"), FakeProvider("codex")
+    copilot.brief_check = lambda *_a, **_k: AgentResult(  # type: ignore[method-assign]
+        False, "", "auth expired", provider="copilot", auth_failure=True,
+    )
+    router, state = _router(tmp_path, copilot, codex)
+    result = router.brief_check(_task(tmp_path), tmp_path, "brief", 5)
+    assert result.ok and result.provider == "codex"
+    assert state.get_meta("S1.T1.provider.copilot.disabled") == "auth"

@@ -100,3 +100,21 @@ class CodexAdapter(BaseAdapter):
             task, workspace, failure_summary, timeout_minutes,
             model=self.config.codex.planner_model, env=env,
         )
+
+    def brief_check(
+        self,
+        task: TaskSpec,
+        workspace: Path,
+        brief_text: str,
+        timeout_minutes: int,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> AgentResult:
+        available, _ = self.runner.availability(refresh=True)
+        if not available:
+            return self._unavailable()
+        return self.runner.brief_check(
+            task, workspace, brief_text, timeout_minutes,
+            model=self.config.codex.planner_model,
+            env=env,
+        )

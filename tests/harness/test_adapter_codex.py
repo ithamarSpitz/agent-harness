@@ -36,6 +36,10 @@ class FakeRunner:
         self.calls.append(("plan_change", args, kwargs))
         return AgentResult(True, "ok", provider="codex")
 
+    def brief_check(self, *args: Any, **kwargs: Any) -> AgentResult:
+        self.calls.append(("brief_check", args, kwargs))
+        return AgentResult(True, "ok", provider="codex")
+
 
 def _task(tmp_path: Path) -> TaskSpec:
     task_file = tmp_path / "task.md"
@@ -79,6 +83,7 @@ def test_unavailable_never_calls_runner(tmp_path: Path) -> None:
         adapter.review(task, tmp_path, "base", "sum", 5, env=None, code_map_offered=False,
                        on_process_start=None),
         adapter.plan_change(task, tmp_path, "fail", 5, model_class="worker", env=None),
+        adapter.brief_check(task, tmp_path, "brief", 5),
     ]
     for result in results:
         assert not result.ok
@@ -119,3 +124,15 @@ def test_levels_defaults_budget_enabled(tmp_path: Path) -> None:
 def test_find_signed_in(tmp_path: Path) -> None:
     found = CodexAdapter(FakeRunner(), _config(tmp_path)).find(refresh=True)
     assert found.installed and found.signed_in is True
+
+
+def test_brief_check_arguments(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runner = FakeRunner()
+    task = _task(tmp_path)
+    adapter = CodexAdapter(runner, config)
+    assert adapter.brief_check(task, tmp_path, "brief", 4).ok
+    assert adapter.brief_check(task, tmp_path, "brief", 4, env={"X": "y"}).ok
+    assert runner.calls[0][1] == (task, tmp_path, "brief", 4)
+    assert runner.calls[0][2] == {"model": config.codex.planner_model, "env": None}
+    assert runner.calls[1][2] == {"model": config.codex.planner_model, "env": {"X": "y"}}
