@@ -35,7 +35,13 @@ AGY_QUOTA_PATTERNS = (
     "resource_exhausted",
     "out of credits",
 )
-AGY_CAPACITY_PATTERNS = ("model capacity exhausted", "rate limit")
+AGY_CAPACITY_PATTERNS = (
+    "model capacity exhausted",
+    "rate limit",
+    "no capacity available",
+    "unavailable (code 503)",
+    "resource_exhausted",
+)
 AGY_NETWORK_PATTERNS = (
     "network error",
     "connection error",
