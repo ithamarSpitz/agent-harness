@@ -14,6 +14,7 @@ from .adapters.claude import ClaudeAdapter
 from .adapters.codex import CodexAdapter
 from .adapters.copilot import CopilotAdapter
 from .adapters.cursor import CursorAdapter
+from .adapters.base import CallContext
 from .agy_runner import AgyAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
@@ -984,71 +985,29 @@ class ProviderAgentRunner:
                 self._record_switch(task, switched[0], switched[1], provider)
                 switched = None
             override = None
-            cursor_model_class: str | None = None
+            chosen = self.adapters.get(provider)
             try:
-                if provider == "agy" and self.agy is not None:
-                    result = self.agy.implement(
-                        task, workspace, timeout_minutes,
-                        self._provider_attempt(task, "agy") + 1,
-                        previous_failure, env=env,
-                        model_class_override=routing_class,
-                        code_map_offered=code_map_offered,
-                        exhausted_pools=self._agy_exhausted_pools(task),
-                        on_process_start=on_process_start,
-                    )
-                elif provider == "copilot" and self.copilot is not None:
-                    result = self.copilot.implement(
-                        task, workspace, timeout_minutes,
-                        self._provider_attempt(task, "copilot") + 1,
-                        previous_failure, env=env,
-                        model_class_override=routing_class,
-                        code_map_offered=code_map_offered,
-                        on_process_start=on_process_start,
-                    )
-                elif provider == "codex":
-                    available, _ = self.codex.availability()
-                    if not available:
-                        override = "auth_or_cli_unavailable"
-                        result = AgentResult(
-                            False, "", "Codex CLI/auth unavailable",
-                            provider="codex", auth_failure=True,
-                        )
-                    else:
-                        index = self._provider_attempt(task, "codex")
-                        model, effort = self.config.codex.implementation_profile(index)
-                        result = self.codex.implement(
-                            task, workspace, timeout_minutes, attempt, previous_failure,
-                            model=model, reasoning_effort=effort, env=env,
-                            code_map_offered=code_map_offered,
-                            on_process_start=on_process_start,
-                        )
-                elif provider == "claude" and self.claude is not None:
-                    result = self.claude.implement(
-                        task, workspace, timeout_minutes, attempt, previous_failure,
-                        env=env, code_map_offered=code_map_offered,
-                        on_process_start=on_process_start,
+                if chosen is None:
+                    result = AgentResult(
+                        False, "", f"no adapter for {provider}",
+                        provider=provider, launch_failure=True,
                     )
                 else:
-                    cursor_model_class = self._cursor_model_class(task)
-                    result = self.cursor.implement(
-                        task, workspace, timeout_minutes, attempt, previous_failure,
-                        env=env, model_class_override=cursor_model_class,
+                    result = cast(AgentResult, chosen.implement(CallContext(
+                        task=task, workspace=workspace,
+                        timeout_minutes=timeout_minutes, attempt=attempt,
+                        provider_attempt=self._provider_attempt(task, provider),
+                        previous_failure=previous_failure, env=env,
+                        model_class=routing_class,
                         code_map_offered=code_map_offered,
                         on_process_start=on_process_start,
-                    )
+                    )))
             except Exception as exc:
                 override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
                     False, "", f"{provider} integration error: {type(exc).__name__}",
                     provider=provider, launch_failure=True,
                 )
-
-            if (
-                provider == "cursor"
-                and cursor_model_class == "auto"
-                and result.quota_exhausted
-            ):
-                self._remember_cursor_auto_exhaustion()
 
             if result.config_fault:
                 # A flag/option error happened before any model work: spend
@@ -1062,14 +1021,17 @@ class ProviderAgentRunner:
                 last_result = result
                 if not self._has_other_candidate(task, "implement", provider, unavailable):
                     return result
-                reason = override or self._fallback_reason(result)
+                reason = (
+                    override or result.fallback_reason or self._fallback_reason(result)
+                )
                 self._disable_provider(task, provider, reason)
                 switched = (provider, reason)
                 unavailable.add(provider)
                 continue
             if result.capacity_exhausted or result.transient_error:
                 return result
-            if provider != "cursor" or self._should_consume_cursor_attempt(result):
+            consumes = getattr(chosen, "consumes_attempt", None)
+            if consumes is None or consumes(result):
                 self._consume_provider_attempt(task, provider)
             if result.ok:
                 self.state.set_meta(
