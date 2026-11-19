@@ -263,7 +263,15 @@ doctor:
   minimum_versions: {}
 """
 
-GITIGNORE_LINES = (".harness/",)
+GITIGNORE_LINES = (
+    ".harness/",
+    "__pycache__/",
+    "*.py[cod]",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    "node_modules/",
+)
 
 NEXT_STEPS = (
     "Next steps: edit harness.yaml verification commands, write briefs, "
