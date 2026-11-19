@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+from .adapters import AdapterRegistry
+from .adapters.agy import AgyAdapter
+from .adapters.claude import ClaudeAdapter
+from .adapters.codex import CodexAdapter
+from .adapters.copilot import CopilotAdapter
+from .adapters.cursor import CursorAdapter
 from .agy_runner import AgyAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
@@ -165,6 +171,19 @@ class ProviderAgentRunner:
         )
         self._clock = clock or time.time
         self._worktree_guard_blocked: set[str] = set()
+        self.adapters = AdapterRegistry()
+        self.adapters.register(AgyAdapter(
+            config, agy, exhausted_pools_for=self._agy_exhausted_pools
+        ))
+        self.adapters.register(CopilotAdapter(copilot, config))
+        self.adapters.register(CodexAdapter(codex, config))
+        self.adapters.register(CursorAdapter(
+            cursor, config,
+            model_class_for=self._cursor_model_class,
+            on_auto_quota=self._remember_cursor_auto_exhaustion,
+            budget=self._cursor_implement_budget,
+        ))
+        self.adapters.register(ClaudeAdapter(config, claude))
 
     def _disable_key(self, task: TaskSpec) -> str:
         # Per task: every new task probes Codex again; only a task that already fell back stays on Cursor.
@@ -209,64 +228,16 @@ class ProviderAgentRunner:
         if runtime.last_error and "usage quota exhausted" in runtime.last_error.casefold():
             self._clear_temporary_disables(task)
 
-    def _codex_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
-        return (
-            self.config.codex.enabled
-            and not bool(self.state.get_meta(self._disable_key(task)))
-            and not bool(
-                phase and self.state.get_meta(self._phase_disable_key(task, "codex", phase))
-            )
+    def _enabled_for(self, task: TaskSpec, provider: str, phase: str | None = None) -> bool:
+        adapter = self.adapters.get(provider)
+        if adapter is None or not adapter.enabled():
+            return False
+        key = (
+            self._disable_key(task) if provider == "codex"
+            else f"{task.sprint}.{task.id}.provider.{provider}.disabled"
         )
-
-    def _cursor_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
-        return (
-            self.config.cursor.enabled
-            and not bool(
-                self.state.get_meta(f"{task.sprint}.{task.id}.provider.cursor.disabled")
-            )
-            and not bool(
-                phase and self.state.get_meta(self._phase_disable_key(task, "cursor", phase))
-            )
-        )
-
-    def _claude_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
-        return (
-            self.config.claude.enabled
-            and self.claude is not None
-            and not bool(
-                self.state.get_meta(f"{task.sprint}.{task.id}.provider.claude.disabled")
-            )
-            and not bool(
-                phase and self.state.get_meta(
-                    self._phase_disable_key(task, "claude", phase)
-                )
-            )
-        )
-
-    def _agy_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
-        return (
-            self.config.agy.enabled
-            and self.agy is not None
-            and not bool(
-                self.state.get_meta(f"{task.sprint}.{task.id}.provider.agy.disabled")
-            )
-            and not bool(
-                phase and self.state.get_meta(self._phase_disable_key(task, "agy", phase))
-            )
-        )
-
-    def _copilot_enabled_for(self, task: TaskSpec, phase: str | None = None) -> bool:
-        return (
-            self.config.copilot.enabled
-            and self.copilot is not None
-            and not bool(
-                self.state.get_meta(f"{task.sprint}.{task.id}.provider.copilot.disabled")
-            )
-            and not bool(
-                phase and self.state.get_meta(
-                    self._phase_disable_key(task, "copilot", phase)
-                )
-            )
+        return not bool(self.state.get_meta(key)) and not bool(
+            phase and self.state.get_meta(self._phase_disable_key(task, provider, phase))
         )
 
     def _agy_pool_for_model(self, model: str) -> str | None:
@@ -528,13 +499,7 @@ class ProviderAgentRunner:
         snapshot = self._snapshot(task, preserve_disabled=extra_disabled)
         snapshot = self._snapshot_for_call(task, phase, model_class, snapshot)
         disabled = self._disabled_for(task, phase) | (extra_disabled or set())
-        enabled = {
-            "agy": self.config.agy.enabled and self.agy is not None,
-            "copilot": self.config.copilot.enabled and self.copilot is not None,
-            "codex": self.config.codex.enabled,
-            "cursor": self.config.cursor.enabled,
-            "claude": self.config.claude.enabled and self.claude is not None,
-        }
+        enabled = {a.name: a.enabled() for a in self.adapters}
         # Auto is only the first implementation attempt of a task.
         auto_out_until = self._cursor_auto_out_until()
         auto_allowed = self.config.cursor.auto_when_exhausted and auto_out_until is None and not any(
@@ -598,13 +563,7 @@ class ProviderAgentRunner:
         """True when another provider is enabled and not disabled for this task."""
 
         skipped = self._disabled_for(task, phase) | unavailable
-        enabled = {
-            "agy": self.config.agy.enabled and self.agy is not None,
-            "copilot": self.config.copilot.enabled and self.copilot is not None,
-            "codex": self.config.codex.enabled,
-            "cursor": self.config.cursor.enabled,
-            "claude": self.config.claude.enabled and self.claude is not None,
-        }
+        enabled = {a.name: a.enabled() for a in self.adapters}
         return any(
             on and name not in skipped for name, on in enabled.items() if name != provider
         )
@@ -637,21 +596,21 @@ class ProviderAgentRunner:
             ).provider or "none"
         for provider in self.config.providers.priority:
             normalized = provider.strip().casefold()
-            if normalized == "agy" and self._agy_enabled_for(task, phase):
+            if normalized == "agy" and self._enabled_for(task, "agy", phase):
                 return "agy"
-            if normalized == "copilot" and self._copilot_enabled_for(task, phase):
+            if normalized == "copilot" and self._enabled_for(task, "copilot", phase):
                 return "copilot"
-            if normalized == "codex" and self._codex_enabled_for(task, phase):
+            if normalized == "codex" and self._enabled_for(task, "codex", phase):
                 return "codex"
-            if normalized == "cursor" and self._cursor_enabled_for(task, phase):
+            if normalized == "cursor" and self._enabled_for(task, "cursor", phase):
                 return "cursor"
-        if self._codex_enabled_for(task, phase):
+        if self._enabled_for(task, "codex", phase):
             return "codex"
-        if self._cursor_enabled_for(task, phase):
+        if self._enabled_for(task, "cursor", phase):
             return "cursor"
-        if self._agy_enabled_for(task, phase):
+        if self._enabled_for(task, "agy", phase):
             return "agy"
-        if self._copilot_enabled_for(task, phase):
+        if self._enabled_for(task, "copilot", phase):
             return "copilot"
         return "none"
 
@@ -689,9 +648,9 @@ class ProviderAgentRunner:
                 })
             return True
         next_provider = None
-        if provider == "codex" and self._cursor_enabled_for(task, phase):
+        if provider == "codex" and self._enabled_for(task, "cursor", phase):
             next_provider = "cursor"
-        elif provider == "cursor" and self._codex_enabled_for(task, phase):
+        elif provider == "cursor" and self._enabled_for(task, "codex", phase):
             try:
                 codex_available, _ = self.codex.availability(refresh=True)
             except Exception:
@@ -744,25 +703,12 @@ class ProviderAgentRunner:
         return self._preferred_provider(task, "implement")
 
     def max_implementation_attempts(self, task: TaskSpec) -> int:
-        agy_attempts = (
-            len(self.config.agy.implementation_sequence)
-            if self.config.agy.enabled else 0
-        )
-        copilot_attempts = (
-            len(self.config.copilot.implementation_sequence)
-            if self.config.copilot.enabled else 0
-        )
-        claude_attempts = (
-            len(self.config.claude.implementation_sequence)
-            if self.config.claude.enabled else 0
-        )
-        return (
-            agy_attempts
-            + copilot_attempts
-            + len(self.config.codex.implementation_sequence)
-            + self._cursor_implement_budget()
-            + claude_attempts
-        )
+        # Codex and Cursor budgets count even when disabled (as before).
+        total = 0
+        for adapter in self.adapters:
+            if adapter.name in {"codex", "cursor"} or adapter.enabled():
+                total += adapter.implementation_budget()
+        return total
 
     def has_implementation_budget(self, task: TaskSpec, *, model_class_override: str | None = None) -> bool:
         if task.id in self._worktree_guard_blocked:
@@ -773,20 +719,8 @@ class ProviderAgentRunner:
             return self._provider_attempt(task, "cursor") < 1
         if self._routing_active(task, "implement"):
             self._maybe_clear_temporary_disables_on_quota_wait_exit(task)
-            enabled = {
-                "agy": self.config.agy.enabled and self.agy is not None,
-                "copilot": self.config.copilot.enabled and self.copilot is not None,
-                "codex": self.config.codex.enabled,
-                "cursor": self.config.cursor.enabled,
-                "claude": self.config.claude.enabled and self.claude is not None,
-            }
-            attempt_limits = {
-                "agy": len(self.config.agy.implementation_sequence),
-                "copilot": len(self.config.copilot.implementation_sequence),
-                "codex": len(self.config.codex.implementation_sequence),
-                "cursor": self._cursor_implement_budget(),
-                "claude": len(self.config.claude.implementation_sequence),
-            }
+            enabled = {a.name: a.enabled() for a in self.adapters}
+            attempt_limits = {a.name: a.implementation_budget() for a in self.adapters}
             for provider, is_enabled in enabled.items():
                 if (
                     not is_enabled
@@ -1034,24 +968,9 @@ class ProviderAgentRunner:
         while True:
             exhausted = set(unavailable)
             routing_class = self._routing_model_class(task, "implement")
-            if self._provider_attempt(task, "agy") >= len(
-                self.config.agy.implementation_sequence
-            ):
-                exhausted.add("agy")
-            if self._provider_attempt(task, "copilot") >= len(
-                self.config.copilot.implementation_sequence
-            ):
-                exhausted.add("copilot")
-            if self._provider_attempt(task, "codex") >= len(
-                self.config.codex.implementation_sequence
-            ):
-                exhausted.add("codex")
-            if self._provider_attempt(task, "cursor") >= self._cursor_implement_budget():
-                exhausted.add("cursor")
-            if self._provider_attempt(task, "claude") >= len(
-                self.config.claude.implementation_sequence
-            ):
-                exhausted.add("claude")
+            for adapter in self.adapters:
+                if self._provider_attempt(task, adapter.name) >= adapter.implementation_budget():
+                    exhausted.add(adapter.name)
             choice = self._choose(
                 task, "implement", model_class=routing_class,
                 record=True, extra_disabled=exhausted,
