@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import harness.copilot_usage as copilot_usage
-from harness.copilot_usage import CopilotQuota, CopilotUsageError
+from harness.copilot_usage import CopilotQuota, CopilotUsageError, parse_copilot_user
 from harness.headroom import Headroom, headroom_snapshot
 from harness.limits import LimitsPaths, render_limits, run_limits
 
@@ -69,6 +69,36 @@ def test_limits_and_headroom_include_copilot_quota(tmp_path: Path) -> None:
     assert snapshot["copilot"] == [
         Headroom("copilot", 25.0, int(RESET.timestamp()), "monthly", True)
     ]
+
+
+def test_limits_render_used_up_copilot_quota(tmp_path: Path) -> None:
+    sample = json.dumps(
+        {
+            "copilot_plan": "individual",
+            "quota_reset_date_utc": "2026-12-01T00:00:00Z",
+            "quota_snapshots": {
+                "premium_interactions": {
+                    "entitlement": 200,
+                    "overage_count": 0,
+                    "overage_permitted": False,
+                    "percent_remaining": 0,
+                    "remaining": -1,
+                    "unlimited": False,
+                }
+            },
+        }
+    )
+
+    def used_up(*, command: list[str] | None) -> CopilotQuota:
+        return parse_copilot_user(sample)
+
+    text = render_limits(
+        _paths(tmp_path), copilot_enabled=True, copilot_source=used_up
+    )
+
+    assert "Copilot (individual)" in text
+    assert "premium  100% used, 0 of 200 left, resets" in text
+    assert "usage unavailable" not in text
 
 
 def test_failure_is_unavailable_and_unknown(tmp_path: Path) -> None:
