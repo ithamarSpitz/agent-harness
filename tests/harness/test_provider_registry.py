@@ -187,3 +187,50 @@ def test_review_missing_adapter_is_launch_failure(tmp_path: Path, monkeypatch):
     )
     assert result.error == "no adapter for ghost"
     assert result.launch_failure
+
+
+def test_plan_repair_calls_chosen_adapter_once(tmp_path: Path, monkeypatch):
+    from harness.runner import AgentResult
+
+    seen: list[tuple] = []
+
+    class Fake(BaseAdapter):
+        name = "fake"
+
+        def enabled(self) -> bool:
+            return True
+
+        def plan_change(self, *args, **kwargs) -> AgentResult:
+            seen.append((*args, kwargs))
+            return AgentResult(True, "plan", provider="fake")
+
+    router = _router(tmp_path)
+    router.adapters.register(Fake())
+    monkeypatch.setattr(
+        router, "_choose",
+        lambda *a, **k: SimpleNamespace(provider="fake", reason="test"),
+    )
+    task = _task()
+    result = router._plan_change_with_routing(
+        task, tmp_path, "failed", 5, model_class="planner", env={"TEST": "1"},
+    )
+    assert result.provider == "fake"
+    assert seen == [(
+        task, tmp_path, "failed", 5,
+        {"model_class": "planner", "env": {"TEST": "1"}},
+    )]
+
+
+def test_plan_repair_missing_adapter_is_launch_failure(tmp_path: Path, monkeypatch):
+    router = _router(tmp_path)
+    picks = iter(["ghost", None])
+    monkeypatch.setattr(
+        router, "_choose",
+        lambda *a, **k: SimpleNamespace(provider=next(picks), reason="test"),
+    )
+    monkeypatch.setattr(router, "_disable_provider", lambda *a, **k: None)
+    result = router._plan_change_with_routing(
+        _task(), tmp_path, "failed", 5, model_class="planner", env=None,
+    )
+    assert result.error == "no adapter for ghost"
+    assert result.launch_failure
