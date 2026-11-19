@@ -18,6 +18,7 @@ from .process_utils import stop_process_tree
 
 LOGGER = logging.getLogger(__name__)
 ProcessStartHook = Callable[[int], None]
+_ARCHIVED_LOG_MTIME_OFFSET_NS = 1_000_000_000
 
 # Identity of the real subprocess.run at import time. Unit tests that replace
 # subprocess.run (to assert encoding kwargs) are honoured via this check so
@@ -47,6 +48,26 @@ def _matches(path: str, pattern: str) -> bool:
         prefix = normalized[:-3].rstrip("/")
         return path == prefix or path.startswith(prefix + "/")
     return fnmatch.fnmatch(path, normalized)
+
+
+def _archive_attempt_log(log_dir: Path, task_id: str, attempt: int, summary: str) -> None:
+    """Write an attempt verification log without making it the latest agent log."""
+    path = write_log(log_dir, f"{task_id}-attempt-{attempt}-verification.log", summary)
+    agent_logs = [
+        candidate
+        for candidate in log_dir.glob(f"{task_id}-attempt-*.log")
+        if candidate != path
+        and not candidate.name.endswith("-verification.log")
+        and candidate.is_file()
+    ]
+    if not agent_logs:
+        return
+
+    # The console's established agent-log glob also matches the required archive
+    # name. Keep the archive older so `log ID` continues to select agent output.
+    agent_mtime_ns = max(candidate.stat().st_mtime_ns for candidate in agent_logs)
+    archived_mtime_ns = max(0, agent_mtime_ns - _ARCHIVED_LOG_MTIME_OFFSET_NS)
+    os.utime(path, ns=(path.stat().st_atime_ns, archived_mtime_ns))
 
 
 def _tail_lines(text: str, count: int = 40) -> str:
@@ -231,6 +252,7 @@ class Verifier:
         *,
         env: dict[str, str] | None = None,
         on_process_start: ProcessStartHook | None = None,
+        attempt: int | None = None,
     ) -> VerificationResult:
         failures: list[str] = []
         changed = self.worktrees.changed_files(workspace, base_ref)
@@ -274,6 +296,8 @@ class Verifier:
             *command_outputs,
             "Failures:\n" + ("\n".join(failures) if failures else "(none)"),
         ])
+        if attempt is not None:
+            _archive_attempt_log(self.log_dir, task.id, attempt, summary)
         write_log(self.log_dir, f"{task.id}-verification.log", summary)
         return VerificationResult(not failures, summary, failures, changed)
 

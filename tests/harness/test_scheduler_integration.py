@@ -595,3 +595,70 @@ def test_allowed_protected_change_passes_verification(tmp_path: Path):
 
     assert outcome.ok, state.get("A").last_error
     assert runner.calls == 1
+
+
+class SilentFirstAttemptRunner(FakeRunner):
+    def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
+        if attempt == 1:
+            return AgentResult(True, "did nothing")
+        return super().implement(task, workspace, timeout_minutes, attempt, previous_failure)
+
+
+def test_failed_attempt_verification_log_survives_next_attempt(tmp_path: Path):
+    _init_repo(tmp_path)
+    write(tmp_path / ".gitignore", ".harness/\n")
+    write(tmp_path / "AGENTS.md", "# test\n")
+    write(tmp_path / "harness.yaml", """
+execution:
+  max_parallel_agents: 1
+  default_max_attempts: 2
+  default_timeout_minutes: 1
+cursor:
+  command: agent
+  output_format: text
+  models: {}
+verification:
+  global_task_commands: []
+  stage_commands: []
+paths:
+  protected: []
+  review_required: []
+""")
+    verify = file_exists_command("out/A.txt")
+    write(tmp_path / "tasks/A.md", f"""---
+allowed_paths: [out/A.txt]
+verification: [{yaml_quote(verify)}]
+review: false
+---
+# A
+""")
+    write(tmp_path / "tasks/roadmap.yaml", """
+project: test
+sprints:
+  s1:
+    tasks:
+      A: {file: tasks/A.md, stage: 1, depends_on: []}
+    stage_verification:
+      "1": []
+""")
+    run(["git", "add", "."], tmp_path)
+    run(["git", "commit", "-m", "initial"], tmp_path)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True, capture_output=True, check=True).stdout.strip()
+
+    config = HarnessConfig.load(tmp_path / "harness.yaml")
+    roadmap = Roadmap(tmp_path, tmp_path / "tasks/roadmap.yaml")
+    state = StateStore(tmp_path / ".harness/state.json")
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    logs = tmp_path / ".harness/logs"
+    verifier = Verifier(config, logs, worktrees)
+    scheduler = Scheduler(tmp_path, config, state, worktrees, SilentFirstAttemptRunner(), verifier)
+    task = roadmap.sprint("s1").tasks["A"]
+
+    outcome = scheduler._run_task(task, base)
+
+    assert outcome.ok, state.get("A").last_error
+    first = (logs / "A-attempt-1-verification.log").read_text(encoding="utf-8")
+    second = (logs / "A-attempt-2-verification.log").read_text(encoding="utf-8")
+    assert "Verification command failed" in first
+    assert "Verification command failed" not in second
+    assert (logs / "A-verification.log").read_text(encoding="utf-8") == second
