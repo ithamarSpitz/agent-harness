@@ -1248,3 +1248,57 @@ plan_repair:
     assert reset_runtime.state.get("D").status == TaskStatus.PENDING
     assert reset_runtime.state.get("D").added
     assert reset_runtime.state.get("D").brief_path is not None
+
+
+def _protected_add_project(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(
+        tmp_path / "harness.yaml",
+        base_harness_yaml().replace("protected: []", "protected: [docs/contract.md]"),
+    )
+    write(tmp_path / "tasks/A.md", task_brief("A", "out/A.txt", file_exists_command("out/A.txt")))
+    write(tmp_path / "tasks/roadmap.yaml", """
+project: test
+sprints:
+  s1:
+    tasks:
+      A: {file: tasks/A.md, stage: 1, depends_on: []}
+    stage_verification:
+      "1": []
+""")
+    run(["git", "add", "."], tmp_path)
+    run(["git", "commit", "-m", "initial"], tmp_path)
+
+
+def _add_task_args(tmp_path: Path, brief: str) -> list[str]:
+    return [
+        "--root", str(tmp_path), "--roadmap", "tasks/roadmap.yaml",
+        "--config", "harness.yaml", "add-task", "s1", brief,
+    ]
+
+
+def test_add_task_refuses_unallowed_protected_path(tmp_path: Path, capsys):
+    _protected_add_project(tmp_path)
+    write(
+        tmp_path / "extra/P-add.md",
+        task_brief("P", "docs/contract.md", file_exists_command("docs/contract.md")),
+    )
+
+    assert main(_add_task_args(tmp_path, "extra/P-add.md")) == 1
+    out = capsys.readouterr().out
+    assert "ERROR brief protected:" in out
+    assert not (tmp_path / ".harness/queue/P.json").exists()
+
+
+def test_add_task_clean_brief_still_queues(tmp_path: Path, capsys):
+    _protected_add_project(tmp_path)
+    write(
+        tmp_path / "extra/D-add.md",
+        task_brief("D", "out/D.txt", file_exists_command("out/D.txt")),
+    )
+
+    assert main(_add_task_args(tmp_path, "extra/D-add.md")) == 0
+    out = capsys.readouterr().out
+    assert "ERROR brief" not in out
+    assert "Queued task at" in out
+    assert (tmp_path / ".harness/queue/D.json").exists()

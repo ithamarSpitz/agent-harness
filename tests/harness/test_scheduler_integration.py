@@ -482,3 +482,116 @@ sprints:
 
     assert outcome.ok, state.get("A").last_error
     assert "settings.txt" not in (state.get("A").last_error or "")
+
+
+class ProtectedEditRunner(FakeRunner):
+    def __init__(self):
+        self.calls = 0
+
+    output = "edited protected file"
+
+    def implement(self, task, workspace, timeout_minutes, attempt, previous_failure, **kwargs):
+        self.calls += 1
+        (workspace / "settings.txt").write_text("parallel: 8\n", encoding="utf-8")
+        return AgentResult(True, self.output)
+
+
+def _protected_project(tmp_path: Path, allow_protected: str) -> str:
+    _init_repo(tmp_path)
+    write(tmp_path / ".gitignore", ".harness/\n")
+    write(tmp_path / "AGENTS.md", "# test\n")
+    write(tmp_path / "settings.txt", "parallel: 4\n")
+    write(tmp_path / "harness.yaml", """
+execution:
+  max_parallel_agents: 1
+  default_max_attempts: 3
+  default_timeout_minutes: 1
+cursor:
+  command: agent
+  output_format: text
+  models: {}
+verification:
+  global_task_commands: []
+  stage_commands: []
+paths:
+  protected: [settings.txt]
+  review_required: []
+""")
+    write(tmp_path / "tasks/A.md", f"""---
+allowed_paths: [settings.txt]
+verification: []
+review: false
+allow_protected: {allow_protected}
+---
+# A
+""")
+    write(tmp_path / "tasks/roadmap.yaml", """
+project: test
+sprints:
+  s1:
+    tasks:
+      A: {file: tasks/A.md, stage: 1, depends_on: []}
+    stage_verification:
+      "1": []
+""")
+    run(["git", "add", "."], tmp_path)
+    run(["git", "commit", "-m", "initial"], tmp_path)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True, capture_output=True, check=True
+    ).stdout.strip()
+
+
+def _protected_scheduler(tmp_path: Path, runner):
+    config = HarnessConfig.load(tmp_path / "harness.yaml")
+    roadmap = Roadmap(tmp_path, tmp_path / "tasks/roadmap.yaml")
+    state = StateStore(tmp_path / ".harness/state.json")
+    worktrees = WorktreeManager(tmp_path, tmp_path / ".harness")
+    verifier = Verifier(config, tmp_path / ".harness/logs", worktrees)
+    scheduler = Scheduler(tmp_path, config, state, worktrees, runner, verifier)
+    return scheduler, roadmap.sprint("s1").tasks["A"], state
+
+
+def test_unallowed_protected_change_blocks_after_one_attempt(tmp_path: Path):
+    base = _protected_project(tmp_path, "false")
+    runner = ProtectedEditRunner()
+    scheduler, task, state = _protected_scheduler(tmp_path, runner)
+
+    outcome = scheduler._run_task(task, base)
+
+    assert not outcome.ok
+    assert runner.calls == 1
+    runtime = state.get("A")
+    assert runtime.status == TaskStatus.BLOCKED
+    assert (
+        "Protected files changed: settings.txt. The brief must set allow_protected: true "
+        "(or the change belongs in another task)."
+    ) in (runtime.last_error or "")
+
+
+def test_protected_change_message_wins_over_agent_blocked_status(tmp_path: Path):
+    base = _protected_project(tmp_path, "false")
+    runner = ProtectedEditRunner()
+    runner.output = "STATUS: BLOCKED\nOPEN_ISSUES:\nsomething else is wrong\n"
+    scheduler, task, state = _protected_scheduler(tmp_path, runner)
+
+    outcome = scheduler._run_task(task, base)
+
+    assert not outcome.ok
+    assert runner.calls == 1
+    runtime = state.get("A")
+    assert runtime.status == TaskStatus.BLOCKED
+    assert "Protected files changed: settings.txt. The brief must set" in (
+        runtime.last_error or ""
+    )
+    assert "something else is wrong" not in (runtime.last_error or "")
+
+
+def test_allowed_protected_change_passes_verification(tmp_path: Path):
+    base = _protected_project(tmp_path, "true")
+    runner = ProtectedEditRunner()
+    scheduler, task, state = _protected_scheduler(tmp_path, runner)
+
+    outcome = scheduler._run_task(task, base)
+
+    assert outcome.ok, state.get("A").last_error
+    assert runner.calls == 1
