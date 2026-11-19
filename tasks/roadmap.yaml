@@ -912,3 +912,101 @@ sprints:
         - S15-T6
         - S15-T7
         - S15-T8
+  S16-provider-adapters:
+    name: Provider adapters (Find/Quota/Run/Classify/Levels), machine config, brief lint for tests, state save retry
+    tasks:
+      S16-T1:
+        file: tasks/sprint-16-provider-adapters/01-adapter-protocol.md
+        stage: 1
+        depends_on: []
+      S16-T2:
+        file: tasks/sprint-16-provider-adapters/02-codex-adapter.md
+        stage: 2
+        depends_on:
+        - S16-T1
+      S16-T3:
+        file: tasks/sprint-16-provider-adapters/03-claude-adapter.md
+        stage: 2
+        depends_on:
+        - S16-T1
+      S16-T4:
+        file: tasks/sprint-16-provider-adapters/04-cursor-adapter.md
+        stage: 2
+        depends_on:
+        - S16-T1
+      S16-T5:
+        file: tasks/sprint-16-provider-adapters/05-agy-adapter.md
+        stage: 2
+        depends_on:
+        - S16-T1
+      S16-T6:
+        file: tasks/sprint-16-provider-adapters/06-copilot-adapter.md
+        stage: 2
+        depends_on:
+        - S16-T1
+      S16-T7:
+        file: tasks/sprint-16-provider-adapters/07-machine-config.md
+        stage: 1
+        depends_on: []
+      S16-T8:
+        file: tasks/sprint-16-provider-adapters/08-router-builds-registry.md
+        stage: 3
+        depends_on:
+        - S16-T2
+        - S16-T3
+        - S16-T4
+        - S16-T5
+        - S16-T6
+      S16-T9:
+        file: tasks/sprint-16-provider-adapters/09-router-implements-via-adapters.md
+        stage: 4
+        depends_on:
+        - S16-T8
+      S16-T10:
+        file: tasks/sprint-16-provider-adapters/10-router-reviews-via-adapters.md
+        stage: 5
+        depends_on:
+        - S16-T9
+      S16-T11:
+        file: tasks/sprint-16-provider-adapters/11-router-plan-repair-via-adapters.md
+        stage: 6
+        depends_on:
+        - S16-T10
+      S16-T16:
+        file: tasks/sprint-16-provider-adapters/16-router-brief-check-via-adapters.md
+        stage: 7
+        depends_on:
+        - S16-T11
+      S16-T12:
+        file: tasks/sprint-16-provider-adapters/12-no-provider-names-in-loops.md
+        stage: 8
+        depends_on:
+        - S16-T16
+        - S16-T7
+      S16-T13:
+        file: tasks/sprint-16-provider-adapters/13-docs.md
+        stage: 9
+        depends_on:
+        - S16-T1
+        - S16-T2
+        - S16-T3
+        - S16-T4
+        - S16-T5
+        - S16-T6
+        - S16-T7
+        - S16-T8
+        - S16-T9
+        - S16-T10
+        - S16-T11
+        - S16-T12
+        - S16-T14
+        - S16-T15
+        - S16-T16
+      S16-T14:
+        file: tasks/sprint-16-provider-adapters/14-lint-tests-that-use-changed-modules.md
+        stage: 1
+        depends_on: []
+      S16-T15:
+        file: tasks/sprint-16-provider-adapters/15-state-save-retries-on-windows.md
+        stage: 1
+        depends_on: []

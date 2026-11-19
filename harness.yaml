@@ -56,9 +56,8 @@ copilot:
   enabled: true
 
 agy:
-  # Off 2026-11-18 (user OK): in S14 agy failed most tries (denied commands, 503, stopped after one step) and used ~60% of its week.
-  # Turn back on once the S15 stage-1 agy fixes are merged.
-  enabled: false
+  # On again 2026-11-19 after the S15 agy fixes (0.25.0): implement with skip-permissions, 503 = capacity, no report = launch failure.
+  enabled: true
 
 codex:
   enabled: true
