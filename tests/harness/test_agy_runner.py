@@ -100,6 +100,8 @@ def _expected_command(
     ]
     if effort and accepts_effort:
         result += ["--effort", effort]
+    if mode == "accept-edits":
+        result += ["--dangerously-skip-permissions"]
     return result + ["--mode", mode, "--settings", _settings()]
 
 
@@ -131,7 +133,7 @@ def test_agy_command_line_for_implementation_attempts(
     assert argv[1] == "-p="
     assert "-p" not in argv
     assert "--sandbox" not in argv
-    assert "--dangerously-skip-permissions" not in argv
+    assert argv.count("--dangerously-skip-permissions") == 1
 
 
 def test_agy_command_line_for_review_escalation_and_pool_skip(tmp_path: Path) -> None:
@@ -153,6 +155,9 @@ def test_agy_command_line_for_review_escalation_and_pool_skip(tmp_path: Path) ->
     ) == _expected_command(
         "agy", "claude-opus", "max", "accept-edits", accepts_effort=False
     )
+    assert runner._command(
+        *review, "plan", _settings()
+    ).count("--dangerously-skip-permissions") == 0
 
     assert runner._implementation_profile(
         1, exhausted_pools={"gemini-weekly"}
@@ -591,7 +596,7 @@ def test_agy_watchdog_allows_silent_agent_with_file_activity(tmp_path: Path) -> 
     assert (workspace / "progress.txt").exists()
 
 
-def test_implement_and_review_build_phase_settings_and_prompts(
+def test_implement_review_and_plan_repair_build_phase_settings_and_prompts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = AgyAgentRunner(_write_config(tmp_path), tmp_path / "logs")
@@ -610,8 +615,9 @@ def test_implement_and_review_build_phase_settings_and_prompts(
     )
     runner.implement(task, tmp_path, 1, 1, None, base_sha="abc123")
     runner.review(task, tmp_path, "def456", "passed", 1)
+    runner.plan_change(task, tmp_path, "plan gap", 1)
 
-    implementation, review = calls
+    implementation, review, plan_repair = calls
     assert implementation["mode"] == "accept-edits"
     assert "command(python -m pytest -q tests/harness)" in str(
         implementation["settings"]
@@ -634,3 +640,13 @@ def test_implement_and_review_build_phase_settings_and_prompts(
     assert review_guidance in str(review["prompt"])
     assert "Diff summary (`git diff --stat def456`):" in str(review["prompt"])
     assert "agy.py | 2 ++" in str(review["prompt"])
+    assert plan_repair["mode"] == "plan"
+    plan_repair_argv = runner._command(
+        str(plan_repair["model"]),
+        plan_repair["effort"]
+        if isinstance(plan_repair["effort"], str)
+        else None,
+        str(plan_repair["mode"]),
+        str(plan_repair["settings"]),
+    )
+    assert "--dangerously-skip-permissions" not in plan_repair_argv

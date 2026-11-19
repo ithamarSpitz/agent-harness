@@ -152,18 +152,10 @@ class AgyAgentRunner:
         mode: str,
         settings: str,
     ) -> list[str]:
-        # Real CLI permission probe (agy 1.5.1, 2026-11-05):
-        # option                    git log  list  read  write-in  write-out  network
-        # accept-edits/exact rules  quota     quota quota quota     quota      quota
-        # auto                      quota*    quota quota quota     quota      quota
-        # sandbox + skip            quota     quota quota quota     quota      quota
-        # * --mode auto was unavailable for the probing account and fell back to
-        #   the default mode. All calls hit Gemini's individual quota before the
-        #   first tool action; independent checks found no inside/outside writes.
-        # Thus neither alternative demonstrated workspace containment, so the
-        # decision-2 fallback retains accept-edits for implementation and plan for
-        # review. Never add --dangerously-skip-permissions without a qualifying
-        # sandbox probe that proves outside-workspace writes are blocked.
+        # Implementation calls use agy's skip-permissions mode, like Claude Code
+        # and Copilot. S15-T3 replaced the sandbox-probe requirement by user
+        # decision on 2026-11-18. Harness scope checks still run after every
+        # implementation; review and plan-repair calls remain read-only.
         # ``-p=`` (attached empty form, one argument) selects print mode; a
         # standalone ``-p`` would swallow the next flag as its prompt. The
         # actual, potentially long prompt goes to stdin as one stream-json
@@ -188,6 +180,8 @@ class AgyAgentRunner:
                 "agy.effort_models",
                 model,
             )
+        if mode == "accept-edits":
+            command.append("--dangerously-skip-permissions")
         command += ["--mode", mode, "--settings", settings]
         return command
 
