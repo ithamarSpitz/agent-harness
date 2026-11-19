@@ -136,3 +136,49 @@ def test_clean_brief_has_no_findings(tmp_path: Path) -> None:
     )
 
     assert lint_brief(task, BASE_BRIEF, tmp_path, ["tasks/**"]) == []
+
+
+def _test_not_allowed_repo(tmp_path: Path) -> None:
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "foo.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "from harness.foo import x\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_b.py").write_text(
+        "import os\n", encoding="utf-8"
+    )
+
+
+def test_test_not_allowed_warns_for_importing_test(tmp_path: Path) -> None:
+    _test_not_allowed_repo(tmp_path)
+    findings = lint_brief(_task(["harness/foo.py"]), BASE_BRIEF, tmp_path, [])
+    hits = [f for f in findings if f.code == "test-not-allowed"]
+    assert len(hits) == 1
+    assert "tests/test_a.py" in hits[0].message
+    assert hits[0].level == "warning"
+
+
+def test_test_not_allowed_cleared_when_test_allowed(tmp_path: Path) -> None:
+    _test_not_allowed_repo(tmp_path)
+    task = _task(["harness/foo.py", "tests/test_a.py"])
+    assert "test-not-allowed" not in _codes(task, BASE_BRIEF, tmp_path)
+
+
+def test_test_not_allowed_import_forms_and_cap(tmp_path: Path) -> None:
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "foo.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    forms = [
+        "import harness.foo\n",
+        "from harness import bar, foo\n",
+        "from .foo import x\n",
+    ]
+    for i in range(12):
+        (tmp_path / "tests" / f"test_{i:02}.py").write_text(
+            forms[i % 3], encoding="utf-8"
+        )
+    findings = lint_brief(_task(["harness/foo.py"]), BASE_BRIEF, tmp_path, [])
+    msgs = [f.message for f in findings if f.code == "test-not-allowed"]
+    assert len(msgs) == 11
+    assert msgs[-1] == "... and 2 more"
