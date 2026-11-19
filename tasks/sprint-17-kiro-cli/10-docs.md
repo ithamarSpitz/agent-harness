@@ -15,6 +15,8 @@ depends_on:
   - S17-T7
   - S17-T8
   - S17-T9
+  - S17-T11
+  - S17-T12
 allowed_paths:
   - README.md
   - SPEC.md
@@ -46,7 +48,7 @@ Facts recorded live on 2026-11-19 (do not re-probe; tests use these as samples):
 
 1. README: how to enable Kiro (`kiro.enabled: true` in `harness.yaml` or the machine config), the default models per level, the credits shown by `harness limits`, the doctor checks, and that Auto never reviews.
 2. SPEC: Kiro's command line, permissions (trust-all-tools for implement; fs_read and execute_bash for review), fault classification, missing-report rule and usage event fields, as merged.
-3. CHANGELOG: one line per S17 task under Unreleased.
+3. CHANGELOG: one line per S17 task under Unreleased (including T11 init cache ignores and T12 per-attempt verification logs).
 4. Describe only what the merged code does; if a doc point and the code differ, follow the code and note it in OPEN_ISSUES.
 
 # Acceptance criteria

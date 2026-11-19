@@ -1073,3 +1073,13 @@ sprints:
         - S17-T7
         - S17-T8
         - S17-T9
+        - S17-T11
+        - S17-T12
+      S17-T11:
+        file: tasks/sprint-17-kiro-cli/11-init-ignores-caches.md
+        stage: 1
+        depends_on: []
+      S17-T12:
+        file: tasks/sprint-17-kiro-cli/12-verification-log-per-attempt.md
+        stage: 1
+        depends_on: []
