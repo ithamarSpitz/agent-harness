@@ -10,6 +10,17 @@ import yaml
 LOGGER = logging.getLogger(__name__)
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Merge mappings key by key; override wins; lists and scalars replace."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @dataclass(slots=True)
 class ExecutionConfig:
     max_parallel_agents: int = 3
@@ -687,8 +698,23 @@ class HarnessConfig:
         return config_type(**section)
 
     @classmethod
-    def load(cls, path: Path) -> "HarnessConfig":
+    def load(cls, path: Path, *, machine_path: Path | None = None) -> "HarnessConfig":
+        from harness.home import harness_home
+
+        machine_file = machine_path if machine_path is not None else harness_home() / "config.yaml"
+        # The machine file is read first so its errors surface before the project's.
+        machine: dict[str, Any] | None = None
+        if machine_file.is_file():
+            try:
+                loaded = yaml.safe_load(machine_file.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                raise ValueError(f"machine config {machine_file} is not valid YAML: {exc}") from exc
+            if not isinstance(loaded, dict):
+                raise ValueError(f"machine config {machine_file} must be a mapping")
+            machine = loaded
         raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if machine is not None:
+            raw = _deep_merge(machine, raw)
         return cls(
             execution=cls._load_execution(raw.get("execution", {})),
             worktree=WorktreeConfig(**raw.get("worktree", {})),
