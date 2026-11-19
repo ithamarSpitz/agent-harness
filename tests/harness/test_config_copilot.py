@@ -22,9 +22,10 @@ def test_copilot_defaults_when_section_is_omitted(tmp_path: Path) -> None:
     assert config.copilot.implementation_sequence == [
         {"model": "auto", "auto_tier": "balance"},
         {"model": "auto", "auto_tier": "intelligence"},
-        {"model": "auto", "auto_tier": "intelligence", "effort": "high"},
+        {"model": "auto", "auto_tier": "intelligence"},
     ]
     assert config.copilot.review_effort is None
+    assert config.copilot.escalation_effort is None
     assert config.copilot.quota_command == ["gh", "api", "copilot_internal/user"]
 
 
@@ -36,11 +37,11 @@ copilot:
   enabled: true
   command: custom-copilot
   implementation_sequence:
-    - {model: auto, auto_tier: efficiency, effort: minimal}
+    - {model: auto, auto_tier: efficiency}
     - {model: custom-model, effort: max}
   review_model: auto
   review_auto_tier: balance
-  review_effort: low
+  review_effort: null
   escalation_model: custom-escalation
   escalation_auto_tier: null
   escalation_effort: xhigh
@@ -52,12 +53,12 @@ copilot:
         enabled=True,
         command="custom-copilot",
         implementation_sequence=[
-            {"model": "auto", "auto_tier": "efficiency", "effort": "minimal"},
+            {"model": "auto", "auto_tier": "efficiency"},
             {"model": "custom-model", "effort": "max"},
         ],
         review_model="auto",
         review_auto_tier="balance",
-        review_effort="low",
+        review_effort=None,
         escalation_model="custom-escalation",
         escalation_auto_tier=None,
         escalation_effort="xhigh",
@@ -144,6 +145,45 @@ def test_copilot_rejects_non_string_values_before_value_checks(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         load_config(tmp_path, yaml_text)
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "expected_key"),
+    [
+        (
+            "copilot:\n  implementation_sequence: [{model: auto, effort: high}]\n",
+            r"copilot\.implementation_sequence\[0\]",
+        ),
+        (
+            "copilot:\n  review_effort: high\n",
+            r"copilot\.review",
+        ),
+        (
+            "copilot:\n  escalation_effort: high\n",
+            r"copilot\.escalation",
+        ),
+    ],
+)
+def test_copilot_rejects_effort_for_auto_profiles(
+    tmp_path: Path, yaml_text: str, expected_key: str
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=expected_key + r": model auto does not take an effort",
+    ):
+        load_config(tmp_path, yaml_text)
+
+
+def test_copilot_allows_effort_for_concrete_model(tmp_path: Path) -> None:
+    config = load_config(
+        tmp_path,
+        "copilot:\n  implementation_sequence: "
+        "[{model: gpt-5.4, effort: high}]\n",
+    )
+
+    assert config.copilot.implementation_sequence == [
+        {"model": "gpt-5.4", "effort": "high"}
+    ]
 
 
 def test_provider_priority_accepts_copilot(tmp_path: Path) -> None:
