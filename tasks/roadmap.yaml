@@ -2,7 +2,6 @@ project: agent-harness
 sprints:
   S1-tooling:
     name: Code map (Graphify), reviewer UI check (Playwright), harness init
-    # One stage per task: all three change config.py, prompts.py and doctor.py.
     tasks:
       S1-T1:
         file: tasks/sprint-01-tooling/01-code-map.md
@@ -18,7 +17,6 @@ sprints:
         stage: 3
         depends_on:
         - S1-T2
-
   S2-cleanup:
     name: Printed commands use the installed `harness` command
     tasks:
@@ -26,7 +24,6 @@ sprints:
         file: tasks/sprint-02-cleanup/01-command-name.md
         stage: 1
         depends_on: []
-
   S3-code-map-v2:
     name: Code map offered to every agent; reviewer port cleanup safe across projects
     tasks:
@@ -34,7 +31,6 @@ sprints:
         file: tasks/sprint-03-code-map-v2/01-code-map-for-every-agent.md
         stage: 1
         depends_on: []
-
   S4-limits:
     name: harness limits - Codex, Cursor and Claude usage in one view
     tasks:
@@ -42,7 +38,6 @@ sprints:
         file: tasks/sprint-04-limits/01-limits.md
         stage: 1
         depends_on: []
-
   S5-release:
     name: Release after a successful sprint; live Codex limits
     tasks:
@@ -55,7 +50,6 @@ sprints:
         stage: 2
         depends_on:
         - S5-T1
-
   S6-live-and-setup:
     name: Live Claude limits, faster tests, machine setup, init creates the repo
     tasks:
@@ -76,7 +70,6 @@ sprints:
         stage: 2
         depends_on:
         - S6-T3
-
   S7-add-task-and-docs:
     name: Add tasks to a running sprint, agent activity records, SPEC and README
     tasks:
@@ -684,7 +677,8 @@ sprints:
         stage: 1
         depends_on: []
   S11-field-fixes:
-    name: Fixes for problems found running 0.20 on BookNook (plan-change, agy, reviewer faults, doctor)
+    name: Fixes for problems found running 0.20 on BookNook (plan-change, agy, reviewer
+      faults, doctor)
     tasks:
       S11-T1:
         file: tasks/sprint-11-field-fixes/01-plan-change-fresh-budget.md
@@ -694,7 +688,7 @@ sprints:
         file: tasks/sprint-11-field-fixes/02-plan-change-revalidation-scope.md
         stage: 2
         depends_on:
-          - S11-T1
+        - S11-T1
       S11-T3:
         file: tasks/sprint-11-field-fixes/03-agy-usage-temp-cleanup.md
         stage: 1
@@ -715,31 +709,31 @@ sprints:
         file: tasks/sprint-11-field-fixes/07-find-cli-after-path-change.md
         stage: 2
         depends_on:
-          - S11-T3
-          - S11-T4
-          - S11-T6
+        - S11-T3
+        - S11-T4
+        - S11-T6
       S11-T8:
         file: tasks/sprint-11-field-fixes/08-agy-exploration.md
         stage: 3
         depends_on:
-          - S11-T7
+        - S11-T7
       S11-T9:
         file: tasks/sprint-11-field-fixes/09-docs.md
         stage: 5
         depends_on:
-          - S11-T1
-          - S11-T2
-          - S11-T3
-          - S11-T4
-          - S11-T5
-          - S11-T6
-          - S11-T7
-          - S11-T8
-          - S11-T10
-          - S11-T11
-          - S11-T12
-          - S11-T13
-          - S11-T14
+        - S11-T1
+        - S11-T2
+        - S11-T3
+        - S11-T4
+        - S11-T5
+        - S11-T6
+        - S11-T7
+        - S11-T8
+        - S11-T10
+        - S11-T11
+        - S11-T12
+        - S11-T13
+        - S11-T14
       S11-T10:
         file: tasks/sprint-11-field-fixes/10-budget-is-not-availability.md
         stage: 1
@@ -799,7 +793,6 @@ sprints:
         stage: 4
         depends_on:
         - S13-T3
-
   S14-copilot-cli:
     name: GitHub Copilot CLI as a provider
     tasks:
@@ -860,7 +853,8 @@ sprints:
         depends_on:
         - S14-T10
   S15-field-fixes-2:
-    name: Fixes from S14 and BookNook S16 - Copilot auto+effort, agy permissions/503/no report, attempt count, board redraw, protected block
+    name: Fixes from S14 and BookNook S16 - Copilot auto+effort, agy permissions/503/no
+      report, attempt count, board redraw, protected block
     tasks:
       S15-T1:
         file: tasks/sprint-15-field-fixes-2/01-copilot-no-auto-effort.md
@@ -913,7 +907,8 @@ sprints:
         - S15-T7
         - S15-T8
   S16-provider-adapters:
-    name: Provider adapters (Find/Quota/Run/Classify/Levels), machine config, brief lint for tests, state save retry
+    name: Provider adapters (Find/Quota/Run/Classify/Levels), machine config, brief
+      lint for tests, state save retry
     tasks:
       S16-T1:
         file: tasks/sprint-16-provider-adapters/01-adapter-protocol.md
@@ -1010,8 +1005,14 @@ sprints:
         file: tasks/sprint-16-provider-adapters/15-state-save-retries-on-windows.md
         stage: 1
         depends_on: []
+      S16-T17:
+        file: tasks/sprint-16-provider-adapters/S16-T17.md
+        stage: 4
+        depends_on:
+        - S16-T7
   S17-kiro-cli:
-    name: Kiro CLI as the first provider added the adapter way - quota, config, stream parsing, runner, limits, headroom, adapter, wiring, doctor
+    name: Kiro CLI as the first provider added the adapter way - quota, config, stream
+      parsing, runner, limits, headroom, adapter, wiring, doctor
     tasks:
       S17-T1:
         file: tasks/sprint-17-kiro-cli/01-kiro-usage.md
