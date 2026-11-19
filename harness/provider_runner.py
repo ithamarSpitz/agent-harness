@@ -1345,35 +1345,15 @@ class ProviderAgentRunner:
                     False, "", choice.reason, provider="none", quota_exhausted=True
                 )
             override: str | None = None
+            adapter = self.adapters.get(provider)
+            adapter_brief_check = getattr(adapter, "brief_check", None)
+            if adapter_brief_check is None:
+                unavailable.add(provider)
+                continue
             try:
-                if provider == "copilot" and self.copilot is not None:
-                    available, _ = self.copilot.availability()
-                    if not available:
-                        override = "auth_or_cli_unavailable"
-                        result = AgentResult(
-                            False, "", "Copilot CLI/auth unavailable",
-                            provider="copilot", auth_failure=True,
-                        )
-                    else:
-                        result = self.copilot.brief_check(
-                            task, workspace, brief_text, timeout_minutes, env=env
-                        )
-                else:
-                    available, _ = self.codex.availability(refresh=True)
-                    if not available:
-                        override = "auth_or_cli_unavailable"
-                        result = AgentResult(
-                            False, "", "Codex CLI/auth unavailable",
-                            provider="codex", auth_failure=True,
-                        )
-                    else:
-                        result = self.codex.brief_check(
-                            task,
-                            workspace,
-                            brief_text,
-                            timeout_minutes,
-                            model=self.config.codex.planner_model,
-                        )
+                result = adapter_brief_check(
+                    task, workspace, brief_text, timeout_minutes, env=env
+                )
             except Exception as exc:
                 override = f"integration_error:{type(exc).__name__}"
                 result = AgentResult(
@@ -1382,8 +1362,26 @@ class ProviderAgentRunner:
                 )
             if self._provider_unavailable(result) or self._is_launch_failure(result):
                 last_result = result
-                reason = override or self._fallback_reason(result)
+                if override is None and result.fallback_reason is None and (
+                    result.auth_failure and self._adapter_reports_unavailable(adapter)
+                ):
+                    # The adapter's own availability check refused the call.
+                    override = "auth_or_cli_unavailable"
+                reason = override or result.fallback_reason or self._fallback_reason(result)
                 self._disable_provider(task, provider, reason)
                 unavailable.add(provider)
                 continue
             return result
+
+    @staticmethod
+    def _adapter_reports_unavailable(adapter: object) -> bool:
+        """True when the adapter's runner reports itself unavailable (cached check)."""
+
+        availability = getattr(getattr(adapter, "runner", None), "availability", None)
+        if availability is None:
+            return False
+        try:
+            available, _ = availability()
+        except Exception:
+            return False
+        return not available
