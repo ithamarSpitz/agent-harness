@@ -84,6 +84,22 @@ _AGY_CONFIG_WARNED: set[tuple[str, str]] = set()
 _AGY_CONFIG_WARNED_LOCK = threading.Lock()
 
 
+def _limits_config_path(
+    *, root: Path | None = None, config_path: Path | None = None
+) -> tuple[Path, bool]:
+    """Return the config to load and whether it is the machine file alone."""
+    from .home import harness_home
+
+    if config_path is None:
+        base = Path(root) if root is not None else Path.cwd()
+        config_path = base / "harness.yaml"
+    project_path = Path(config_path)
+    if project_path.is_file():
+        return project_path, False
+    machine_path = harness_home() / "config.yaml"
+    return machine_path, machine_path.is_file()
+
+
 def _agy_settings(
     config: HarnessConfig | None = None,
     *,
@@ -93,27 +109,30 @@ def _agy_settings(
     """Return ``(enabled, command)`` for Antigravity.
 
     An already loaded ``config`` wins. Otherwise ``config_path`` is read, or
-    ``harness.yaml`` in ``root`` (default: the current folder). A missing file
-    means Antigravity is off. A file that exists but fails to load logs one
-    warning naming the error and also leaves Antigravity off.
+    ``harness.yaml`` in ``root`` (default: the current folder). When that file
+    is missing, the machine config is read alone. If neither exists,
+    Antigravity is off. A file that exists but fails to load logs one warning
+    naming the error and also leaves Antigravity off.
     """
 
     if config is not None:
         return bool(config.agy.enabled), str(config.agy.command or "agy")
-    if config_path is None:
-        try:
-            base = Path(root) if root is not None else Path.cwd()
-        except OSError:
-            return False, "agy"
-        config_path = base / "harness.yaml"
-    path = Path(config_path)
+    path: Path | None = None
     try:
+        path, machine_only = _limits_config_path(root=root, config_path=config_path)
         if not path.is_file():
             return False, "agy"
         from .config import HarnessConfig as _HarnessConfig
 
-        loaded = _HarnessConfig.load(path)
+        machine_path = path / ".unused-machine-config" if machine_only else None
+        loaded = _HarnessConfig.load(path, machine_path=machine_path)
     except Exception as exc:
+        if path is None:
+            path = (
+                Path(config_path)
+                if config_path is not None
+                else Path(root or Path.cwd()) / "harness.yaml"
+            )
         text = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
         key = (str(path), text)
         with _AGY_CONFIG_WARNED_LOCK:
@@ -139,19 +158,14 @@ def _copilot_settings(
     """Return whether Copilot is enabled and its quota command."""
     if config is not None:
         return bool(config.copilot.enabled), list(config.copilot.quota_command)
-    if config_path is None:
-        try:
-            base = Path(root) if root is not None else Path.cwd()
-        except OSError:
-            return False, None
-        config_path = base / "harness.yaml"
-    path = Path(config_path)
     try:
+        path, machine_only = _limits_config_path(root=root, config_path=config_path)
         if not path.is_file():
             return False, None
         from .config import HarnessConfig as _HarnessConfig
 
-        loaded = _HarnessConfig.load(path)
+        machine_path = path / ".unused-machine-config" if machine_only else None
+        loaded = _HarnessConfig.load(path, machine_path=machine_path)
     except Exception:
         # _agy_settings owns the existing once-only warning for invalid config.
         return False, None
@@ -1035,10 +1049,23 @@ def render_limits(
             payload["copilot"] = copilot_json
         return json.dumps(payload, indent=2, sort_keys=True)
     blocks = ["\n".join(codex_lines), "\n".join(cursor_lines), "\n".join(claude_lines)]
+    from .home import harness_home
+
+    machine_config = harness_home() / "config.yaml"
     if agy_lines is not None:
         blocks.append("\n".join(agy_lines))
+    else:
+        blocks.append(
+            "Antigravity  off (set agy.enabled: true in harness.yaml or "
+            f"{machine_config})"
+        )
     if copilot_lines is not None:
         blocks.append("\n".join(copilot_lines))
+    else:
+        blocks.append(
+            "Copilot  off (set copilot.enabled: true in harness.yaml or "
+            f"{machine_config})"
+        )
     return "\n\n".join(blocks)
 
 

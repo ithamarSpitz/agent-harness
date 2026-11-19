@@ -14,6 +14,7 @@ import pytest
 import harness.cli as cli_module
 from harness.agy_usage import AgyBucket
 from harness.cli import main
+from harness.copilot_usage import CopilotQuota
 from harness.limits import (
     CLAUDE_OAUTH_BETA,
     CLAUDE_USAGE_URL,
@@ -1056,3 +1057,112 @@ def test_limits_cli_uses_root_config_for_agy_from_another_folder(
     assert code == 0
     assert "Antigravity" in buf.getvalue()
     assert "Gemini Models: 75% left" in buf.getvalue()
+
+
+def test_limits_uses_machine_config_when_project_config_is_missing(
+    tmp_path: Path, isolate_harness_home: Path
+) -> None:
+    (isolate_harness_home / "config.yaml").write_text(
+        "agy:\n"
+        "  enabled: true\n"
+        "  command: fake-agy\n"
+        "copilot:\n"
+        "  enabled: true\n"
+        "  quota_command: [fake-gh, quota]\n",
+        encoding="utf-8",
+    )
+    reset = datetime.now(timezone.utc) + timedelta(days=2)
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        assert command == "fake-agy"
+        return [AgyBucket("weekly", "Gemini Models", "weekly", 0.75, reset)]
+
+    def copilot(*, command: list[str] | None) -> CopilotQuota:
+        assert command == ["fake-gh", "quota"]
+        return CopilotQuota("business", 200, 150, 75.0, False, reset)
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        run_limits(
+            paths=make_paths(tmp_path),
+            agy_source=agy,
+            copilot_source=copilot,
+        )
+
+    text = output.getvalue()
+    assert "Gemini Models: 75% left" in text
+    assert "Copilot (business)" in text
+
+
+def test_limits_without_config_prints_off_lines_without_calling_sources(
+    tmp_path: Path, isolate_harness_home: Path
+) -> None:
+    calls: list[str] = []
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        calls.append(command)
+        return []
+
+    def copilot(*, command: list[str] | None) -> CopilotQuota:
+        calls.append(str(command))
+        raise AssertionError("disabled Copilot source was called")
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        run_limits(
+            paths=make_paths(tmp_path),
+            agy_source=agy,
+            copilot_source=copilot,
+        )
+
+    machine_path = isolate_harness_home / "config.yaml"
+    text = output.getvalue()
+    assert (
+        f"Antigravity  off (set agy.enabled: true in harness.yaml or {machine_path})"
+        in text
+    )
+    assert (
+        f"Copilot  off (set copilot.enabled: true in harness.yaml or {machine_path})"
+        in text
+    )
+    assert calls == []
+
+    json_output = io.StringIO()
+    with redirect_stdout(json_output):
+        run_limits(
+            as_json=True,
+            paths=make_paths(tmp_path),
+            agy_source=agy,
+            copilot_source=copilot,
+        )
+    payload = json.loads(json_output.getvalue())
+    assert "agy" not in payload
+    assert "copilot" not in payload
+    assert calls == []
+
+
+def test_project_disabled_agy_overrides_enabled_machine_config(
+    tmp_path: Path, isolate_harness_home: Path
+) -> None:
+    (isolate_harness_home / "config.yaml").write_text(
+        "agy:\n  enabled: true\n  command: fake-agy\n", encoding="utf-8"
+    )
+    project_config = tmp_path / "harness.yaml"
+    project_config.write_text("agy:\n  enabled: false\n", encoding="utf-8")
+    calls = 0
+
+    def agy(*, command: str) -> list[AgyBucket]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        run_limits(
+            paths=make_paths(tmp_path),
+            config_path=project_config,
+            agy_source=agy,
+        )
+
+    assert "Antigravity  off" in output.getvalue()
+    assert calls == 0

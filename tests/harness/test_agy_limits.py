@@ -163,7 +163,7 @@ def test_run_limits_default_reads_only_current_folder(
     with redirect_stdout(output):
         run_limits(paths=_paths(tmp_path), agy_source=unused)
 
-    assert "Antigravity" not in output.getvalue()
+    assert "Antigravity  off" in output.getvalue()
     assert calls == 0
 
     monkeypatch.chdir(tmp_path)
@@ -191,7 +191,7 @@ def test_run_limits_warns_once_and_disables_agy_for_broken_config(
         with redirect_stdout(output):
             run_limits(paths=_paths(tmp_path), agy_source=unused, config_path=config_path)
 
-    assert "Antigravity" not in output.getvalue()
+    assert "Antigravity  off" in output.getvalue()
     assert calls == 0
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
     assert len(warnings) == 1
