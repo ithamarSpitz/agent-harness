@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -52,10 +53,53 @@ def test_limits_prints_agy_pools_with_percent_and_local_reset(tmp_path: Path) ->
     )
 
     assert "Antigravity" in text
-    assert "Gemini Models: 75% left" in text
-    assert "Claude and GPT models: 50% left" in text
+    assert "Gemini Models: 25% used" in text
+    assert "Claude and GPT models: 50% used" in text
     for bucket in _buckets(command="fake-agy"):
         assert bucket.reset_time.astimezone().strftime("%a %b %d, %I:%M %p") in text
+
+
+def test_agy_limits_reports_used_percent_boundaries_in_text_and_json(
+    tmp_path: Path,
+) -> None:
+    buckets = [
+        AgyBucket(
+            "empty",
+            "Empty pool",
+            "weekly",
+            0,
+            datetime(2026, 11, 10, 13, 46, 45, tzinfo=timezone.utc),
+        ),
+        AgyBucket(
+            "quarter-left",
+            "Quarter left pool",
+            "weekly",
+            0.25,
+            datetime(2026, 11, 11, 17, 58, 25, tzinfo=timezone.utc),
+        ),
+    ]
+
+    def source(*, command: str) -> list[AgyBucket]:
+        assert command == "fake-agy"
+        return buckets
+
+    kwargs = {
+        "now": datetime(2026, 11, 4, tzinfo=timezone.utc),
+        "agy_enabled": True,
+        "agy_command": "fake-agy",
+        "agy_source": source,
+    }
+    text = render_limits(_paths(tmp_path), **kwargs)
+
+    assert "Empty pool: 100% used" in text
+    assert "Quarter left pool: 75% used" in text
+
+    payload = json.loads(render_limits(_paths(tmp_path), as_json=True, **kwargs))
+    pools = payload["agy"]["pools"]
+    assert pools[0]["remaining_percent"] == 0
+    assert pools[0]["used_percent"] == 100
+    assert pools[1]["remaining_percent"] == 25
+    assert pools[1]["used_percent"] == 75
 
 
 def test_limits_prints_one_line_when_agy_read_fails(tmp_path: Path) -> None:
@@ -101,7 +145,7 @@ def test_run_limits_reads_enabled_agy_command_from_config(tmp_path: Path) -> Non
         )
 
     assert result == 0
-    assert "Gemini Models: 75% left" in output.getvalue()
+    assert "Gemini Models: 25% used" in output.getvalue()
 
 
 def test_run_limits_uses_explicit_loaded_config_from_another_folder(
@@ -120,8 +164,8 @@ def test_run_limits_uses_explicit_loaded_config_from_another_folder(
     with redirect_stdout(output):
         run_limits(paths=_paths(tmp_path), agy_source=_buckets, config=config)
 
-    assert "Gemini Models: 75% left" in output.getvalue()
-    assert "Claude and GPT models: 50% left" in output.getvalue()
+    assert "Gemini Models: 25% used" in output.getvalue()
+    assert "Claude and GPT models: 50% used" in output.getvalue()
 
 
 def test_run_limits_reads_config_from_explicit_root(
@@ -140,7 +184,7 @@ def test_run_limits_reads_config_from_explicit_root(
     with redirect_stdout(output):
         run_limits(paths=_paths(tmp_path), agy_source=_buckets, root=project)
 
-    assert "Gemini Models: 75% left" in output.getvalue()
+    assert "Gemini Models: 25% used" in output.getvalue()
 
 
 def test_run_limits_default_reads_only_current_folder(
@@ -171,7 +215,7 @@ def test_run_limits_default_reads_only_current_folder(
     with redirect_stdout(output):
         run_limits(paths=_paths(tmp_path), agy_source=_buckets)
 
-    assert "Gemini Models: 75% left" in output.getvalue()
+    assert "Gemini Models: 25% used" in output.getvalue()
 
 
 def test_run_limits_warns_once_and_disables_agy_for_broken_config(

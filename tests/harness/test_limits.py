@@ -1056,7 +1056,7 @@ def test_limits_cli_uses_root_config_for_agy_from_another_folder(
 
     assert code == 0
     assert "Antigravity" in buf.getvalue()
-    assert "Gemini Models: 75% left" in buf.getvalue()
+    assert "Gemini Models: 25% used" in buf.getvalue()
 
 
 def test_limits_uses_machine_config_when_project_config_is_missing(
@@ -1090,7 +1090,7 @@ def test_limits_uses_machine_config_when_project_config_is_missing(
         )
 
     text = output.getvalue()
-    assert "Gemini Models: 75% left" in text
+    assert "Gemini Models: 25% used" in text
     assert "Copilot (business)" in text
 
 

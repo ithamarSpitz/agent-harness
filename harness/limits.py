@@ -972,11 +972,12 @@ def load_agy(
     payload: list[dict[str, Any]] = []
     for bucket in buckets:
         percent_left = bucket.remaining_fraction * 100
+        percent_used = 100 - percent_left
         resets_at = int(bucket.reset_time.timestamp())
         reset_label = format_local_day_time(bucket.reset_time)
         remaining = max(0, int((bucket.reset_time - now).total_seconds()))
         lines.append(
-            f"  {bucket.group_name}: {percent_left:.0f}% left, resets "
+            f"  {bucket.group_name}: {percent_used:.0f}% used, resets "
             f"{reset_label} ({_format_duration_until(seconds=remaining)})"
         )
         payload.append(
@@ -985,6 +986,7 @@ def load_agy(
                 "group_name": bucket.group_name,
                 "window": bucket.window,
                 "remaining_percent": percent_left,
+                "used_percent": percent_used,
                 "resets_at": resets_at,
             }
         )
