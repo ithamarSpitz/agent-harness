@@ -144,7 +144,8 @@ def test_verify_task_attempt_logs_and_latest(tmp_path):
     assert "Verification command failed" not in one
     assert (logs / "T-verification.log").read_text(encoding="utf-8") == two
     context = SimpleNamespace(runtime=SimpleNamespace(root=tmp_path))
-    assert _latest_agent_log(context, "T") == agent_log
+    for _ in range(20):
+        assert _latest_agent_log(context, "T") == agent_log
 
     verifier.verify_task(task, tmp_path, "HEAD")
     assert not (logs / "T-attempt-None-verification.log").exists()

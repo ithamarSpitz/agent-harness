@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shlex
 import subprocess
 from contextlib import redirect_stdout
@@ -142,14 +143,23 @@ def _agent_log_paths(context: ConsoleContext, task_id: str) -> list[Path]:
     paths: list[Path] = []
     for pattern in patterns:
         paths.extend(log_dir.glob(pattern))
-    return [path for path in paths if path.is_file()]
+    return [
+        path
+        for path in paths
+        if path.is_file() and not path.name.endswith("-verification.log")
+    ]
+
+
+def _agent_log_attempt(path: Path) -> int:
+    match = re.search(r"-attempt-(\d+)", path.name)
+    return int(match.group(1)) if match else -1
 
 
 def _latest_agent_log(context: ConsoleContext, task_id: str) -> Path | None:
     paths = _agent_log_paths(context, task_id)
     if not paths:
         return None
-    return max(paths, key=lambda path: path.stat().st_mtime)
+    return max(paths, key=lambda path: (path.stat().st_mtime, _agent_log_attempt(path)))
 
 
 def _last_agent_message(raw: str) -> str:

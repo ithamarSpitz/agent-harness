@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -245,6 +246,28 @@ def test_log_extracts_codex_agent_message(tmp_path: Path):
         encoding="utf-8",
     )
     assert run_command("log S8-T1", _context(runtime)) == ["final codex note"]
+
+
+def test_latest_agent_log_ignores_verification_logs_and_breaks_mtime_ties(tmp_path: Path):
+    from harness.console_commands import _latest_agent_log
+
+    runtime = _fake_runtime(tmp_path)
+    log_dir = tmp_path / ".harness" / "logs"
+    log_dir.mkdir(parents=True)
+    attempt_one = log_dir / "S8-T1-attempt-1.log"
+    attempt_two = log_dir / "S8-T1-attempt-2.log"
+    verification_one = log_dir / "S8-T1-attempt-1-verification.log"
+    verification_two = log_dir / "S8-T1-attempt-2-verification.log"
+    for path in (attempt_one, attempt_two, verification_one, verification_two):
+        path.write_text(path.name, encoding="utf-8")
+
+    tied_mtime = 1_700_000_000
+    os.utime(attempt_one, (tied_mtime, tied_mtime))
+    os.utime(attempt_two, (tied_mtime, tied_mtime))
+    os.utime(verification_one, (tied_mtime + 10, tied_mtime + 10))
+    os.utime(verification_two, (tied_mtime + 20, tied_mtime + 20))
+
+    assert _latest_agent_log(_context(runtime), "S8-T1") == attempt_two
 
 
 def test_read_only_commands_leave_state_json_byte_identical(tmp_path: Path):
