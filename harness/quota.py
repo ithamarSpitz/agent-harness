@@ -16,10 +16,12 @@ from datetime import datetime, timedelta, timezone
 from .config import HarnessConfig
 from .agy_usage import AgyBucket
 from .copilot_usage import CopilotQuota, fetch_copilot_quota
+from .kiro_usage import KiroQuota, fetch_kiro_usage
 from .limits import (
     LimitsPaths,
     _agy_settings,
     _copilot_settings,
+    _kiro_settings,
     load_agy,
     load_codex,
     load_cursor,
@@ -101,14 +103,16 @@ def default_limits_source(
     config: HarnessConfig | None = None,
     copilot_source: Callable[..., CopilotQuota] | None = None,
     agy_source: Callable[..., list[AgyBucket]] | None = None,
+    kiro_source: Callable[..., KiroQuota] | None = None,
 ) -> list[QuotaResetInfo]:
-    """Read Codex/Cursor/agy/Copilot limits and return exhausted reset times.
+    """Read provider limits and return exhausted reset times.
 
     Codex: each rate-limit window at 100 % contributes its ``resets_at``.
     Cursor: when auto or API pool is used up, contribute billing cycle end.
     agy: each pool at 0 % remaining contributes its pool reset time.
     Copilot: when its premium-interaction quota is exhausted, contribute
     the monthly reset time.
+    Kiro: when its monthly credits are 100 % used, contribute its reset time.
     Failures (missing auth, network, parse errors) yield an empty contribution
     so the caller falls back to the configured probe interval.
     """
@@ -165,6 +169,23 @@ def default_limits_source(
                 QuotaResetInfo(
                     provider="copilot",
                     reset_at=copilot.reset_time.astimezone(timezone.utc),
+                )
+            )
+    try:
+        kiro_enabled, kiro_quota_command = _kiro_settings(config)
+    except AttributeError:
+        kiro_enabled, kiro_quota_command = False, None
+    if kiro_enabled:
+        kiro_fetch = kiro_source or fetch_kiro_usage
+        try:
+            kiro = kiro_fetch(command=kiro_quota_command)
+        except Exception:
+            kiro = None
+        if kiro is not None and kiro.used_percent >= 100.0:
+            found.append(
+                QuotaResetInfo(
+                    provider="kiro",
+                    reset_at=kiro.reset_time.astimezone(timezone.utc),
                 )
             )
     try:

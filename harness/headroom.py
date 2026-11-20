@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator
 from .agy_usage import AgyBucket, fetch_agy_usage
 from .copilot_usage import CopilotQuota, fetch_copilot_quota
 from .home import harness_home
+from .kiro_usage import KiroQuota, fetch_kiro_usage
 from .pace import record_samples
 from .limits import (
     LimitsPaths,
     _agy_settings,
     _copilot_settings,
+    _kiro_settings,
     load_claude,
     load_codex,
     load_cursor,
@@ -40,6 +42,7 @@ class Headroom:
 LimitsSource = Callable[[LimitsPaths], tuple[list[str], dict[str, Any]]]
 AgyUsageSource = Callable[..., list[AgyBucket]]
 CopilotQuotaSource = Callable[..., CopilotQuota]
+KiroUsageSource = Callable[..., KiroQuota]
 
 _PROVIDER_WINDOWS = {
     "codex": ("five_hour", "weekly"),
@@ -52,6 +55,7 @@ _memory_cache_path: Path | None = None
 _memory_snapshot: dict[str, tuple[Headroom, ...]] | None = None
 _memory_agy_enabled: bool | None = None
 _memory_copilot_enabled: bool | None = None
+_memory_kiro_enabled: bool | None = None
 
 
 def _unknown(provider: str, window: str) -> Headroom:
@@ -170,6 +174,24 @@ def _copilot_entries(
         return [_unknown("copilot", "monthly")]
 
 
+def _kiro_entries(
+    source: KiroUsageSource | None, command: list[str] | None
+) -> list[Headroom]:
+    try:
+        quota = (source or fetch_kiro_usage)(command=command)
+        return [
+            Headroom(
+                "kiro",
+                quota.used_percent,
+                int(quota.reset_time.timestamp()),
+                "monthly",
+                True,
+            )
+        ]
+    except Exception:
+        return [_unknown("kiro", "monthly")]
+
+
 def _copy_snapshot(snapshot: dict[str, tuple[Headroom, ...]]) -> dict[str, list[Headroom]]:
     return {provider: list(entries) for provider, entries in snapshot.items()}
 
@@ -184,7 +206,11 @@ def _fresh(cached_at: float, now: float, max_age_seconds: float) -> bool:
 
 
 def _decode_snapshot(
-    raw: Any, *, agy_enabled: bool = False, copilot_enabled: bool = False
+    raw: Any,
+    *,
+    agy_enabled: bool = False,
+    copilot_enabled: bool = False,
+    kiro_enabled: bool = False,
 ) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     if not isinstance(raw, dict):
         return None
@@ -232,19 +258,40 @@ def _decode_snapshot(
             snapshot["copilot"] = entries
         elif "copilot" in raw_providers:
             return None
+        if kiro_enabled:
+            raw_entries = raw_providers["kiro"]
+            if not isinstance(raw_entries, list) or len(raw_entries) != 1:
+                return None
+            entries = tuple(
+                Headroom(**entry) for entry in raw_entries if isinstance(entry, dict)
+            )
+            if (
+                len(entries) != 1
+                or entries[0].provider != "kiro"
+                or entries[0].window != "monthly"
+            ):
+                return None
+            snapshot["kiro"] = entries
+        elif "kiro" in raw_providers:
+            return None
         return cached_at, snapshot
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
 
 def _read_disk_cache(
-    cache_path: Path, *, agy_enabled: bool = False, copilot_enabled: bool = False
+    cache_path: Path,
+    *,
+    agy_enabled: bool = False,
+    copilot_enabled: bool = False,
+    kiro_enabled: bool = False,
 ) -> tuple[float, dict[str, tuple[Headroom, ...]]] | None:
     try:
         return _decode_snapshot(
             json.loads(cache_path.read_text(encoding="utf-8")),
             agy_enabled=agy_enabled,
             copilot_enabled=copilot_enabled,
+            kiro_enabled=kiro_enabled,
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
@@ -355,6 +402,9 @@ def headroom_snapshot(
     copilot_enabled: bool | None = None,
     copilot_quota_command: list[str] | None = None,
     copilot_source: CopilotQuotaSource | None = None,
+    kiro_enabled: bool | None = None,
+    kiro_quota_command: list[str] | None = None,
+    kiro_source: KiroUsageSource | None = None,
     config: HarnessConfig | None = None,
     root: Path | None = None,
     config_path: Path | None = None,
@@ -366,7 +416,7 @@ def headroom_snapshot(
     """
 
     global _memory_agy_enabled, _memory_cache_path, _memory_cached_at
-    global _memory_copilot_enabled, _memory_snapshot
+    global _memory_copilot_enabled, _memory_kiro_enabled, _memory_snapshot
 
     now = now or time.time
     cache_path = (cache_path or harness_home() / "headroom-cache.json").expanduser()
@@ -386,6 +436,14 @@ def headroom_snapshot(
             copilot_enabled = configured_copilot_enabled
         if copilot_quota_command is None:
             copilot_quota_command = configured_quota_command
+    if kiro_enabled is None or kiro_quota_command is None:
+        configured_kiro_enabled, configured_kiro_command = _kiro_settings(
+            config, root=root, config_path=config_path
+        )
+        if kiro_enabled is None:
+            kiro_enabled = configured_kiro_enabled
+        if kiro_quota_command is None:
+            kiro_quota_command = configured_kiro_command
 
     with _MEMORY_LOCK:
         current_time = now()
@@ -395,6 +453,7 @@ def headroom_snapshot(
             and _memory_cache_path == cache_path
             and _memory_agy_enabled == agy_enabled
             and _memory_copilot_enabled == copilot_enabled
+            and _memory_kiro_enabled == kiro_enabled
             and _fresh(_memory_cached_at, current_time, max_age_seconds)
         ):
             return _copy_snapshot(_memory_snapshot)
@@ -406,6 +465,7 @@ def headroom_snapshot(
                     cache_path,
                     agy_enabled=agy_enabled,
                     copilot_enabled=copilot_enabled,
+                    kiro_enabled=kiro_enabled,
                 )
                 if disk_cache is not None and _fresh(
                     disk_cache[0], current_time, max_age_seconds
@@ -414,6 +474,7 @@ def headroom_snapshot(
                     _memory_cache_path = cache_path
                     _memory_agy_enabled = agy_enabled
                     _memory_copilot_enabled = copilot_enabled
+                    _memory_kiro_enabled = kiro_enabled
                     return _copy_snapshot(_memory_snapshot)
 
             try:
@@ -435,11 +496,14 @@ def headroom_snapshot(
                 snapshot["copilot"] = _copilot_entries(
                     copilot_source, copilot_quota_command
                 )
+            if kiro_enabled:
+                snapshot["kiro"] = _kiro_entries(kiro_source, kiro_quota_command)
             frozen = _freeze(snapshot)
             _memory_cached_at = current_time
             _memory_cache_path = cache_path
             _memory_agy_enabled = agy_enabled
             _memory_copilot_enabled = copilot_enabled
+            _memory_kiro_enabled = kiro_enabled
             _memory_snapshot = frozen
             record_samples(
                 [entry for entries in frozen.values() for entry in entries],
