@@ -1096,3 +1096,46 @@ sprints:
         file: tasks/sprint-17-kiro-cli/S17-T15.md
         stage: 5
         depends_on: []
+
+  S18-reports-and-routing:
+    name: Report parsing, memory estimate, Windows commands, soonest-reset routing, escalation, same-failure block
+    tasks:
+      S18-T1:
+        file: tasks/sprint-18-reports-and-routing/01-report-markers.md
+        stage: 1
+        depends_on: []
+      S18-T3:
+        file: tasks/sprint-18-reports-and-routing/02-memory-estimate-recent-peaks.md
+        stage: 1
+        depends_on: []
+      S18-T4:
+        file: tasks/sprint-18-reports-and-routing/03-windows-command-paths.md
+        stage: 1
+        depends_on: []
+      S18-T5:
+        file: tasks/sprint-18-reports-and-routing/04-soonest-reset-first.md
+        stage: 1
+        depends_on: []
+      S18-T2:
+        file: tasks/sprint-18-reports-and-routing/05-scheduler-report-markers.md
+        stage: 2
+        depends_on:
+        - S18-T1
+      S18-T6:
+        file: tasks/sprint-18-reports-and-routing/06-escalate-after-two-failures.md
+        stage: 2
+        depends_on:
+        - S18-T5
+      S18-T7:
+        file: tasks/sprint-18-reports-and-routing/07-same-failure-blocks.md
+        stage: 3
+        depends_on:
+        - S18-T2
+        - S18-T4
+        - S18-T6
+      S18-T8:
+        file: tasks/sprint-18-reports-and-routing/08-docs.md
+        stage: 4
+        depends_on:
+        - S18-T3
+        - S18-T7
