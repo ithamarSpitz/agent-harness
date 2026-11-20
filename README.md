@@ -1,6 +1,6 @@
 # Agent Harness
 
-A small orchestrator that runs Antigravity, Codex, Cursor, Claude Code, and GitHub Copilot agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
+A small orchestrator that runs Antigravity, Codex, Cursor, Claude Code, GitHub Copilot, and Kiro agents against a Git repository using Markdown/YAML task briefs and a sprint roadmap. It keeps project knowledge in Git instead of a separate memory system. For full behavior, configuration, and guarantees, see [SPEC.md](SPEC.md).
 
 ## Install on a new computer
 
@@ -15,6 +15,7 @@ Install and authenticate these yourself before using the harness:
 - **Claude Code** (optional) — install and authenticate `claude`
 - **Google Antigravity CLI** (optional) — install `agy` and sign in with your Google account
 - **GitHub Copilot CLI** (optional) — install `copilot` and run `copilot login`
+- **Kiro CLI** (optional; S17 was recorded with version 3.1.0) — install `kiro-cli`, ensure it is on PATH, and run `kiro-cli login` (the standard Windows install is `%LOCALAPPDATA%/Kiro-Cli/kiro-cli.exe`)
 
 Clone this repository, then from the repo root run:
 
@@ -36,7 +37,7 @@ Check the environment:
 harness doctor --full
 ```
 
-Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `cursor.enabled`, `claude.enabled`, `copilot.enabled`). To enable Antigravity after you have installed and signed in to `agy`:
+Provider enablement is in `harness.yaml` (`agy.enabled`, `codex.enabled`, `cursor.enabled`, `claude.enabled`, `copilot.enabled`, `kiro.enabled`). To enable Antigravity after you have installed and signed in to `agy`:
 
 ```yaml
 agy:
@@ -77,6 +78,21 @@ Tool access is strictly bounded by phase:
 - Reviews and plan repair run read-only using `--deny-tool write` and `--allow-tool` only for repository inspection: `shell(git diff:*)`, `shell(git log:*)`, `shell(git show:*)`, and `shell(git status:*)`. (In non-interactive mode, Copilot denies any tool not approved by an allow rule.)
 
 Copilot premium request quota is checked with `gh api copilot_internal/user` (configurable via `copilot.quota_command`). It retrieves `copilot_plan`, monthly `quota_reset_date_utc`, and `quota_snapshots.premium_interactions` (`entitlement`, `remaining`, `percent_remaining`, `unlimited`). When enabled, `harness limits` (and `harness limits --json`) displays plan details, percent used, remaining requests, and reset time. If premium requests are exhausted, quota waiting pauses until the monthly reset date.
+
+To enable Kiro after installing and signing in to `kiro-cli`, set it in either the project `harness.yaml` or the machine-wide `<harness home>/config.yaml`:
+
+```yaml
+kiro:
+  enabled: true
+providers:
+  priority: [kiro, agy, codex, cursor, claude, copilot]
+```
+
+Kiro is off by default. Its default worker model is `glm-5`, its hard-worker model is `claude-sonnet-4.5`, and its escalation model is `claude-sonnet-4.5`; the implementation sequence is `glm-5`, then `claude-sonnet-4.5` twice, and reviews also use `claude-sonnet-4.5`. Kiro models do not receive an effort flag. Setting `kiro.review_model: auto` is rejected because Auto never reviews.
+
+Calls run the configured `kiro.command` (default `kiro-cli`) as `chat --no-interactive --output-format stream-json --model <id> --trust-workspace`, with the prompt on stdin and the task worktree as the current directory. Implementations add `--trust-all-tools`; reviews, plan repair, and brief checks add `--trust-tools=fs_read,execute_bash`. The harness uses only per-call flags and does not change saved Kiro configuration.
+
+Kiro Free provides 50 monthly credits. When Kiro is enabled, `harness limits` shows the plan plus credits used, percentage used, and the local reset date; `--json` reports `plan`, `used`, `limit`, `used_percent`, and `resets_at`. `harness doctor` checks the CLI version, sign-in state, and quota without displaying the signed-in account email. Exhausted credits participate in quota waiting until the monthly reset.
 
 ## Start a new project
 
@@ -125,11 +141,11 @@ Commit harness, roadmap, and task files before the first automated run. Map stab
 
 Use the checked-in Spec Kit workflows under `.specify/` to settle the feature spec and plan; Spec Kit writes those artifacts under `specs/<NNN-feature>/`. Then follow [`skills/write-harness-briefs/SKILL.md`](skills/write-harness-briefs/SKILL.md) to turn the approved design into small task briefs and a roadmap entry.
 
-Run `harness validate <SPRINT>` before execution. Its brief findings use these codes: `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`, plus the warning `test-not-allowed` (a file under `tests/` imports a `harness/*.py` module the brief changes but is not in `allowed_paths`). After fixing those findings, run `harness brief-check <TASK>` for each task. The latter asks the configured Copilot or Codex planner, in read-only mode, which files and changes it infers from the brief and compares them with `allowed_paths`. Exit code 0 means the read-through matches, 1 means it found a discrepancy, and 2 means the planner is unavailable or the model check failed.
+Run `harness validate <SPRINT>` before execution. Its brief findings use these codes: `protected`, `missing-goal`, `missing-criteria`, `stop-rule`, `named-not-allowed`, `allowed-missing`, `no-tests`, and `too-big`, plus the warning `test-not-allowed` (a file under `tests/` imports a `harness/*.py` module the brief changes but is not in `allowed_paths`). After fixing those findings, run `harness brief-check <TASK>` for each task. The latter asks a configured provider in read-only mode which files and changes it infers from the brief and compares them with `allowed_paths`. Exit code 0 means the read-through matches, 1 means it found a discrepancy, and 2 means the provider is unavailable or the model check failed.
 
 ## Providers
 
-Each coding CLI (Codex, Cursor, Claude Code, agy, Copilot) is wrapped by one adapter in `harness/adapters/`. Routing uses the adapters for provider-specific calls, while provider selection and budget handling remain in the router. An adapter has these parts:
+Each coding CLI (Codex, Cursor, Claude Code, agy, Copilot, Kiro) is wrapped by one adapter in `harness/adapters/`. Routing uses the adapters for provider-specific calls, while provider selection and budget handling remain in the router. An adapter has these parts:
 
 - **Find**: `find()` reports whether the CLI is installed, its version, and sign-in state when known.
 - **Quota**: whether the provider is enabled and its implementation budget (`enabled()`, `implementation_budget()`).
@@ -231,9 +247,9 @@ Global options: `--root`, `--roadmap`, `--config` (see `harness --help`).
 | `manifest SPRINT` | Active or latest run manifest for a sprint. |
 | `usage` | Local agent invocation log summary. |
 | `validate [SPRINT]` | Lint roadmap and task briefs. |
-| `brief-check TASK [--timeout-minutes N]` | Run a read-only Copilot or Codex read-through of one task brief. |
+| `brief-check TASK [--timeout-minutes N]` | Run a read-only provider read-through of one task brief. |
 | `init [--force] [--public] [--no-github]` | Scaffold a new harness project (and GitHub repo by default). |
-| `limits [--json]` | Codex, Cursor, Claude, Antigravity, and Copilot usage limits (independent blocks). |
+| `limits [--json]` | Codex, Cursor, Claude, Antigravity, Copilot, and Kiro usage limits (independent blocks). |
 | `models report [--project PATH] [--since DATE]` | Report cross-project provider/model outcomes. |
 | `models import PROJECT [PROJECT ...]` | Import legacy project usage logs into the shared outcomes log. |
 | `setup-machine` | Post-install machine setup invoked by install scripts. |

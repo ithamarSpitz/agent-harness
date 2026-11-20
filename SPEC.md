@@ -4,7 +4,7 @@ This document is the entry point for how the harness behaves today, as implement
 
 ## Purpose
 
-The harness orchestrates coding agents (Cursor CLI, OpenAI Codex CLI, Claude Code, Antigravity, and GitHub Copilot) against any Git project through provider adapters. Work is expressed as a **roadmap of task briefs** with mechanical verification and optional independent review. Each task runs in an isolated **Git worktree**; successful task commits merge into the **integration checkout** (the branch you run from) only after every active task in a **stage** reaches `PASSED`. Stages are **atomic**: merge or stage-verification failure rolls the integration checkout back to the pre-stage checkpoint. Agents do not commit or merge; the harness does.
+The harness orchestrates coding agents (Cursor CLI, OpenAI Codex CLI, Claude Code, Antigravity, GitHub Copilot, and Kiro CLI) against any Git project through provider adapters. Work is expressed as a **roadmap of task briefs** with mechanical verification and optional independent review. Each task runs in an isolated **Git worktree**; successful task commits merge into the **integration checkout** (the branch you run from) only after every active task in a **stage** reaches `PASSED`. Stages are **atomic**: merge or stage-verification failure rolls the integration checkout back to the pre-stage checkpoint. Agents do not commit or merge; the harness does.
 
 Core ideas: plan as data (`tasks/roadmap.yaml` and briefs), parallel tasks within a stage when `allowed_paths` do not conflict, headroom-aware routing across provider adapters, and human-gated **plan repair** when blocked work indicates a plan gap.
 
@@ -29,7 +29,7 @@ State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 | Part | Contents |
 | --- | --- |
 | [Task lifecycle and stage barrier](docs/spec/lifecycle.md) | Statuses, transitions, retries, integration barrier, recovery commands. |
-| [Providers, quota, and capacity](docs/spec/providers.md) | Antigravity, Codex, Cursor, Claude Code and GitHub Copilot adapters; ladders, permissions, headroom/urgency routing, reserves, waits, and fallback. |
+| [Providers, quota, and capacity](docs/spec/providers.md) | Antigravity, Codex, Cursor, Claude Code, GitHub Copilot, and Kiro adapters; ladders, permissions, headroom/urgency routing, reserves, waits, and fallback. |
 | [Review and code map](docs/spec/review.md) | Independent cross-provider review, required impact analysis, UI check, optional Graphify code map. |
 | [Operations](docs/spec/operations.md) | `HARNESS_HOME`, usage/outcome records, provider limits/headroom, hold/release, brief reload, post-sprint release, and live task enqueueing. |
 | [Configuration](docs/spec/configuration.md) | All `harness.yaml` keys, including agy, Claude and Cursor Auto, plus task brief frontmatter. |
@@ -46,6 +46,26 @@ State persists in `.harness/state.json`. Logs live under `.harness/logs/`.
 - Sprint integration branch and initial `base_ref` / `initial_base_commit` are pinned for the lifetime of a sprint run.
 
 Cursor implementation uses `--force` and `--trust` only in verified harness worktrees under `.harness/worktrees/`; review and plan-repair calls do not use `--force`. Codex uses its own CLI flags and sandbox settings when enabled.
+
+## S17 Kiro provider
+
+Kiro is an optional adapter and is disabled by default. Set `kiro.enabled: true` in project configuration or in `HARNESS_HOME/config.yaml` to enable it. The default command is `kiro-cli`; the default worker, hard-worker, and escalation levels are `glm-5`, `claude-sonnet-4.5`, and `claude-sonnet-4.5`. The implementation sequence is `glm-5`, `claude-sonnet-4.5`, `claude-sonnet-4.5`, and reviews use `claude-sonnet-4.5`. Kiro receives no effort flag. Configuration rejects `kiro.review_model: auto`, so Auto never reviews.
+
+Each agent call runs in the workspace with its prompt on stdin. The common command is:
+
+```text
+kiro-cli chat --no-interactive --output-format stream-json --model <id> --trust-workspace <permission-flag>
+```
+
+Implementations use `--trust-all-tools`. Reviews, plan repair, and brief checks use `--trust-tools=fs_read,execute_bash`. Output is JSON Lines; non-JSON lines are ignored except that lines beginning `[denied]` are counted for missing-report diagnostics. The parser reconstructs assistant text from message chunks when `runFinished.finalText` is absent or marked truncated, sums `metadata.data.meteringUsage` entries whose unit is `credit`, and takes completion status and stop reason from `runFinished`.
+
+Failed calls are classified in this precedence order: quota/credits; authentication; unavailable model; invalid option/configuration; temporary capacity or rate limit; transient service/network error; otherwise task failure. Executable lookup/start failures and Windows resource launch exits are launch faults. Timeouts and stalls are transient timeout waits. A process is successful only when it exits zero, has a successful `runFinished`, has no `runError`, and has not timed out or stalled.
+
+A successful implementation must contain a line beginning `STATUS:` and a successful review must contain a line beginning `VERDICT:`. If the required report is missing, the result is a launch/provider fault rather than task feedback, the response tail and denied-tool count are logged, and routing can fall back without spending the implementation attempt. Plan repair and brief checks have no report requirement.
+
+Kiro's default quota command is `kiro-cli chat --no-interactive /usage`. It parses the plan, credits used and included, and monthly UTC reset date. `harness limits` renders the plan, used credits, percent used, and local reset date; its JSON block contains `plan`, `used`, `limit`, `used_percent`, and `resets_at`. The recorded Kiro Free sample has 50 included credits per month, and `/usage` consumes no credits. Exhausted credits contribute the monthly reset to quota waiting. `harness doctor` checks the configured command's version, sign-in via `whoami` without retaining or displaying its email output, and quota availability; these checks are omitted while Kiro is disabled.
+
+Each local Kiro usage event records `provider`, `task_id`, `phase`, `attempt`, `sprint`, `model_class`, `model`, `requested_model`, `credits`, `duration_seconds`, `ok`, `timed_out`, `stalled`, `quota_exhausted`, `capacity_exhausted`, `waiting_cause`, `transient_error`, `auth_failure`, `launch_failure`, token counters (all zero because Kiro reports credits instead), `code_map` (`false`), `code_map_calls` (`0`), and `output_bytes`; review events also record `review_verdict` and `finding_count`. The usage recorder adds `recorded_at` and writes the normalized shared outcome fields.
 
 ## S11 field-fix behavior
 

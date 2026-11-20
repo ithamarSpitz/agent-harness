@@ -4,6 +4,21 @@ Newest first. Harness behavior details live in [SPEC.md](SPEC.md); the [README](
 
 ## Unreleased
 
+- S17-T1: Kiro `/usage` parsing and monthly credit quota collection.
+- S17-T2: disabled-by-default Kiro configuration with model ladders, quota command, machine-config merging, and validation that Auto never reviews.
+- S17-T3: Kiro stream-JSON parsing, credit metering, denied-tool counting, and ordered fault classification.
+- S17-T4: Kiro agent runner with phase-specific trust flags, prompt-on-stdin execution, watchdog handling, report validation, logs, and usage events.
+- S17-T5: Kiro plan and monthly credit usage in `harness limits` text and JSON output.
+- S17-T6: Kiro monthly headroom, cache participation, and exhausted-credit reset handling for quota waits.
+- S17-T7: Kiro provider adapter for discovery, sign-in checks, model levels, calls, and implementation budgets.
+- S17-T8: Kiro registry/runtime wiring for implementation, review, plan repair, brief checks, fallback, and provider routing.
+- S17-T9: Kiro version, sign-in, and quota checks in `harness doctor` without exposing the account email.
+- S17-T10: README, SPEC, and CHANGELOG documentation for the S17 Kiro provider and fixes.
+- S17-T11: `harness init` adds harness runtime, Python bytecode, pytest, mypy, Ruff, and `node_modules` ignore patterns idempotently.
+- S17-T12: verification writes durable per-attempt logs while retaining the latest aggregate verification log.
+- S17-T13: Copilot used-up quota clamps negative remaining values to zero so limits remain available.
+- S17-T14: Antigravity limits report percent used in text and include both used and remaining percentages in JSON.
+- S17-T15: the console's `log ID` ignores verification logs and uses attempt number to break modification-time ties.
 - S16-T1: provider adapter protocol, shared types (`FindResult`, `Levels`, `Fault`, `CallContext`) and `AdapterRegistry` in `harness/adapters/`.
 - S16-T2: Codex adapter.
 - S16-T3: Claude Code adapter.
