@@ -41,6 +41,7 @@ from .codex_runner import CodexAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .agy_runner import AgyAgentRunner
 from .copilot_runner import CopilotAgentRunner
+from .kiro_runner import KiroAgentRunner
 from .copilot_usage import CopilotUsageError, fetch_copilot_quota
 from .command_locate import locate
 from .provider_runner import ProviderAgentRunner, clear_task_quota_disables
@@ -122,6 +123,10 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
         CopilotAgentRunner(config, runtime_root / "logs", context, usage)
         if config.copilot.enabled else None
     )
+    kiro_runner = (
+        KiroAgentRunner(config, runtime_root / "logs", context, usage)
+        if config.kiro.enabled else None
+    )
     runner = ProviderAgentRunner(
         config,
         state,
@@ -131,6 +136,7 @@ def build_runtime(root: Path, roadmap_path: Path, config_path: Path) -> Runtime:
         claude_runner,
         agy_runner,
         copilot=copilot_runner,
+        kiro=kiro_runner,
     )
     verifier = Verifier(config, runtime_root / "logs", worktrees)
     scheduler = Scheduler(

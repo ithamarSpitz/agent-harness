@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-PROVIDER_NAMES = {"codex", "cursor", "claude", "agy", "copilot"}
+PROVIDER_NAMES = {"codex", "cursor", "claude", "agy", "copilot", "kiro"}
 CHECKED_METHODS = [
     "_choose",
     "_has_other_candidate",

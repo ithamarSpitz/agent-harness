@@ -55,9 +55,9 @@ def _spy(monkeypatch) -> dict:
     return seen
 
 
-def test_registry_holds_five_names_in_order(tmp_path: Path):
+def test_registry_holds_six_names_in_order(tmp_path: Path):
     assert _router(tmp_path).adapters.names() == [
-        "agy", "copilot", "codex", "cursor", "claude"
+        "agy", "copilot", "codex", "cursor", "claude", "kiro"
     ]
 
 
@@ -67,7 +67,9 @@ def test_disabled_copilot_missing_from_enabled_map(tmp_path: Path, monkeypatch):
     router._choose(_task(), "implement", model_class="worker")
     assert seen["enabled"]["copilot"] is False
     assert seen["enabled"]["codex"] is True
-    assert list(seen["enabled"]) == ["agy", "copilot", "codex", "cursor", "claude"]
+    assert list(seen["enabled"]) == [
+        "agy", "copilot", "codex", "cursor", "claude", "kiro"
+    ]
 
 
 def test_extra_adapter_is_offered_to_choose_provider(tmp_path: Path, monkeypatch):

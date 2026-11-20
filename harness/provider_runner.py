@@ -14,11 +14,13 @@ from .adapters.claude import ClaudeAdapter
 from .adapters.codex import CodexAdapter
 from .adapters.copilot import CopilotAdapter
 from .adapters.cursor import CursorAdapter
+from .adapters.kiro import KiroAdapter
 from .adapters.base import CallContext
 from .agy_runner import AgyAgentRunner
 from .claude_runner import ClaudeAgentRunner
 from .codex_runner import CodexAgentRunner
 from .copilot_runner import CopilotAgentRunner
+from .kiro_runner import KiroAgentRunner
 from .config import HarnessConfig
 from .headroom import headroom_snapshot
 from .impact import collect_outside_impact
@@ -158,7 +160,8 @@ class ProviderAgentRunner:
                  agy: AgyAgentRunner | None = None,
                  headroom_reader: HeadroomReader | None = None,
                  clock: Clock | None = None,
-                 copilot: CopilotAgentRunner | None = None):
+                 copilot: CopilotAgentRunner | None = None,
+                 kiro: KiroAgentRunner | None = None):
         self.config = config
         self.state = state
         self.codex = codex
@@ -166,6 +169,7 @@ class ProviderAgentRunner:
         self.claude = claude
         self.agy = agy
         self.copilot = copilot
+        self.kiro = kiro
         self.usage = usage
         self._headroom_reader = headroom_reader or (
             lambda: headroom_snapshot(config=self.config)
@@ -185,6 +189,7 @@ class ProviderAgentRunner:
             budget=self._cursor_implement_budget,
         ))
         self.adapters.register(ClaudeAdapter(config, claude))
+        self.adapters.register(KiroAdapter(kiro, config))
 
     def _disable_key(self, task: TaskSpec) -> str:
         # Per task: every new task probes Codex again; only a task that already fell back stays on Cursor.
@@ -361,7 +366,7 @@ class ProviderAgentRunner:
 
     def _disabled_for(self, task: TaskSpec, phase: str) -> set[str]:
         disabled: set[str] = set()
-        for provider in ("agy", "copilot", "codex", "cursor", "claude"):
+        for provider in self.adapters.names():
             if self.state.get_meta(
                 f"{task.sprint}.{task.id}.provider.{provider}.disabled"
             ) or self.state.get_meta(self._phase_disable_key(task, provider, phase)):
@@ -865,9 +870,7 @@ class ProviderAgentRunner:
                 code_map_offered=code_map_offered,
                 on_process_start=hook,
             )
-            if result.ok and result.provider in {
-                "agy", "copilot", "codex", "cursor", "claude"
-            }:
+            if result.ok and result.provider in self.adapters.names():
                 # Every path records the implementer so review can avoid it.
                 self.state.set_meta(
                     f"{task.sprint}.{task.id}.provider.implementer", result.provider
@@ -1218,7 +1221,11 @@ class ProviderAgentRunner:
         guarded = self._guard_workspace(task, workspace)
         if guarded is not None:
             return guarded
-        if self.config.claude.enabled or self.config.copilot.enabled:
+        if (
+            self.config.claude.enabled
+            or self.config.copilot.enabled
+            or self.config.kiro.enabled
+        ):
             return self._plan_change_with_routing(
                 task, workspace, failure_summary, timeout_minutes,
                 model_class=model_class, env=env,
