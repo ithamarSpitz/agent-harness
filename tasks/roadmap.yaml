@@ -1083,3 +1083,16 @@ sprints:
         file: tasks/sprint-17-kiro-cli/12-verification-log-per-attempt.md
         stage: 1
         depends_on: []
+      S17-T13:
+        file: tasks/sprint-17-kiro-cli/S17-T13.md
+        stage: 1
+        depends_on: []
+      S17-T14:
+        file: tasks/sprint-17-kiro-cli/S17-T14.md
+        stage: 3
+        depends_on:
+        - S17-T5
+      S17-T15:
+        file: tasks/sprint-17-kiro-cli/S17-T15.md
+        stage: 5
+        depends_on: []
